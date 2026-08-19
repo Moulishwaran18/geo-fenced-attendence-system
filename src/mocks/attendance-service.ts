@@ -38,12 +38,16 @@ const ok = (
 ): VerificationSignal => ({ key, value, detail, state: "verified" });
 
 export function getSnapshot(scenario: VerificationScenario): VerificationSnapshot {
-  const base: VerificationSignal[] = [
-    ok("location", "Inside Campus", "Accuracy: 11 m"),
-    ok("wifi", "College Network", "SONA-STAFF-5G · Connected"),
-    ok("bluetooth", "Campus Beacon", "BLE-GATE-02 · Detected"),
-    { key: "identity", value: "Identity Verification", detail: "Ready", state: "pending" },
-  ];
+  const loc = ok("location", "Inside Campus", "Accuracy: 11 m");
+  const wifi = ok("wifi", "College Network", "SONA-STAFF-5G · Connected");
+  const ble = ok("bluetooth", "Campus Beacon", "BLE-GATE-02 · Detected");
+  const identity: VerificationSignal = {
+    key: "identity",
+    value: "Identity Verification",
+    detail: "Ready",
+    state: "pending",
+  };
+  const base: VerificationSignal[] = [loc, wifi, ble, identity];
 
   switch (scenario) {
     case "outside-campus":
@@ -110,9 +114,9 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         tone: "warning",
         accuracy: "11 m",
         signals: [
-          base[0],
+          loc,
           { key: "wifi", value: "Not Connected", detail: "College network missing", state: "warning" },
-          base[2],
+          ble,
           { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
         ],
       };
@@ -125,8 +129,8 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         tone: "warning",
         accuracy: "11 m",
         signals: [
-          base[0],
-          base[1],
+          loc,
+          wifi,
           { key: "bluetooth", value: "Bluetooth Off", detail: "No beacon signal", state: "warning" },
           { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
         ],
@@ -142,7 +146,7 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         signals: [
           base[0],
           base[1],
-          base[2],
+          ble,
           { key: "identity", value: "Identity Verification", detail: "Failed · 2 attempts", state: "error" },
         ],
       };
