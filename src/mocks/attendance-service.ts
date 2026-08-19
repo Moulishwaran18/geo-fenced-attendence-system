@@ -144,8 +144,8 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         tone: "error",
         accuracy: "11 m",
         signals: [
-          base[0],
-          base[1],
+          loc,
+          wifi,
           ble,
           { key: "identity", value: "Identity Verification", detail: "Failed · 2 attempts", state: "error" },
         ],
