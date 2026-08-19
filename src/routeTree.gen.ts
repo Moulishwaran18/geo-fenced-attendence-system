@@ -13,6 +13,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as MarkAttendanceRouteImport } from './routes/mark-attendance'
+import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as SettingsRouteImport } from './routes/settings'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,18 +36,32 @@ const MarkAttendanceRoute = MarkAttendanceRouteImport.update({
   path: '/mark-attendance',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ProfileRoute = ProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +69,34 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/dashboard' | '/history' | '/mark-attendance'
+  fullPaths:
+    | '/'
+    | '/dashboard'
+    | '/history'
+    | '/mark-attendance'
+    | '/profile'
+    | '/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/dashboard' | '/history' | '/mark-attendance'
-  id: '__root__' | '/' | '/dashboard' | '/history' | '/mark-attendance'
+  to:
+    | '/'
+    | '/dashboard'
+    | '/history'
+    | '/mark-attendance'
+    | '/profile'
+    | '/settings'
+  id:
+    | '__root__'
+    | '/'
+    | '/dashboard'
+    | '/history'
+    | '/mark-attendance'
+    | '/profile'
+    | '/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,6 +104,8 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRoute
   HistoryRoute: typeof HistoryRoute
   MarkAttendanceRoute: typeof MarkAttendanceRoute
+  ProfileRoute: typeof ProfileRoute
+  SettingsRoute: typeof SettingsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -99,6 +138,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MarkAttendanceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -107,6 +160,8 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRoute,
   HistoryRoute: HistoryRoute,
   MarkAttendanceRoute: MarkAttendanceRoute,
+  ProfileRoute: ProfileRoute,
+  SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -21,7 +21,7 @@ function ToggleRow({
   id: string;
   label: string;
   description: string;
-  defaultChecked?: boolean;
+  defaultChecked?: boolean | undefined;
 }) {
   return (
     <div className="flex items-start justify-between gap-4 px-5 py-4">
@@ -31,7 +31,7 @@ function ToggleRow({
         </Label>
         <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
       </div>
-      <Switch id={id} defaultChecked={defaultChecked} />
+      <Switch id={id} defaultChecked={defaultChecked ?? false} />
     </div>
   );
 }
