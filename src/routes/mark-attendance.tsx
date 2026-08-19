@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
+  AlertTriangle,
   Bluetooth,
   CheckCircle2,
   Fingerprint,
@@ -116,7 +117,7 @@ function MarkAttendancePage() {
         <div className="space-y-6">
           <AlertBanner
             tone={snapshot.tone === "success" && !snapshot.canMark ? "info" : snapshot.tone}
-            icon={snapshot.tone === "success" ? ShieldCheck : undefined}
+            icon={snapshot.tone === "success" ? ShieldCheck : AlertTriangle}
             title={snapshot.headline}
             description={snapshot.message}
           />
