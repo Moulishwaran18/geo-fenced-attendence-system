@@ -48,7 +48,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
             <Menu className="size-5" />
           </Button>
 
-          <Link to={role === "admin" ? "/admin" : "/dashboard"} className="flex items-center gap-2.5">
+          <Link to={(role === "admin" ? "/admin" : "/dashboard") as "/"} className="flex items-center gap-2.5">
             <span className="grid size-9 place-items-center rounded-lg bg-primary text-primary-foreground">
               <GraduationCap className="size-5" aria-hidden />
             </span>
@@ -97,7 +97,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
                 <DropdownMenuLabel>{user.name}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
-                  <Link to="/profile">
+                  <Link to={"/profile" as "/"}>
                     <User className="mr-2 size-4" /> Profile
                   </Link>
                 </DropdownMenuItem>
@@ -107,7 +107,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild variant="destructive">
+                <DropdownMenuItem asChild>
                   <Link to="/">
                     <LogOut className="mr-2 size-4" /> Logout
                   </Link>
@@ -159,7 +159,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
           {nav.slice(0, 5).map((item) => (
             <li key={item.to}>
               <Link
-                to={item.to}
+                to={item.to as "/"}
                 className={cn(
                   "flex flex-col items-center gap-1 px-1 py-2.5 text-[10px] font-medium transition-colors",
                   isActive(item.to) ? "text-primary" : "text-muted-foreground",
@@ -190,7 +190,7 @@ function SidebarNav({
       {nav.map((item) => (
         <li key={item.to}>
           <Link
-            to={item.to}
+            to={item.to as "/"}
             onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
