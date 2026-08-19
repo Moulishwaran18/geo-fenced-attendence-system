@@ -15,6 +15,10 @@ import { Route as HistoryRouteImport } from './routes/history'
 import { Route as MarkAttendanceRouteImport } from './routes/mark-attendance'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as AdminIndexRouteImport } from './routes/admin.index'
+import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
+import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
+import { Route as AdminStaffRouteImport } from './routes/admin.staff'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -46,6 +50,26 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/admin/',
+  path: '/admin/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminAttendanceRoute = AdminAttendanceRouteImport.update({
+  id: '/admin/attendance',
+  path: '/admin/attendance',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminCampusMapRoute = AdminCampusMapRouteImport.update({
+  id: '/admin/campus-map',
+  path: '/admin/campus-map',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminStaffRoute = AdminStaffRouteImport.update({
+  id: '/admin/staff',
+  path: '/admin/staff',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -54,6 +78,10 @@ export interface FileRoutesByFullPath {
   '/mark-attendance': typeof MarkAttendanceRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
+  '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/staff': typeof AdminStaffRoute
+  '/admin/': typeof AdminIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +90,10 @@ export interface FileRoutesByTo {
   '/mark-attendance': typeof MarkAttendanceRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
+  '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/staff': typeof AdminStaffRoute
+  '/admin': typeof AdminIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,6 +103,10 @@ export interface FileRoutesById {
   '/mark-attendance': typeof MarkAttendanceRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
+  '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/staff': typeof AdminStaffRoute
+  '/admin/': typeof AdminIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -81,6 +117,10 @@ export interface FileRouteTypes {
     | '/mark-attendance'
     | '/profile'
     | '/settings'
+    | '/admin/attendance'
+    | '/admin/campus-map'
+    | '/admin/staff'
+    | '/admin/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -89,6 +129,10 @@ export interface FileRouteTypes {
     | '/mark-attendance'
     | '/profile'
     | '/settings'
+    | '/admin/attendance'
+    | '/admin/campus-map'
+    | '/admin/staff'
+    | '/admin'
   id:
     | '__root__'
     | '/'
@@ -97,6 +141,10 @@ export interface FileRouteTypes {
     | '/mark-attendance'
     | '/profile'
     | '/settings'
+    | '/admin/attendance'
+    | '/admin/campus-map'
+    | '/admin/staff'
+    | '/admin/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -106,6 +154,10 @@ export interface RootRouteChildren {
   MarkAttendanceRoute: typeof MarkAttendanceRoute
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
+  AdminAttendanceRoute: typeof AdminAttendanceRoute
+  AdminCampusMapRoute: typeof AdminCampusMapRoute
+  AdminStaffRoute: typeof AdminStaffRoute
+  AdminIndexRoute: typeof AdminIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -152,6 +204,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/': {
+      id: '/admin/'
+      path: '/admin'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/attendance': {
+      id: '/admin/attendance'
+      path: '/admin/attendance'
+      fullPath: '/admin/attendance'
+      preLoaderRoute: typeof AdminAttendanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/campus-map': {
+      id: '/admin/campus-map'
+      path: '/admin/campus-map'
+      fullPath: '/admin/campus-map'
+      preLoaderRoute: typeof AdminCampusMapRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/staff': {
+      id: '/admin/staff'
+      path: '/admin/staff'
+      fullPath: '/admin/staff'
+      preLoaderRoute: typeof AdminStaffRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -162,6 +242,10 @@ const rootRouteChildren: RootRouteChildren = {
   MarkAttendanceRoute: MarkAttendanceRoute,
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
+  AdminAttendanceRoute: AdminAttendanceRoute,
+  AdminCampusMapRoute: AdminCampusMapRoute,
+  AdminStaffRoute: AdminStaffRoute,
+  AdminIndexRoute: AdminIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
