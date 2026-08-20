@@ -34,6 +34,7 @@ import {
   type AttendanceReceipt,
   type VerificationScenario,
 } from "@/mocks/attendance-service";
+import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 
 export const Route = createFileRoute("/mark-attendance")({
   head: () => ({
@@ -71,6 +72,7 @@ function MarkAttendancePage() {
   const [receipt, setReceipt] = useState<AttendanceReceipt | null>(null);
   const [face, setFace] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
+  const now = useIndiaTime();
 
   const snapshot = getSnapshot(scenario);
 
@@ -168,6 +170,8 @@ function MarkAttendancePage() {
                     ["Staff ID", "SCT-2417"],
                     ["Device", "Redmi Note 13 Pro"],
                     ["GPS accuracy", snapshot.accuracy],
+                    ["Current time (IST)", now ? formatIndiaTime(now) : "—"],
+                    ["Date", now ? formatIndiaDate(now, false) : "—"],
                     ["Attendance window", "8:45 AM – 9:10 AM"],
                     ["Nearest beacon", "BLE-GATE-02"],
                   ].map(([k, v]) => (
