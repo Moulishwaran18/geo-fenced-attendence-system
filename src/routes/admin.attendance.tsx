@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { departments, todaysAttendance } from "@/mocks/data";
+import { formatIndiaDate, useIndiaTime } from "@/lib/india-time";
 
 export const Route = createFileRoute("/admin/attendance")({
   head: () => ({
@@ -37,6 +38,7 @@ function AdminAttendancePage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [dept, setDept] = useState("all");
+  const now = useIndiaTime(60000);
 
   const rows = useMemo(
     () =>
@@ -53,7 +55,7 @@ function AdminAttendancePage() {
     <AppShell nav={adminNav} role="admin">
       <PageHeader
         title="Attendance"
-        description="19 August 2026 · All departments"
+        description={now ? `${formatIndiaDate(now, false)} · All departments` : "All departments"}
         actions={
           <Button variant="outline" onClick={() => toast.success("CSV export queued (mock)")}>
             <Download className="mr-2 size-4" /> Export CSV

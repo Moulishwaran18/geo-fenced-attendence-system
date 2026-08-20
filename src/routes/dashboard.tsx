@@ -15,6 +15,7 @@ import { AttendanceTable } from "@/components/common/AttendanceTable";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
 import { currentStaff, recentAttendance } from "@/mocks/data";
+import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({
@@ -33,11 +34,14 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 function DashboardPage() {
+  const now = useIndiaTime();
+  const hour = now ? Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", hour12: false }).format(now)) : 9;
+  const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
   return (
     <AppShell nav={staffNav} role="staff">
       <PageHeader
-        title={`Good Morning, ${currentStaff.name.split(" ").slice(0, 2).join(" ")}`}
-        description="Here's your attendance overview for today."
+        title={`${greeting}, ${currentStaff.name.split(" ").slice(0, 2).join(" ")}`}
+        description={now ? `${formatIndiaDate(now)} · ${formatIndiaTime(now)} IST` : "Your attendance overview for today."}
         actions={
           <Button asChild>
             <Link to="/mark-attendance">

@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import {
   Bar,
   BarChart,
@@ -33,9 +34,13 @@ export const Route = createFileRoute("/admin/")({
 });
 
 function AdminDashboard() {
+  const now = useIndiaTime();
   return (
     <AppShell nav={adminNav} role="admin">
-      <PageHeader title="Administration Dashboard" description="Wednesday, 19 August 2026 · Live" />
+      <PageHeader
+        title="Administration Dashboard"
+        description={now ? `${formatIndiaDate(now)} · ${formatIndiaTime(now)} IST · Live` : "Live"}
+      />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Total Staff" value={184} hint="Across 6 departments" icon={Users} tone="primary" />
