@@ -68,6 +68,8 @@ function MarkAttendancePage() {
   const [scenario, setScenario] = useState<VerificationScenario>("ready");
   const [status, setStatus] = useState<"idle" | "verifying" | "success">("idle");
   const [receipt, setReceipt] = useState<AttendanceReceipt | null>(null);
+  const [face, setFace] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
 
   const snapshot = getSnapshot(scenario);
 
