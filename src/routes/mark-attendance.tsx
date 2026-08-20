@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
+import { FaceScanDialog } from "@/components/common/FaceScanDialog";
 import { MapPanel } from "@/components/common/MapPanel";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
@@ -68,6 +69,8 @@ function MarkAttendancePage() {
   const [scenario, setScenario] = useState<VerificationScenario>("ready");
   const [status, setStatus] = useState<"idle" | "verifying" | "success">("idle");
   const [receipt, setReceipt] = useState<AttendanceReceipt | null>(null);
+  const [face, setFace] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
 
   const snapshot = getSnapshot(scenario);
 
@@ -81,6 +84,14 @@ function MarkAttendancePage() {
 
   return (
     <AppShell nav={staffNav} role="staff">
+      <FaceScanDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onVerified={(snap) => {
+          setFace(snap);
+          toast.success("Face verified", { description: "Live capture matched your staff record." });
+        }}
+      />
       <PageHeader
         title="Mark Attendance"
         description="Presence is confirmed with four independent checks before your entry is recorded."
@@ -167,19 +178,50 @@ function MarkAttendancePage() {
                   ))}
                 </dl>
 
+                <div className="rounded-lg border border-border p-3">
+                  <div className="flex items-center gap-3">
+                    {face ? (
+                      <img
+                        src={face}
+                        alt="Live face capture used for verification"
+                        className="size-12 rounded-lg object-cover"
+                      />
+                    ) : (
+                      <span className="grid size-12 place-items-center rounded-lg bg-muted text-muted-foreground">
+                        <ScanFace className="size-5" aria-hidden />
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium">
+                        {face ? "Face matched" : "Live face scan required"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {face ? "Captured just now on this device" : "Camera only — no uploads"}
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => setScanOpen(true)}>
+                      {face ? "Rescan" : "Scan"}
+                    </Button>
+                  </div>
+                </div>
+
                 <Button
                   size="lg"
                   className="w-full"
                   disabled={!snapshot.canMark || status === "verifying"}
-                  onClick={run}
+                  onClick={() => (face ? void run() : setScanOpen(true))}
                 >
                   {status === "verifying" ? (
                     <>
                       <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
                     </>
-                  ) : (
+                  ) : face ? (
                     <>
                       <Fingerprint className="mr-2 size-5" /> Verify &amp; Mark Attendance
+                    </>
+                  ) : (
+                    <>
+                      <ScanFace className="mr-2 size-5" /> Scan face to continue
                     </>
                   )}
                 </Button>
