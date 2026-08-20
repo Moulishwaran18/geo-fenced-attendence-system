@@ -1,3 +1,4 @@
+import { formatIndiaDate, formatIndiaTime, indiaDateKey } from "@/lib/india-time";
 /**
  * Mock attendance/verification service.
  * Swap these implementations for real GPS / Wi-Fi / BLE / face APIs later.
@@ -191,15 +192,14 @@ export interface AttendanceReceipt {
 
 export function markAttendance(): Promise<AttendanceReceipt> {
   return new Promise((resolve) =>
-    setTimeout(
-      () =>
-        resolve({
-          attendanceId: "ATT-20260819-001",
-          time: "09:03 AM",
-          date: "19 August 2026",
-        }),
-      2200,
-    ),
+    setTimeout(() => {
+      const now = new Date();
+      resolve({
+        attendanceId: `ATT-${indiaDateKey(now)}-${String(Math.floor(Math.random() * 900) + 100)}`,
+        time: formatIndiaTime(now),
+        date: formatIndiaDate(now, false),
+      });
+    }, 2200),
   );
 }
 
