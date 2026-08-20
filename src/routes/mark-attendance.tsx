@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
+import { FaceScanDialog } from "@/components/common/FaceScanDialog";
 import { MapPanel } from "@/components/common/MapPanel";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
@@ -83,6 +84,14 @@ function MarkAttendancePage() {
 
   return (
     <AppShell nav={staffNav} role="staff">
+      <FaceScanDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onVerified={(snap) => {
+          setFace(snap);
+          toast.success("Face verified", { description: "Live capture matched your staff record." });
+        }}
+      />
       <PageHeader
         title="Mark Attendance"
         description="Presence is confirmed with four independent checks before your entry is recorded."
