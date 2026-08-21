@@ -36,6 +36,7 @@ export const Route = createFileRoute("/dashboard")({
 
 function DashboardPage() {
   const now = useIndiaTime();
+  const { profile } = useProfile();
   const hour = now ? Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", hour12: false }).format(now)) : 9;
   const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
   return (
