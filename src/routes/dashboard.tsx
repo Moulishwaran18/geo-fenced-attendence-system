@@ -14,7 +14,8 @@ import { StatCard } from "@/components/common/StatCard";
 import { AttendanceTable } from "@/components/common/AttendanceTable";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
-import { currentStaff, recentAttendance } from "@/mocks/data";
+import { recentAttendance } from "@/mocks/data";
+import { useProfile } from "@/lib/profile-store";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 
 export const Route = createFileRoute("/dashboard")({
@@ -40,7 +41,7 @@ function DashboardPage() {
   return (
     <AppShell nav={staffNav} role="staff">
       <PageHeader
-        title={`${greeting}, ${currentStaff.name.split(" ").slice(0, 2).join(" ")}`}
+        title={`${greeting}, ${profile.name.split(" ").slice(0, 2).join(" ")}`}
         description={now ? `${formatIndiaDate(now)} · ${formatIndiaTime(now)} IST` : "Your attendance overview for today."}
         actions={
           <Button asChild>

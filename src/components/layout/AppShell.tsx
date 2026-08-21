@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { currentStaff } from "@/mocks/data";
+import { useProfile } from "@/lib/profile-store";
 
 interface AppShellProps {
   nav: NavItem[];
@@ -24,6 +25,7 @@ interface AppShellProps {
 
 export function AppShell({ nav, children, role, showSearch = role === "admin" }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { profile } = useProfile();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   const isActive = (to: string) => (to === "/admin" ? pathname === "/admin" : pathname.startsWith(to));
@@ -31,7 +33,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
   const user =
     role === "admin"
       ? { name: "S. Gopinath", meta: "Administrator · ADM-1002" }
-      : { name: currentStaff.name, meta: `${currentStaff.designation} · ${currentStaff.staffId}` };
+      : { name: profile.name, meta: `${currentStaff.designation} · ${currentStaff.staffId}` };
 
   return (
     <div className="min-h-screen bg-background">
