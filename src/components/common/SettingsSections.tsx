@@ -1,4 +1,7 @@
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Section } from "@/components/layout/AppShell";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -10,7 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { currentStaff } from "@/mocks/data";
+import { useProfile, validateProfile } from "@/lib/profile-store";
+import { useDevice } from "@/lib/use-device";
 
 function ToggleRow({
   id,
@@ -37,17 +41,46 @@ function ToggleRow({
 }
 
 export function SettingsSections() {
+  const { profile, saveProfile } = useProfile();
+  const device = useDevice();
+  const [draft, setDraft] = useState(profile);
+
+  useEffect(() => setDraft(profile), [profile]);
+
+  const dirty = draft.name !== profile.name || draft.email !== profile.email;
+
+  const handleSave = () => {
+    const error = validateProfile(draft);
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    saveProfile(draft);
+    toast.success("Account details saved");
+  };
+
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <Section title="Account" description="Basic information used across the institution">
         <div className="space-y-4 p-5">
           <div className="space-y-1.5">
             <Label htmlFor="acc-name">Display name</Label>
-            <Input id="acc-name" defaultValue={currentStaff.name} />
+            <Input
+              id="acc-name"
+              value={draft.name}
+              maxLength={80}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="acc-email">Email</Label>
-            <Input id="acc-email" type="email" defaultValue={currentStaff.email} />
+            <Input
+              id="acc-email"
+              type="email"
+              value={draft.email}
+              maxLength={254}
+              onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="acc-lang">Language</Label>
@@ -61,7 +94,31 @@ export function SettingsSections() {
               </SelectContent>
             </Select>
           </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" disabled={!dirty} onClick={() => setDraft(profile)}>
+              Reset
+            </Button>
+            <Button disabled={!dirty} onClick={handleSave}>
+              Save account details
+            </Button>
+          </div>
         </div>
+      </Section>
+
+      <Section title="This device" description="Detected automatically from your current browser">
+        <dl className="divide-y divide-border text-sm">
+          {[
+            ["Device", device.model],
+            ["Operating system", device.platform],
+            ["Browser", device.browser],
+            ["Device ID", device.deviceId],
+          ].map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between gap-3 px-5 py-3.5">
+              <dt className="text-muted-foreground">{k}</dt>
+              <dd className="text-right font-medium break-all">{v}</dd>
+            </div>
+          ))}
+        </dl>
       </Section>
 
       <Section title="Security" description="Protect your attendance account">

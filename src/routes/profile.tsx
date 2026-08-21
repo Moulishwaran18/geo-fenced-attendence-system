@@ -1,10 +1,24 @@
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Pencil, ScanFace, Smartphone, MapPin, User } from "lucide-react";
+import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { currentStaff } from "@/mocks/data";
+import { useProfile, validateProfile } from "@/lib/profile-store";
+import { useDevice } from "@/lib/use-device";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({
@@ -23,14 +37,34 @@ export const Route = createFileRoute("/profile")({
 });
 
 function ProfilePage() {
+  const { profile, saveProfile } = useProfile();
+  const device = useDevice();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(profile);
+
+  useEffect(() => {
+    if (open) setDraft(profile);
+  }, [open, profile]);
+
   const fields = [
-    ["Staff Name", currentStaff.name],
+    ["Staff Name", profile.name],
     ["Staff ID", currentStaff.staffId],
     ["Department", currentStaff.department],
     ["Designation", currentStaff.designation],
-    ["Email", currentStaff.email],
+    ["Email", profile.email],
     ["Phone", currentStaff.phone],
   ];
+
+  const handleSave = () => {
+    const error = validateProfile(draft);
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    saveProfile(draft);
+    setOpen(false);
+    toast.success("Profile updated");
+  };
 
   return (
     <AppShell nav={staffNav} role="staff">
@@ -38,7 +72,7 @@ function ProfilePage() {
         title="Profile"
         description="Your institutional record as registered with the administration office."
         actions={
-          <Button>
+          <Button onClick={() => setOpen(true)}>
             <Pencil className="mr-2 size-4" /> Edit Profile
           </Button>
         }
@@ -51,7 +85,7 @@ function ProfilePage() {
               <User className="size-9" aria-hidden />
             </span>
             <div>
-              <h2 className="text-xl font-semibold tracking-tight">{currentStaff.name}</h2>
+              <h2 className="text-xl font-semibold tracking-tight">{profile.name}</h2>
               <p className="text-sm text-muted-foreground">
                 {currentStaff.designation} · {currentStaff.department}
               </p>
@@ -72,24 +106,28 @@ function ProfilePage() {
         </Section>
 
         <div className="space-y-6">
-          <Section title="Device information">
+          <Section title="Device information" description="Detected from the browser you are signed in with">
             <div className="space-y-4 p-5 text-sm">
               <div className="flex items-start gap-3">
                 <span className="grid size-9 place-items-center rounded-lg bg-primary-soft text-accent-foreground">
                   <Smartphone className="size-4.5" aria-hidden />
                 </span>
                 <div>
-                  <p className="font-medium">{currentStaff.device}</p>
-                  <p className="text-xs text-muted-foreground">{currentStaff.deviceId}</p>
+                  <p className="font-medium">{device.model}</p>
+                  <p className="text-xs text-muted-foreground">{device.deviceId}</p>
                 </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Operating system</span>
+                <span className="text-right font-medium">{device.platform}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Browser</span>
+                <span className="text-right font-medium">{device.browser}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Device status</span>
                 <StatusBadge status="Active" />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Registered on</span>
-                <span className="font-medium">04 Jul 2026</span>
               </div>
             </div>
           </Section>
@@ -112,6 +150,42 @@ function ProfilePage() {
           </Section>
         </div>
       </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit profile</DialogTitle>
+            <DialogDescription>Update the name and email shown across CampusAttend.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-name">Staff name</Label>
+              <Input
+                id="edit-name"
+                value={draft.name}
+                maxLength={80}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-email">Email</Label>
+              <Input
+                id="edit-email"
+                type="email"
+                value={draft.email}
+                maxLength={254}
+                onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSave}>Save changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppShell>
   );
 }
