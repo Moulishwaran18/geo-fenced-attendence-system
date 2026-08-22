@@ -40,7 +40,7 @@ const ok = (
 
 export function getSnapshot(scenario: VerificationScenario): VerificationSnapshot {
   const loc = ok("location", "Inside Campus", "Accuracy: 11 m");
-  const wifi = ok("wifi", "College Network", "SONA-STAFF-5G · Connected");
+  const wifi = ok("wifi", "College Network", "SONA-WIFI · Connected");
   const ble = ok("bluetooth", "Campus Beacon", "BLE-GATE-02 · Detected");
   const identity: VerificationSignal = {
     key: "identity",
@@ -86,7 +86,7 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
             detail: "Accuracy: 148 m",
             state: "warning",
           },
-          ok("wifi", "College Network", "SONA-STAFF-5G · Connected"),
+          ok("wifi", "College Network", "SONA-WIFI · Connected"),
           ok("bluetooth", "Campus Beacon", "BLE-GATE-02 · Detected"),
           { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
         ],
@@ -101,7 +101,7 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         accuracy: "—",
         signals: [
           { key: "location", value: "GPS Unavailable", detail: "Permission denied", state: "error" },
-          ok("wifi", "College Network", "SONA-STAFF-5G · Connected"),
+          ok("wifi", "College Network", "SONA-WIFI · Connected"),
           ok("bluetooth", "Campus Beacon", "BLE-GATE-02 · Detected"),
           { key: "identity", value: "Identity Verification", detail: "Blocked", state: "error" },
         ],
@@ -111,7 +111,7 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         scenario,
         canMark: false,
         headline: "College network not detected",
-        message: "Connect to SONA-STAFF-5G to continue verification.",
+        message: "Connect to SONA-WIFI to continue verification.",
         tone: "warning",
         accuracy: "11 m",
         signals: [

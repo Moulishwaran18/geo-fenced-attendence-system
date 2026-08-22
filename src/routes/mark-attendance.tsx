@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Bluetooth,
   CheckCircle2,
+  Eye,
   Fingerprint,
   Loader2,
   MapPin,
@@ -17,6 +18,7 @@ import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
 import { FaceScanDialog } from "@/components/common/FaceScanDialog";
+import type { FaceScanResult } from "@/components/common/FaceScanDialog";
 import { MapPanel } from "@/components/common/MapPanel";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
@@ -35,6 +37,7 @@ import {
   type VerificationScenario,
 } from "@/mocks/attendance-service";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
+import { FACE_CONFIG } from "@/lib/face-recognition";
 
 export const Route = createFileRoute("/mark-attendance")({
   head: () => ({
@@ -71,7 +74,9 @@ function MarkAttendancePage() {
   const [status, setStatus] = useState<"idle" | "verifying" | "success">("idle");
   const [receipt, setReceipt] = useState<AttendanceReceipt | null>(null);
   const [face, setFace] = useState<string | null>(null);
+  const [faceResult, setFaceResult] = useState<FaceScanResult | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const now = useIndiaTime();
 
   const snapshot = getSnapshot(scenario);
@@ -89,9 +94,12 @@ function MarkAttendancePage() {
       <FaceScanDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
-        onVerified={(snap) => {
-          setFace(snap);
-          toast.success("Face verified", { description: "Live capture matched your staff record." });
+        onVerified={(result) => {
+          setFace(result.snapshot);
+          setFaceResult(result);
+          toast.success("Face verified", {
+            description: `Identity confirmed: ${result.staffName}`,
+          });
         }}
       />
       <PageHeader
@@ -125,7 +133,7 @@ function MarkAttendancePage() {
       />
 
       {status === "success" && receipt ? (
-        <SuccessPanel receipt={receipt} onReset={() => setStatus("idle")} />
+        <SuccessPanel receipt={receipt} staffName={faceResult?.staffName} onReset={() => setStatus("idle")} />
       ) : (
         <div className="space-y-6">
           <AlertBanner
@@ -140,9 +148,9 @@ function MarkAttendancePage() {
               <VerificationCard
                 key={s.key}
                 title={titles[s.key]}
-                value={s.value}
-                detail={s.detail}
-                state={s.state}
+                value={s.key === "identity" && faceResult ? `Verified · ${faceResult.staffName}` : s.value}
+                detail={s.key === "identity" && faceResult ? `Match distance: ${faceResult.distance.toFixed(3)}` : s.detail}
+                state={s.key === "identity" && faceResult ? "verified" : s.state}
                 icon={icons[s.key]}
               />
             ))}
@@ -167,7 +175,7 @@ function MarkAttendancePage() {
               <div className="space-y-4 p-5">
                 <dl className="space-y-3 text-sm">
                   {[
-                    ["Staff ID", "SCT-2417"],
+                    ["Staff ID", faceResult ? faceResult.staffId : "SCT-2417"],
                     ["Device", "Redmi Note 13 Pro"],
                     ["GPS accuracy", snapshot.accuracy],
                     ["Current time (IST)", now ? formatIndiaTime(now) : "—"],
@@ -182,6 +190,7 @@ function MarkAttendancePage() {
                   ))}
                 </dl>
 
+                {/* Face verification panel */}
                 <div className="rounded-lg border border-border p-3">
                   <div className="flex items-center gap-3">
                     {face ? (
@@ -197,10 +206,18 @@ function MarkAttendancePage() {
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium">
-                        {face ? "Face matched" : "Live face scan required"}
+                        {faceResult
+                          ? `✓ ${faceResult.staffName}`
+                          : face
+                            ? "Face matched"
+                            : "Live face scan required"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {face ? "Captured just now on this device" : "Camera only — no uploads"}
+                        {faceResult
+                          ? `Verified · Distance: ${faceResult.distance.toFixed(3)}`
+                          : face
+                            ? "Captured just now on this device"
+                            : "Camera only — no uploads"}
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => setScanOpen(true)}>
@@ -208,6 +225,28 @@ function MarkAttendancePage() {
                     </Button>
                   </div>
                 </div>
+
+                {/* Face verification debug info */}
+                {faceResult && (
+                  <div>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowDebug((d) => !d)}
+                    >
+                      <Eye className="size-3" /> {showDebug ? "Hide" : "Show"} verification details
+                    </button>
+                    {showDebug && (
+                      <div className="mt-1.5 space-y-1 rounded-lg bg-muted p-2 font-mono text-[10px]">
+                        <p>Staff: {faceResult.staffId} · {faceResult.staffName}</p>
+                        <p>Distance: {faceResult.distance.toFixed(4)} (threshold: {FACE_CONFIG.MATCH_THRESHOLD})</p>
+                        <p>Audit ID: {faceResult.verification.auditId}</p>
+                        <p>Token: {faceResult.verification.attendanceToken || "—"}</p>
+                        <p>Server accepted: {faceResult.verification.accepted ? "Yes" : "No"}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <Button
                   size="lg"
@@ -243,7 +282,15 @@ function MarkAttendancePage() {
   );
 }
 
-function SuccessPanel({ receipt, onReset }: { receipt: AttendanceReceipt; onReset: () => void }) {
+function SuccessPanel({
+  receipt,
+  staffName,
+  onReset,
+}: {
+  receipt: AttendanceReceipt;
+  staffName?: string | undefined;
+  onReset: () => void;
+}) {
   return (
     <Section>
       <div className="flex flex-col items-center px-6 py-12 text-center">
@@ -251,13 +298,16 @@ function SuccessPanel({ receipt, onReset }: { receipt: AttendanceReceipt; onRese
           <CheckCircle2 className="size-11" aria-hidden />
         </span>
         <h2 className="mt-5 text-2xl font-semibold tracking-tight">Attendance Recorded</h2>
+        {staffName && (
+          <p className="mt-1 text-lg font-medium text-foreground">Welcome, {staffName}</p>
+        )}
         <p className="mt-1 text-3xl font-semibold tabular-nums text-success">{receipt.time}</p>
         <p className="text-sm text-muted-foreground">{receipt.date}</p>
 
         <ul className="mt-7 w-full max-w-md space-y-2 text-left">
           {[
             { icon: MapPin, label: "Location verified" },
-            { icon: ScanFace, label: "Identity verified" },
+            { icon: ScanFace, label: staffName ? `Identity verified — ${staffName}` : "Identity verified" },
             { icon: Smartphone, label: "Device verified" },
             { icon: CheckCircle2, label: "Attendance successfully recorded" },
           ].map((i) => (

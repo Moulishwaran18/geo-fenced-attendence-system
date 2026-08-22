@@ -18,6 +18,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
 import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
+import { Route as AdminFaceEnrollmentRouteImport } from './routes/admin.face-enrollment'
 import { Route as AdminStaffRouteImport } from './routes/admin.staff'
 
 const IndexRoute = IndexRouteImport.update({
@@ -65,6 +66,11 @@ const AdminCampusMapRoute = AdminCampusMapRouteImport.update({
   path: '/admin/campus-map',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminFaceEnrollmentRoute = AdminFaceEnrollmentRouteImport.update({
+  id: '/admin/face-enrollment',
+  path: '/admin/face-enrollment',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminStaffRoute = AdminStaffRouteImport.update({
   id: '/admin/staff',
   path: '/admin/staff',
@@ -80,6 +86,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/staff': typeof AdminStaffRoute
   '/admin/': typeof AdminIndexRoute
 }
@@ -92,6 +99,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/staff': typeof AdminStaffRoute
   '/admin': typeof AdminIndexRoute
 }
@@ -105,6 +113,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/staff': typeof AdminStaffRoute
   '/admin/': typeof AdminIndexRoute
 }
@@ -119,6 +128,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/admin/attendance'
     | '/admin/campus-map'
+    | '/admin/face-enrollment'
     | '/admin/staff'
     | '/admin/'
   fileRoutesByTo: FileRoutesByTo
@@ -131,6 +141,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/admin/attendance'
     | '/admin/campus-map'
+    | '/admin/face-enrollment'
     | '/admin/staff'
     | '/admin'
   id:
@@ -143,6 +154,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/admin/attendance'
     | '/admin/campus-map'
+    | '/admin/face-enrollment'
     | '/admin/staff'
     | '/admin/'
   fileRoutesById: FileRoutesById
@@ -156,6 +168,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   AdminAttendanceRoute: typeof AdminAttendanceRoute
   AdminCampusMapRoute: typeof AdminCampusMapRoute
+  AdminFaceEnrollmentRoute: typeof AdminFaceEnrollmentRoute
   AdminStaffRoute: typeof AdminStaffRoute
   AdminIndexRoute: typeof AdminIndexRoute
 }
@@ -225,6 +238,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCampusMapRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/face-enrollment': {
+      id: '/admin/face-enrollment'
+      path: '/admin/face-enrollment'
+      fullPath: '/admin/face-enrollment'
+      preLoaderRoute: typeof AdminFaceEnrollmentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/staff': {
       id: '/admin/staff'
       path: '/admin/staff'
@@ -244,6 +264,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   AdminAttendanceRoute: AdminAttendanceRoute,
   AdminCampusMapRoute: AdminCampusMapRoute,
+  AdminFaceEnrollmentRoute: AdminFaceEnrollmentRoute,
   AdminStaffRoute: AdminStaffRoute,
   AdminIndexRoute: AdminIndexRoute,
 }

@@ -51,9 +51,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
           </Button>
 
           <Link to={(role === "admin" ? "/admin" : "/dashboard") as "/"} className="flex items-center gap-2.5">
-            <span className="grid size-9 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <GraduationCap className="size-5" aria-hidden />
-            </span>
+            <img src="/logo.png" alt="CampusAttend Logo" className="h-9 w-auto" />
             <span className="leading-tight">
               <span className="block text-base font-semibold tracking-tight">CampusAttend</span>
               <span className="hidden text-[11px] text-muted-foreground sm:block">
