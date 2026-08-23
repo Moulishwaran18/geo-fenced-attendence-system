@@ -9,18 +9,22 @@
 export const FACE_CONFIG = {
   /** Path to face-api.js pre-trained model weights (relative to public root). */
   MODELS_URL: "/models",
+  ARCFACE_MODEL_URL: "/models/w600k_mbf.onnx",
+
+  /** Feature Embedding Vector Dimension (InsightFace MobileFaceNet ArcFace). */
+  EMBEDDING_DIMENSION: 512,
 
   /**
-   * Euclidean distance threshold for face matching against enrolled reference samples.
-   * - < 0.40 → strict
-   * - 0.45   → balanced closed-set threshold
-   * - > 0.60 → permissive
+   * ArcFace Cosine Distance threshold for biometric matching:
+   * - <= 0.45: SAME PERSON (Cosine Similarity >= 0.55)
+   * - > 0.45: DIFFERENT / UNKNOWN PERSON
    */
   FACE_MATCH_THRESHOLD: 0.45,
   MATCH_THRESHOLD: 0.45,
+  COSINE_DISTANCE_THRESHOLD: 0.45,
 
   /** Minimum margin between best match and second-best identity to prevent misidentification. */
-  MIN_MATCH_MARGIN: 0.05,
+  MIN_MATCH_MARGIN: 0.08,
 
   /** Minimum detection confidence for a face to be considered valid. */
   MIN_FACE_CONFIDENCE: 0.20,

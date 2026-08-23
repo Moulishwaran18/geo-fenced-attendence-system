@@ -136,15 +136,23 @@ export async function validateSingleFacePresence(
   return { valid: true, face: faces[0]! };
 }
 
+import { generateArcFaceEmbedding } from "./arcface-engine";
+
 /**
- * Generate a 128-float face embedding from a reference image (used for enrollment).
+ * Generate a 512-float ArcFace biometric embedding from a reference image (used for enrollment).
  */
 export async function generateEmbedding(
   img: HTMLImageElement,
 ): Promise<{ descriptor: Float32Array; landmarks: faceapi.FaceLandmarks68 } | null> {
   const face = await detectSingleFace(img);
   if (!face) return null;
-  return { descriptor: face.descriptor, landmarks: face.landmarks };
+  const arcVec = await generateArcFaceEmbedding(
+    img,
+    img.naturalWidth || img.width,
+    img.naturalHeight || img.height,
+    face.landmarks,
+  );
+  return { descriptor: new Float32Array(arcVec), landmarks: face.landmarks };
 }
 
 /* ------------------------------------------------------------------ */

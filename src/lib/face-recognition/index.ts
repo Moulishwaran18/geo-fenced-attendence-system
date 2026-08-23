@@ -104,17 +104,32 @@ export type {
   VerificationResult,
 } from "./verification-session";
 
-// Module 10: Staff Store
+// Module 10: Staff Store & Scalable Face Verification
 export {
+  fetchAllStaff,
+  createNewStaff,
+  toggleStaffStatus,
+  enrollStaffFace,
+  deleteStaffEmbedding,
+  verifyLiveFace,
   getEnrolledStaff,
   getAllProfiles,
-  getProfileById,
   isEnrolled,
   enrolledCount,
-  enrollStaff,
-  addReferenceEmbedding,
-  removeStaff,
   clearAllProfiles,
-  getEmbeddingsForMatching,
 } from "./staff-store";
-export type { StaffProfile, ReferenceSample, MultiEmbeddingProfile } from "./staff-store";
+export type { StaffProfile, ReferenceSample, VerifyFaceResponse } from "./staff-store";
+
+// Module 11: ArcFace 512-D Neural Recognition Engine
+export {
+  ARCFACE_CONFIG,
+  initArcFaceSession,
+  isArcFaceLoaded,
+  alignFaceToTensor,
+  generateArcFaceEmbedding,
+  calculateCosineSimilarity,
+  calculateCosineDistance,
+  estimateSimilarityTransform,
+  extract5Landmarks,
+} from "./arcface-engine";
+

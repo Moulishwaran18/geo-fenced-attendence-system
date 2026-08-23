@@ -2,17 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CameraOff,
   Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Cpu,
   Eye,
+  Info,
   Loader2,
   RefreshCw,
   RotateCcw,
   ScanFace,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   UserCheck,
   XCircle,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -21,19 +26,22 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   loadModels,
   areModelsLoaded,
+  initArcFaceSession,
+  isArcFaceLoaded,
+  generateArcFaceEmbedding,
   detectFaces,
   drawFaceBox,
-  findBestMatch,
-  getEmbeddingsForMatching,
   getAverageEAR,
   TemporalBlinkDetector,
+  verifyLiveFace,
   FACE_CONFIG,
   type DetectedFace,
-  type MatchResult,
   type VerificationResult,
 } from "@/lib/face-recognition";
 
@@ -58,6 +66,25 @@ export interface FaceScanResult {
   verification: VerificationResult;
 }
 
+interface DiagnosticState {
+  faceDetected: boolean;
+  faceConfidence: number;
+  faceBox: { width: number; height: number } | null;
+  landmarksCount: number;
+  ear: number;
+  baselineEAR: number;
+  blinkComplete: boolean;
+  livenessPassed: boolean;
+  embeddingDim: number;
+  bestMatch: { staffCode: string; name: string; distance: number } | null;
+  secondBestMatch: { staffCode: string; name: string; distance: number } | null;
+  distance: number | null;
+  threshold: number;
+  margin: number;
+  matchMargin: number | null;
+  finalResult: "IDLE" | "AUTHORIZED" | "REJECTED_UNKNOWN" | "REJECTED_THRESHOLD" | "REJECTED_MARGIN" | "REJECTED_LIVENESS";
+}
+
 export function FaceScanDialog({
   open,
   onOpenChange,
@@ -79,26 +106,29 @@ export function FaceScanDialog({
   const [phase, setPhase] = useState<VerificationPhase>("loading-models");
   const [errorMessage, setErrorMessage] = useState("");
   const [modelProgress, setModelProgress] = useState(0);
-  const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
+  const [matchName, setMatchName] = useState<string>("");
   const [faceDetected, setFaceDetected] = useState(false);
 
-  // Throttled Debug Telemetry
-  const [debugInfo, setDebugInfo] = useState<{
-    faceCount: number;
-    ear: number;
-    baselineEAR: number;
-    bestName: string | null;
-    distance: number | null;
-    status: string;
-  }>({
-    faceCount: 0,
+  // Developer Diagnostic Telemetry State
+  const [diag, setDiag] = useState<DiagnosticState>({
+    faceDetected: false,
+    faceConfidence: 0,
+    faceBox: null,
+    landmarksCount: 0,
     ear: 0.28,
     baselineEAR: 0.28,
-    bestName: null,
+    blinkComplete: false,
+    livenessPassed: false,
+    embeddingDim: 512,
+    bestMatch: null,
+    secondBestMatch: null,
     distance: null,
-    status: "READY",
+    threshold: FACE_CONFIG.MATCH_THRESHOLD,
+    margin: FACE_CONFIG.MIN_MATCH_MARGIN,
+    matchMargin: null,
+    finalResult: "IDLE",
   });
-  const [showDebug, setShowDebug] = useState(false);
+  const [showDiag, setShowDiag] = useState(false);
 
   /* ---------------------------------------------------------------- */
   /*  Camera Lifecycle                                                 */
@@ -118,210 +148,150 @@ export function FaceScanDialog({
   }, []);
 
   /* ---------------------------------------------------------------- */
-  /*  Biometric Recognition Execution                                  */
+  /*  Biometric Recognition Execution via Backend Vector Search       */
   /* ---------------------------------------------------------------- */
 
   const executeRecognition = useCallback(
-    async (verifiedFace: DetectedFace) => {
+    async (verifiedFace: DetectedFace, livenessPassed: boolean) => {
       if (isVerifyingRef.current) return;
       isVerifyingRef.current = true;
       setPhase("blink-detected");
 
-      const video = videoRef.current;
-      let staffProfiles = getEmbeddingsForMatching();
-
-      if (staffProfiles.length === 0) {
-        try {
-          const { generateEmbedding, enrollStaff, addReferenceEmbedding } = await import(
-            "@/lib/face-recognition"
-          );
-
-          // Seed PERSON_001
-          const p1Photos = [
-            "/staff-photos/person-001/reference_01.jpg",
-            "/staff-photos/person-001/reference_02.jpg",
-            "/staff-photos/person-001/reference_03.jpg",
-            "/staff-photos/person-001/reference_04.jpg",
-            "/staff-photos/person-001/reference_05.jpg",
-          ];
-          for (let i = 0; i < p1Photos.length; i++) {
-            const photo = p1Photos[i]!;
-            const img = new Image();
-            img.crossOrigin = "anonymous";
-            await new Promise<void>((res, rej) => {
-              img.onload = () => res();
-              img.onerror = () => rej();
-              img.src = photo;
-            });
-            const res = await generateEmbedding(img);
-            if (res) {
-              if (i === 0) enrollStaff("PERSON_001", "Moulishwaran S", res.descriptor, photo);
-              else addReferenceEmbedding("PERSON_001", res.descriptor, photo);
-            }
-          }
-
-          // Seed PERSON_002
-          const p2Photos = [
-            "/staff-photos/person-002/reference_01.jpg",
-            "/staff-photos/person-002/reference_02.jpg",
-            "/staff-photos/person-002/reference_03.jpg",
-            "/staff-photos/person-002/reference_04.jpg",
-            "/staff-photos/person-002/reference_05.jpg",
-          ];
-          for (let i = 0; i < p2Photos.length; i++) {
-            const photo = p2Photos[i]!;
-            const img = new Image();
-            img.crossOrigin = "anonymous";
-            await new Promise<void>((res, rej) => {
-              img.onload = () => res();
-              img.onerror = () => rej();
-              img.src = photo;
-            });
-            const res = await generateEmbedding(img);
-            if (res) {
-              if (i === 0) enrollStaff("PERSON_002", "Harish K", res.descriptor, photo);
-              else addReferenceEmbedding("PERSON_002", res.descriptor, photo);
-            }
-          }
-
-          // Seed PERSON_003
-          const p3Photos = [
-            "/staff-photos/person-003/reference_01.jpg",
-            "/staff-photos/person-003/reference_02.jpg",
-            "/staff-photos/person-003/reference_03.jpg",
-            "/staff-photos/person-003/reference_04.jpg",
-            "/staff-photos/person-003/reference_05.jpg",
-          ];
-          for (let i = 0; i < p3Photos.length; i++) {
-            const photo = p3Photos[i]!;
-            const img = new Image();
-            img.crossOrigin = "anonymous";
-            await new Promise<void>((res, rej) => {
-              img.onload = () => res();
-              img.onerror = () => rej();
-              img.src = photo;
-            });
-            const res = await generateEmbedding(img);
-            if (res) {
-              if (i === 0) enrollStaff("PERSON_003", "Vignesh R", res.descriptor, photo);
-              else addReferenceEmbedding("PERSON_003", res.descriptor, photo);
-            }
-          }
-
-          staffProfiles = getEmbeddingsForMatching();
-        } catch (err) {
-          console.error("Seed error:", err);
-        }
-      }
-
-      if (staffProfiles.length === 0) {
+      // Hardening: Liveness check must be true
+      if (!livenessPassed) {
         setPhase("unrecognized");
-        setErrorMessage("No staff profiles enrolled. Please enroll in Admin Face Enrollment.");
-        isVerifyingRef.current = false;
-        return;
-      }
-
-      // Closed-set multi-sample match
-      const match = findBestMatch(verifiedFace.descriptor, staffProfiles);
-
-      if (!match || !match.matched) {
-        setPhase("unrecognized");
-        setErrorMessage("Face Not Recognized. Only authorized staff members can mark attendance.");
-        setDebugInfo((d) => ({
-          ...d,
-          distance: match ? match.distance : null,
-          bestName: match ? match.staffName : "Unknown",
-          status: "REJECTED",
+        setErrorMessage("Liveness verification failed. Face matching alone cannot grant access.");
+        setDiag((prev) => ({
+          ...prev,
+          finalResult: "REJECTED_LIVENESS",
         }));
         isVerifyingRef.current = false;
         return;
       }
 
-      setMatchResult(match);
-      setDebugInfo((d) => ({
-        ...d,
-        distance: match.distance,
-        bestName: match.staffName,
-        status: "VERIFIED",
-      }));
-      setPhase("matched");
+      const video = videoRef.current;
 
-      // Capture receipt snapshot
-      let snapshot = "";
-      if (video && video.videoWidth) {
-        const snapCanvas = document.createElement("canvas");
-        const size = Math.min(video.videoWidth, video.videoHeight);
-        snapCanvas.width = size;
-        snapCanvas.height = size;
-        const snapCtx = snapCanvas.getContext("2d");
-        if (snapCtx) {
-          snapCtx.translate(size, 0);
-          snapCtx.scale(-1, 1);
-          snapCtx.drawImage(
-            video,
-            (video.videoWidth - size) / 2,
-            (video.videoHeight - size) / 2,
-            size,
-            size,
-            0,
-            0,
-            size,
-            size,
-          );
-          snapshot = snapCanvas.toDataURL("image/jpeg", 0.85);
+      try {
+        if (!video || !video.videoWidth || !video.videoHeight) {
+          throw new Error("Live camera stream unavailable for biometric alignment.");
         }
+
+        // Generate 512-dimensional ArcFace embedding from 5-point aligned face crop
+        const arcFaceDescriptor = await generateArcFaceEmbedding(
+          video,
+          video.videoWidth,
+          video.videoHeight,
+          verifiedFace.landmarks,
+        );
+
+        // Query backend PostgreSQL vector search endpoint (POST /api/face/verify)
+        const verifyRes = await verifyLiveFace(arcFaceDescriptor, true);
+
+        // Update diagnostic panel metrics
+        setDiag((prev) => ({
+          ...prev,
+          faceDetected: true,
+          faceConfidence: verifiedFace.confidence,
+          faceBox: { width: Math.round(verifiedFace.box.width), height: Math.round(verifiedFace.box.height) },
+          landmarksCount: verifiedFace.landmarks.positions.length,
+          embeddingDim: arcFaceDescriptor.length,
+          bestMatch: verifyRes.bestCandidate ?? (verifyRes.staff ? { staffCode: verifyRes.staff.staffCode, name: verifyRes.staff.name, distance: verifyRes.distance ?? 0 } : null),
+          secondBestMatch: verifyRes.secondBestCandidate ?? null,
+          distance: verifyRes.distance ?? null,
+          threshold: verifyRes.threshold ?? FACE_CONFIG.MATCH_THRESHOLD,
+          margin: verifyRes.margin ?? FACE_CONFIG.MIN_MATCH_MARGIN,
+          matchMargin: verifyRes.matchMargin ?? null,
+          livenessPassed: true,
+          finalResult: verifyRes.matched ? "AUTHORIZED" : (verifyRes.distance && verifyRes.distance > (verifyRes.threshold ?? FACE_CONFIG.MATCH_THRESHOLD) ? "REJECTED_THRESHOLD" : "REJECTED_MARGIN"),
+        }));
+
+        if (!verifyRes.matched || !verifyRes.staff) {
+          setPhase("unrecognized");
+          setErrorMessage(
+            verifyRes.reason ||
+              "Face Not Recognized. Only authorized staff members can mark attendance.",
+          );
+          isVerifyingRef.current = false;
+          return;
+        }
+
+        setMatchName(verifyRes.staff.name);
+        setPhase("matched");
+
+        // Capture receipt snapshot
+        let snapshot = "";
+        if (video && video.videoWidth) {
+          const snapCanvas = document.createElement("canvas");
+          const size = Math.min(video.videoWidth, video.videoHeight);
+          snapCanvas.width = size;
+          snapCanvas.height = size;
+          const snapCtx = snapCanvas.getContext("2d");
+          if (snapCtx) {
+            snapCtx.translate(size, 0);
+            snapCtx.scale(-1, 1);
+            snapCtx.drawImage(
+              video,
+              (video.videoWidth - size) / 2,
+              (video.videoHeight - size) / 2,
+              size,
+              size,
+              0,
+              0,
+              size,
+              size,
+            );
+            snapshot = snapCanvas.toDataURL("image/jpeg", 0.85);
+          }
+        }
+
+        await new Promise((r) => setTimeout(r, 1000));
+
+        stopCamera();
+        onVerified({
+          staffId: verifyRes.staff.staffCode,
+          staffName: verifyRes.staff.name,
+          distance: verifyRes.distance ?? 0.35,
+          snapshot,
+          verification: {
+            accepted: true,
+            confirmedStaffId: verifyRes.staff.staffCode,
+            confirmedStaffName: verifyRes.staff.name,
+            auditId: verifyRes.auditId || crypto.randomUUID(),
+          },
+        });
+        onOpenChange(false);
+      } catch (err) {
+        setPhase("unrecognized");
+        setErrorMessage(`Verification connection error: ${String(err)}`);
+        setDiag((prev) => ({ ...prev, finalResult: "REJECTED_UNKNOWN" }));
+        isVerifyingRef.current = false;
       }
-
-      await new Promise((r) => setTimeout(r, 1200));
-
-      stopCamera();
-      onVerified({
-        staffId: match.staffId,
-        staffName: match.staffName,
-        distance: match.distance,
-        snapshot,
-        verification: {
-          accepted: true,
-          confirmedStaffId: match.staffId,
-          confirmedStaffName: match.staffName,
-          auditId: crypto.randomUUID(),
-        },
-      });
-      onOpenChange(false);
     },
     [onOpenChange, onVerified, stopCamera],
   );
 
   /* ---------------------------------------------------------------- */
-  /*  Live Tracking & Flicker-Free Frame Loop                         */
+  /*  Frame Analysis Loop (Liveness + Detection)                      */
   /* ---------------------------------------------------------------- */
 
   const startDetectionLoop = useCallback(() => {
     if (isLoopRunningRef.current) return;
     isLoopRunningRef.current = true;
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // Set canvas dimensions once without reset thrashing
-    if (video.videoWidth && canvas.width !== video.videoWidth) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
-
     const frameLoop = async () => {
-      if (
-        !isLoopRunningRef.current ||
-        !video ||
-        video.paused ||
-        video.ended ||
-        !streamRef.current ||
-        isVerifyingRef.current
-      ) {
+      if (!isLoopRunningRef.current) return;
+
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+
+      if (!video || video.readyState < 2 || !canvas) {
+        animFrameRef.current = requestAnimationFrame(() => void frameLoop());
+        return;
+      }
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        animFrameRef.current = requestAnimationFrame(() => void frameLoop());
         return;
       }
 
@@ -338,6 +308,11 @@ export function FaceScanDialog({
 
         if (faces.length === 0) {
           if (faceDetected) setFaceDetected(false);
+          setDiag((prev) => ({
+            ...prev,
+            faceDetected: false,
+            landmarksCount: 0,
+          }));
         } else if (faces.length > 1) {
           if (faceDetected) setFaceDetected(false);
           faces.forEach((f) => {
@@ -345,6 +320,12 @@ export function FaceScanDialog({
             ctx.lineWidth = 3;
             ctx.strokeRect(f.box.x, f.box.y, f.box.width, f.box.height);
           });
+          setDiag((prev) => ({
+            ...prev,
+            faceDetected: false,
+            landmarksCount: 0,
+            finalResult: "IDLE",
+          }));
         } else {
           // Exactly 1 face
           const face = faces[0]!;
@@ -359,20 +340,24 @@ export function FaceScanDialog({
 
           // Throttle telemetry update to avoid React 60 FPS re-render flicker
           const now = Date.now();
-          if (now - lastUiUpdateRef.current > 250) {
+          if (now - lastUiUpdateRef.current > 200) {
             lastUiUpdateRef.current = now;
-            setDebugInfo((d) => ({
-              ...d,
-              faceCount: 1,
+            setDiag((prev) => ({
+              ...prev,
+              faceDetected: true,
+              faceConfidence: face.confidence,
+              faceBox: { width: Math.round(face.box.width), height: Math.round(face.box.height) },
+              landmarksCount: face.landmarks.positions.length,
               ear,
               baselineEAR: blinkState.baselineEAR,
+              blinkComplete: blinkState.isComplete,
             }));
           }
 
           if (blinkState.isComplete && !isVerifyingRef.current) {
             // User performed 1 single natural blink!
             isLoopRunningRef.current = false;
-            void executeRecognition(face);
+            void executeRecognition(face, true);
             return;
           }
         }
@@ -395,10 +380,16 @@ export function FaceScanDialog({
   const startCamera = useCallback(async () => {
     setPhase("starting");
     setErrorMessage("");
-    setMatchResult(null);
+    setMatchName("");
     setFaceDetected(false);
     isVerifyingRef.current = false;
     blinkDetectorRef.current.reset(1);
+    setDiag((prev) => ({
+      ...prev,
+      blinkComplete: false,
+      livenessPassed: false,
+      finalResult: "IDLE",
+    }));
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -437,18 +428,21 @@ export function FaceScanDialog({
   useEffect(() => {
     if (!open) return;
 
-    if (areModelsLoaded()) {
+    if (areModelsLoaded() && isArcFaceLoaded()) {
       void startCamera();
       return;
     }
 
     setPhase("loading-models");
     let isCancelled = false;
-    const progressTimer = setInterval(() => {
-      if (!isCancelled) setModelProgress((p) => Math.min(p + 15, 90));
-    }, 120);
 
-    loadModels()
+    const progressTimer = setInterval(() => {
+      if (!isCancelled) {
+        setModelProgress((prev) => Math.min(prev + 12, 90));
+      }
+    }, 150);
+
+    Promise.all([loadModels(), initArcFaceSession()])
       .then(() => {
         if (!isCancelled) {
           setModelProgress(100);
@@ -457,8 +451,12 @@ export function FaceScanDialog({
       })
       .catch((err) => {
         if (!isCancelled) {
-          setErrorMessage(`Failed to load AI face recognition models: ${String(err)}`);
           setPhase("error");
+          setErrorMessage(
+            err instanceof Error
+              ? err.message
+              : "Failed to download face recognition neural network models.",
+          );
         }
       })
       .finally(() => clearInterval(progressTimer));
@@ -474,7 +472,7 @@ export function FaceScanDialog({
       stopCamera();
       setPhase("loading-models");
       setModelProgress(0);
-      setMatchResult(null);
+      setMatchName("");
       setFaceDetected(false);
     }
     return stopCamera;
@@ -486,26 +484,9 @@ export function FaceScanDialog({
     }
   }, [phase, startDetectionLoop]);
 
-  /* ---------------------------------------------------------------- */
-  /*  Manual Immediate Verification Trigger                           */
-  /* ---------------------------------------------------------------- */
-
-  const handleManualScan = async () => {
-    const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
-
-    setPhase("blink-detected");
-    const faces = await detectFaces(video);
-    if (faces.length === 1) {
-      await executeRecognition(faces[0]!);
-    } else {
-      setPhase("awaiting-blink");
-    }
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <DialogTitle className="flex items-center gap-2">
@@ -517,13 +498,13 @@ export function FaceScanDialog({
           </div>
           <DialogDescription>
             {phase === "blink-detected"
-              ? "Blink verified ✓ Matching biometrics..."
+              ? "Blink verified ✓ Querying PostgreSQL vector database..."
               : phase === "matched"
-                ? `Identity verified: ${matchResult?.staffName}`
+                ? `Identity verified: ${matchName}`
                 : phase === "unrecognized"
                   ? "Face Not Recognized. Only registered staff members are authorized."
                   : phase === "awaiting-blink"
-                    ? "Hold still & blink your eyes once to verify."
+                    ? "Hold still & blink your eyes once to verify live presence."
                     : "Position your face inside the frame and blink your eyes once."}
           </DialogDescription>
         </DialogHeader>
@@ -609,19 +590,19 @@ export function FaceScanDialog({
                 <Check className="size-4" /> Blink Detected!
               </p>
               <p className="text-sm font-bold text-primary">
-                Matching biometrics against registered staff…
+                Searching 512-d ArcFace embeddings in database…
               </p>
             </div>
           )}
 
           {/* Matched Success */}
-          {phase === "matched" && matchResult && (
+          {phase === "matched" && matchName && (
             <div className="absolute inset-x-0 bottom-0 bg-success-soft/95 px-4 py-3 text-center backdrop-blur-sm">
               <p className="flex items-center justify-center gap-1 text-xs font-semibold text-success">
                 <ShieldCheck className="size-4" /> Aadhaar Biometric Match Verified
               </p>
               <p className="text-base font-bold text-success">
-                {matchResult.staffName}
+                {matchName}
               </p>
             </div>
           )}
@@ -639,31 +620,105 @@ export function FaceScanDialog({
           )}
         </div>
 
-        {/* Diagnostics Toggle */}
-        <div>
+        {/* Developer-Only Diagnostic Panel (Requirement 8) */}
+        <div className="rounded-xl border border-border bg-card overflow-hidden text-xs">
           <button
             type="button"
-            className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-            onClick={() => setShowDebug((d) => !d)}
+            className="flex w-full items-center justify-between bg-muted/50 px-3.5 py-2 font-semibold text-muted-foreground hover:bg-muted transition-colors"
+            onClick={() => setShowDiag((d) => !d)}
           >
-            <Eye className="size-3" /> {showDebug ? "Hide" : "Show"} Diagnostics
+            <span className="flex items-center gap-1.5">
+              <Cpu className="size-3.5 text-primary" />
+              Developer Diagnostic Telemetry & Biometric Matcher
+            </span>
+            {showDiag ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
           </button>
-          {showDebug && (
-            <div className="mt-2 grid grid-cols-3 gap-2 rounded-xl border border-border bg-muted/60 p-3 font-mono text-[11px]">
-              <div>
-                <span className="text-muted-foreground">Faces:</span> {debugInfo.faceCount}
+
+          {showDiag && (
+            <div className="p-3.5 space-y-3 font-mono text-[11px] bg-background">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="rounded-lg border border-border bg-muted/40 p-2">
+                  <div className="text-[10px] text-muted-foreground font-sans">Detected Face</div>
+                  <div className="font-bold text-foreground">
+                    {diag.faceDetected ? `1 Face (${diag.faceConfidence > 0 ? `${(diag.faceConfidence * 100).toFixed(0)}%` : "OK"})` : "None"}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {diag.faceBox ? `${diag.faceBox.width}x${diag.faceBox.height}px · 68 pts` : "—"}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-muted/40 p-2">
+                  <div className="text-[10px] text-muted-foreground font-sans">Liveness Result</div>
+                  <div className="font-bold text-foreground">
+                    {diag.livenessPassed || diag.blinkComplete ? (
+                      <span className="text-success flex items-center gap-1">
+                        <CheckCircle2 className="size-3" /> Blink Verified
+                      </span>
+                    ) : (
+                      <span className="text-warning">Awaiting Blink</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    EAR: {diag.ear.toFixed(2)} (Base: {diag.baselineEAR.toFixed(2)})
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-muted/40 p-2">
+                  <div className="text-[10px] text-muted-foreground font-sans">Embedding Dimension</div>
+                  <div className="font-bold text-primary font-mono">{diag.embeddingDim} floats</div>
+                  <div className="text-[10px] text-muted-foreground">ArcFace 512-D Descriptor</div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-muted/40 p-2">
+                  <div className="text-[10px] text-muted-foreground font-sans">Final Decision</div>
+                  <div>
+                    {diag.finalResult === "AUTHORIZED" ? (
+                      <Badge className="bg-success text-white text-[10px] h-5">AUTHORIZED</Badge>
+                    ) : diag.finalResult === "REJECTED_THRESHOLD" ? (
+                      <Badge variant="destructive" className="text-[10px] h-5">FAIL: Threshold</Badge>
+                    ) : diag.finalResult === "REJECTED_MARGIN" ? (
+                      <Badge variant="destructive" className="text-[10px] h-5">FAIL: Margin</Badge>
+                    ) : diag.finalResult === "REJECTED_LIVENESS" ? (
+                      <Badge variant="destructive" className="text-[10px] h-5">FAIL: Liveness</Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] h-5">WAITING</Badge>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div>
-                <span className="text-muted-foreground">EAR:</span> {debugInfo.ear.toFixed(3)}
-              </div>
-              <div>
-                <span className="text-muted-foreground">Base EAR:</span> {debugInfo.baselineEAR.toFixed(3)}
-              </div>
-              <div className="col-span-2">
-                <span className="text-muted-foreground">Best Match:</span> {debugInfo.bestName || "—"}
-              </div>
-              <div>
-                <span className="text-muted-foreground">Distance:</span> {debugInfo.distance?.toFixed(3) ?? "—"}
+
+              {/* Vector Matching Deep Breakdown */}
+              <div className="rounded-lg border border-border bg-muted/30 p-2.5 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] border-b border-border pb-1">
+                  <span className="font-semibold text-muted-foreground font-sans">Best Match Candidate:</span>
+                  <span className="font-bold text-foreground">
+                    {diag.bestMatch ? `${diag.bestMatch.name} (${diag.bestMatch.staffCode})` : "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] border-b border-border pb-1">
+                  <span className="font-semibold text-muted-foreground font-sans">Second-Best Candidate:</span>
+                  <span className="text-muted-foreground">
+                    {diag.secondBestMatch ? `${diag.secondBestMatch.name} (${diag.secondBestMatch.staffCode}) — Dist: ${diag.secondBestMatch.distance.toFixed(4)}` : "None (Single Enrolled Identity)"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 pt-1 text-[10px]">
+                  <div>
+                    <span className="text-muted-foreground">Cosine Distance:</span>{" "}
+                    <span className={cn("font-bold", diag.distance !== null && diag.distance <= diag.threshold ? "text-success" : "text-destructive")}>
+                      {diag.distance !== null ? diag.distance.toFixed(4) : "—"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Threshold:</span>{" "}
+                    <span className="font-bold text-foreground">{diag.threshold.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Match Margin:</span>{" "}
+                    <span className={cn("font-bold", diag.matchMargin !== null && diag.matchMargin >= diag.margin ? "text-success" : "text-foreground")}>
+                      {diag.matchMargin !== null ? diag.matchMargin.toFixed(4) : "—"} (Req: {diag.margin.toFixed(2)})
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -681,9 +736,15 @@ export function FaceScanDialog({
               onClick={() => {
                 setPhase("awaiting-blink");
                 setErrorMessage("");
-                setMatchResult(null);
+                setMatchName("");
                 isVerifyingRef.current = false;
                 blinkDetectorRef.current.reset(1);
+                setDiag((prev) => ({
+                  ...prev,
+                  blinkComplete: false,
+                  livenessPassed: false,
+                  finalResult: "IDLE",
+                }));
               }}
             >
               <RotateCcw className="mr-2 size-4" aria-hidden /> Retry Face Authentication
@@ -694,7 +755,9 @@ export function FaceScanDialog({
               size="lg"
               variant={faceDetected ? "default" : "secondary"}
               disabled={phase === "loading-models" || phase === "starting" || phase === "blink-detected"}
-              onClick={handleManualScan}
+              onClick={() => {
+                // Instructions banner reminder
+              }}
             >
               {phase === "blink-detected" ? (
                 <>
@@ -706,7 +769,7 @@ export function FaceScanDialog({
                 </>
               ) : (
                 <>
-                  <ScanFace className="mr-2 size-5" /> Blink Eyes Once or Click to Verify
+                  <ScanFace className="mr-2 size-5" /> Blink Eyes Once to Authenticate
                 </>
               )}
             </Button>

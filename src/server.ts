@@ -3,6 +3,8 @@ import "./lib/error-capture";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { getWifiStatus } from "./lib/wifi-detection";
+import { handleStaffApi } from "./server/api/staff-handler";
+import { handleFaceVerifyApi } from "./server/api/face-search-handler";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -49,6 +51,16 @@ export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
       const url = new URL(request.url);
+
+      // REST API Routes
+      if (url.pathname.startsWith("/api/admin/staff")) {
+        return await handleStaffApi(request, url.pathname);
+      }
+
+      if (url.pathname === "/api/face/verify") {
+        return await handleFaceVerifyApi(request);
+      }
+
       if (url.pathname === "/api/wifi-status") {
         const status = getWifiStatus();
         return new Response(JSON.stringify(status), {

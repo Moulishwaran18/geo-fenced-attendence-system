@@ -2,14 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  Camera,
   CheckCircle2,
   Image as ImageIcon,
   Loader2,
   Plus,
+  RefreshCw,
   ScanFace,
-  ShieldAlert,
+  ShieldCheck,
   Trash2,
+  UploadCloud,
   UserCheck,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
@@ -19,116 +23,98 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   loadModels,
   areModelsLoaded,
+  initArcFaceSession,
+  isArcFaceLoaded,
+  generateArcFaceEmbedding,
   detectFaces,
-  enrollStaff,
-  addReferenceEmbedding,
-  getEnrolledStaff,
-  getProfileById,
-  isEnrolled,
-  removeStaff,
-  clearAllProfiles,
   FACE_CONFIG,
-  type StaffProfile,
 } from "@/lib/face-recognition";
+import {
+  fetchAllStaff,
+  enrollStaffFace,
+  deleteStaffEmbedding,
+  verifyLiveFace,
+  type StaffProfile,
+} from "@/lib/face-recognition/staff-store";
 
 export const Route = createFileRoute("/admin/face-enrollment")({
   head: () => ({
     meta: [
-      { title: "Face Enrollment — CampusAttend Admin" },
+      { title: "Face Enrollment & Biometric Database — CampusAttend Admin" },
       {
         name: "description",
         content:
-          "Enroll authorized staff face profiles and reference samples for biometric attendance verification. Admin-only.",
+          "Admin-controlled face enrollment and vector database management for authorized staff members.",
       },
       { property: "og:title", content: "Face Enrollment — CampusAttend Admin" },
       {
         property: "og:description",
-        content: "Register staff face embeddings for attendance verification.",
+        content: "Enroll staff face embeddings into scalable PostgreSQL biometric database.",
       },
     ],
   }),
   component: AdminFaceEnrollmentPage,
 });
 
-/* ------------------------------------------------------------------ */
-/*  Authorized Person Definitions                                      */
-/* ------------------------------------------------------------------ */
-
-interface AuthorizedSeed {
-  id: "PERSON_001" | "PERSON_002" | "PERSON_003";
-  staffId: string;
+interface BatchItem {
+  id: string;
   name: string;
-  defaultPhotos: string[];
+  url: string;
+  status: "pending" | "processing" | "valid" | "rejected";
+  message?: string;
+  confidence?: number;
 }
-
-const AUTHORIZED_STAFF_SEEDS: AuthorizedSeed[] = [
-  {
-    id: "PERSON_001",
-    staffId: "STAFF-001",
-    name: "Moulishwaran S",
-    defaultPhotos: [
-      "/staff-photos/person-001/reference_01.jpg",
-      "/staff-photos/person-001/reference_02.jpg",
-      "/staff-photos/person-001/reference_03.jpg",
-      "/staff-photos/person-001/reference_04.jpg",
-      "/staff-photos/person-001/reference_05.jpg",
-    ],
-  },
-  {
-    id: "PERSON_002",
-    staffId: "STAFF-002",
-    name: "Harish K",
-    defaultPhotos: [
-      "/staff-photos/person-002/reference_01.jpg",
-      "/staff-photos/person-002/reference_02.jpg",
-      "/staff-photos/person-002/reference_03.jpg",
-      "/staff-photos/person-002/reference_04.jpg",
-      "/staff-photos/person-002/reference_05.jpg",
-    ],
-  },
-  {
-    id: "PERSON_003",
-    staffId: "STAFF-003",
-    name: "Vignesh R",
-    defaultPhotos: [
-      "/staff-photos/person-003/reference_01.jpg",
-      "/staff-photos/person-003/reference_02.jpg",
-      "/staff-photos/person-003/reference_03.jpg",
-      "/staff-photos/person-003/reference_04.jpg",
-      "/staff-photos/person-003/reference_05.jpg",
-    ],
-  },
-];
-
-/* ------------------------------------------------------------------ */
-/*  Admin Page Component                                               */
-/* ------------------------------------------------------------------ */
 
 function AdminFaceEnrollmentPage() {
   const [modelsReady, setModelsReady] = useState(areModelsLoaded());
   const [modelProgress, setModelProgress] = useState(0);
-  const [enrolled, setEnrolled] = useState<StaffProfile[]>([]);
-  const [selectedPersonForDev, setSelectedPersonForDev] = useState<"PERSON_001" | "PERSON_002" | "PERSON_003">("PERSON_003");
+  const [staffList, setStaffList] = useState<StaffProfile[]>([]);
+  const [selectedStaffId, setSelectedStaffId] = useState<string>("PERSON_001");
+  const [loadingStaff, setLoadingStaff] = useState(true);
 
-  const refreshEnrolled = useCallback(() => {
-    const list = getEnrolledStaff();
-    setEnrolled(list);
-  }, []);
+  // Enrollment batch state
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [isProcessingBatch, setIsProcessingBatch] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load models on mount
+  // Camera snap state
+  const [cameraActive, setCameraActive] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Live test bench state
+  const [testResult, setTestResult] = useState<{
+    matched: boolean;
+    name?: string;
+    staffCode?: string;
+    distance?: number;
+    margin?: number;
+    reason?: string;
+  } | null>(null);
+  const [isTesting, setIsTesting] = useState(false);
+
+  // 1. Load Face-API neural network models
   useEffect(() => {
-    if (modelsReady) return;
+    if (areModelsLoaded() && isArcFaceLoaded()) {
+      setModelsReady(true);
+      return;
+    }
+
     let cancelled = false;
-
     const progressInterval = setInterval(() => {
-      if (!cancelled) {
-        setModelProgress((p) => Math.min(p + 8, 90));
-      }
-    }, 250);
+      if (!cancelled) setModelProgress((p) => Math.min(p + 10, 90));
+    }, 150);
 
-    loadModels()
+    Promise.all([loadModels(), initArcFaceSession()])
       .then(() => {
         if (!cancelled) {
           setModelProgress(100);
@@ -150,23 +136,252 @@ function AdminFaceEnrollmentPage() {
     };
   }, [modelsReady]);
 
-  // Load enrolled profiles
-  useEffect(() => {
-    refreshEnrolled();
-  }, [refreshEnrolled]);
+  // 2. Fetch staff list from backend
+  const loadStaff = useCallback(async () => {
+    setLoadingStaff(true);
+    try {
+      const data = await fetchAllStaff();
+      setStaffList(data);
+      if (data.length > 0) {
+        setSelectedStaffId((prev) => (data.some((d) => d.id === prev) ? prev : data[0]!.id));
+      }
+    } catch {
+      toast.error("Failed to load staff list from database");
+    } finally {
+      setLoadingStaff(false);
+    }
+  }, []);
 
-  const activeDevProfile = enrolled.find((p) => p.id === selectedPersonForDev);
-  const refCount = activeDevProfile?.referenceSamples?.length ?? 0;
+  useEffect(() => {
+    void loadStaff();
+  }, [loadStaff]);
+
+  const selectedStaff = staffList.find((s) => s.id === selectedStaffId);
+
+  // 3. Camera lifecycle for photo snap
+  const startCamera = async () => {
+    try {
+      setCameraActive(true);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 720 }, height: { ideal: 720 }, facingMode: "user" },
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+    } catch (err) {
+      toast.error("Camera access failed", { description: String(err) });
+      setCameraActive(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    setCameraActive(false);
+  };
+
+  const capturePhoto = async () => {
+    if (!videoRef.current || !selectedStaff) return;
+    const video = videoRef.current;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+
+    stopCamera();
+
+    // Process immediately
+    await processSinglePhoto(dataUrl, `webcam_snap_${Date.now()}.jpg`, selectedStaff.id);
+  };
+
+  // 4. Single Photo Processing Pipeline
+  const processSinglePhoto = async (
+    url: string,
+    filename: string,
+    targetStaffId: string,
+  ): Promise<boolean> => {
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Failed to load image element"));
+        img.src = url;
+      });
+
+      // 1. Detect faces
+      const faces = await detectFaces(img);
+
+      // 2. Validate single face
+      if (faces.length === 0) {
+        toast.error(`Rejected: No face detected in ${filename}`);
+        return false;
+      }
+      if (faces.length > 1) {
+        toast.error(`Rejected: Multiple faces (${faces.length}) detected in ${filename}`);
+        return false;
+      }
+
+      const singleFace = faces[0]!;
+      if (singleFace.confidence < FACE_CONFIG.MIN_FACE_CONFIDENCE) {
+        toast.error(`Rejected: Quality too low in ${filename}`);
+        return false;
+      }
+
+      // 3. Generate 512-dimensional ArcFace embedding
+      const arcFaceDescriptor = await generateArcFaceEmbedding(
+        img,
+        img.naturalWidth || img.width,
+        img.naturalHeight || img.height,
+        singleFace.landmarks,
+      );
+
+      // 4. Store embedding in backend PostgreSQL database
+      const success = await enrollStaffFace(targetStaffId, arcFaceDescriptor, url);
+      if (success) {
+        toast.success(`✓ 512-d ArcFace embedding saved for ${targetStaffId}`);
+        void loadStaff();
+        return true;
+      } else {
+        toast.error(`Backend failed to save embedding for ${targetStaffId}`);
+        return false;
+      }
+    } catch (err) {
+      toast.error(`Error processing ${filename}: ${String(err)}`);
+      return false;
+    }
+  };
+
+  // 5. Multi-photo file selection & batch enrollment
+  const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !selectedStaff) return;
+
+    const newItems: BatchItem[] = Array.from(files).map((f) => ({
+      id: `batch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: f.name,
+      url: URL.createObjectURL(f),
+      status: "pending",
+    }));
+
+    setBatchItems(newItems);
+    setIsProcessingBatch(true);
+
+    let successCount = 0;
+    for (let i = 0; i < newItems.length; i++) {
+      const item = newItems[i]!;
+      setBatchItems((prev) =>
+        prev.map((it, idx) => (idx === i ? { ...it, status: "processing" } : it)),
+      );
+
+      const passed = await processSinglePhoto(item.url, item.name, selectedStaff.id);
+      if (passed) successCount++;
+
+      setBatchItems((prev) =>
+        prev.map((it, idx) =>
+          idx === i
+            ? {
+                ...it,
+                status: passed ? "valid" : "rejected",
+                message: passed
+                  ? "✓ Face detected & 128-d embedding stored"
+                  : "❌ Rejected (face count / quality check failed)",
+              }
+            : it,
+        ),
+      );
+    }
+
+    setIsProcessingBatch(false);
+    toast.success(`Processed ${newItems.length} photos: ${successCount} embeddings enrolled.`);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    void loadStaff();
+  };
+
+  // 6. Delete reference embedding
+  const handleDeleteEmbedding = async (embeddingId: string) => {
+    if (!selectedStaff) return;
+    const success = await deleteStaffEmbedding(selectedStaff.id, embeddingId);
+    if (success) {
+      toast.success("Reference photo deleted from database");
+      void loadStaff();
+    } else {
+      toast.error("Failed to delete reference photo");
+    }
+  };
+
+  // 7. Live Test Bench (Test any photo or live face against vector search)
+  const handleTestPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsTesting(true);
+    setTestResult(null);
+
+    try {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise<void>((resolve) => {
+        img.onload = () => resolve();
+        img.src = url;
+      });
+
+      const faces = await detectFaces(img);
+      if (faces.length !== 1) {
+        setTestResult({
+          matched: false,
+          reason:
+            faces.length === 0
+              ? "No face detected in test photo"
+              : `Multiple faces (${faces.length}) in test photo`,
+        });
+        setIsTesting(false);
+        return;
+      }
+
+      // Generate 512-dimensional ArcFace embedding
+      const arcFaceDescriptor = await generateArcFaceEmbedding(
+        img,
+        img.naturalWidth || img.width,
+        img.naturalHeight || img.height,
+        faces[0]!.landmarks,
+      );
+
+      // Call backend vector search
+      const result = await verifyLiveFace(arcFaceDescriptor, true);
+      setTestResult({
+        matched: result.matched,
+        name: result.staff?.name,
+        staffCode: result.staff?.staffCode,
+        distance: result.distance,
+        margin: result.matchMargin,
+        reason: result.reason,
+      });
+    } catch (err) {
+      setTestResult({ matched: false, reason: `Test error: ${String(err)}` });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   return (
     <AppShell nav={adminNav} role="admin">
       <PageHeader
-        title="Face Enrollment"
-        description={`${enrolled.length} of ${FACE_CONFIG.MAX_STAFF_PROFILES} authorized staff profiles registered in closed-set biometric system`}
+        title="Scalable Face Database & Enrollment"
+        description="Admin-only biometric enrollment console supporting 100+ staff with 128-dimensional vector search"
         actions={
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <ShieldAlert className="size-4" aria-hidden />
-            <span>Admin-only access</span>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="font-mono text-xs">
+              PostgreSQL + pgvector (128-d)
+            </Badge>
           </div>
         }
       />
@@ -180,7 +395,7 @@ function AdminFaceEnrollmentPage() {
             </div>
             <Progress value={modelProgress} className="h-2" />
             <p className="text-xs text-muted-foreground">
-              Model weights are cached after initial download.
+              ResNet-34 & SSD MobileNet neural network weights are cached.
             </p>
           </div>
         </Section>
@@ -189,361 +404,347 @@ function AdminFaceEnrollmentPage() {
       <AlertBanner
         tone="info"
         icon={ScanFace}
-        title="Closed-Set 3-Person Biometric Architecture"
-        description="The system permits exactly 3 authorized identities (PERSON_001, PERSON_002, PERSON_003). PERSON_001 and PERSON_002 maintain multiple reference sample embeddings across diverse angles, lighting, and expressions for high-accuracy live verification."
+        title="Scalable Multi-Embedding Biometric Architecture"
+        description="Every staff member stores multiple 128-dimensional face embeddings across diverse angles, lighting, and expressions. The database scales to 100+, 500+, 1000+ staff without schema changes. Unknown faces are strictly rejected."
       />
 
-      <div className="mt-6 space-y-6">
-        {AUTHORIZED_STAFF_SEEDS.map((seed) => (
-          <PersonEnrollmentSection
-            key={seed.id}
-            seed={seed}
-            profile={enrolled.find((p) => p.id === seed.id || p.staffId === seed.staffId)}
-            modelsReady={modelsReady}
-            onEnrollmentChange={refreshEnrolled}
-          />
-        ))}
-      </div>
-
-      {/* Developer Test & Diagnostic Mode */}
-      <Section
-        className="mt-6"
-        title="Developer Test Mode & Diagnostics"
-        description="Per-identity reference stats, threshold boundaries, and closed-set security metrics"
-      >
-        <div className="space-y-4 p-5">
-          {/* Identity switcher for diagnostics */}
-          <div className="flex items-center gap-2 border-b border-border/70 pb-3">
-            <span className="text-xs font-medium text-muted-foreground">Inspect Identity:</span>
-            {(["PERSON_001", "PERSON_002", "PERSON_003"] as const).map((pid) => (
-              <Button
-                key={pid}
-                variant={selectedPersonForDev === pid ? "default" : "outline"}
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setSelectedPersonForDev(pid)}
-              >
-                {pid}
-              </Button>
-            ))}
-          </div>
-
-          <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              ["Person", `${selectedPersonForDev} (${activeDevProfile?.name || "Pending"})`],
-              ["Reference Photos Processed", String(refCount)],
-              ["Valid Embeddings Stored", String(refCount)],
-              ["Invalid Images Rejected", "0"],
-              ["Best Match Candidate", selectedPersonForDev],
-              ["Second-Best Candidate", selectedPersonForDev === "PERSON_001" ? "PERSON_002" : "PERSON_001"],
-              ["Face Match Threshold", `${FACE_CONFIG.FACE_MATCH_THRESHOLD} (Euclidean distance)`],
-              ["Min Match Margin", `${FACE_CONFIG.MIN_MATCH_MARGIN} separation`],
-              ["Liveness Status", "PASS (Temporal blink + head-pose engine)"],
-              ["Final Result", isEnrolled(selectedPersonForDev) ? "AUTHORIZED" : "UNKNOWN"],
-            ].map(([label, val]) => (
-              <div
-                key={label}
-                className="flex flex-col justify-between gap-1 rounded-lg border border-border bg-card p-3"
-              >
-                <dt className="text-xs text-muted-foreground">{label}</dt>
-                <dd className="font-mono text-xs font-semibold text-foreground">{val}</dd>
+      <div className="mt-6 grid gap-6 lg:grid-cols-3">
+        {/* Left Column: Staff Selector & Details */}
+        <div className="space-y-6 lg:col-span-1">
+          <Section title="Select Staff Member" description="Choose identity to enroll or inspect">
+            <div className="space-y-4 p-5">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-muted-foreground uppercase">
+                  Staff Member
+                </label>
+                <Select value={selectedStaffId} onValueChange={setSelectedStaffId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select staff..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {staffList.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.staffId} — {s.name} ({s.embeddingCount} samples)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            ))}
-          </dl>
 
-          <div className="flex flex-wrap gap-2 pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                clearAllProfiles();
-                refreshEnrolled();
-                toast.success("All enrolled biometric profiles cleared.");
-              }}
-            >
-              <Trash2 className="mr-2 size-4" />
-              Reset All Profiles
-            </Button>
-          </div>
-        </div>
-      </Section>
-    </AppShell>
-  );
-}
+              {selectedStaff && (
+                <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-semibold text-foreground">{selectedStaff.name}</h3>
+                      <p className="font-mono text-xs text-primary font-bold">
+                        {selectedStaff.staffId}
+                      </p>
+                    </div>
+                    <Badge
+                      className={
+                        selectedStaff.embeddingCount > 0
+                          ? "bg-success text-white"
+                          : "bg-warning/20 text-warning"
+                      }
+                    >
+                      {selectedStaff.embeddingCount > 0
+                        ? `Enrolled (${selectedStaff.embeddingCount})`
+                        : "Pending"}
+                    </Badge>
+                  </div>
 
-/* ------------------------------------------------------------------ */
-/*  Person Enrollment Section (Handles Multiple Reference Images)      */
-/* ------------------------------------------------------------------ */
-
-function PersonEnrollmentSection({
-  seed,
-  profile,
-  modelsReady,
-  onEnrollmentChange,
-}: {
-  seed: AuthorizedSeed;
-  profile?: StaffProfile | undefined;
-  modelsReady: boolean;
-  onEnrollmentChange: () => void;
-}) {
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingMsg, setProcessingMsg] = useState("");
-  const [uploadError, setUploadError] = useState("");
-  const [uploadSuccessMsg, setUploadSuccessMsg] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const autoSeededRef = useRef(false);
-
-  // Auto-seed reference photos for this profile when models are loaded
-  useEffect(() => {
-    if (!modelsReady || autoSeededRef.current) return;
-    autoSeededRef.current = true;
-
-    const runSeed = async () => {
-      const existing = getProfileById(seed.id);
-      if (existing && existing.referenceSamples && existing.referenceSamples.length >= seed.defaultPhotos.length) {
-        return;
-      }
-
-      setIsProcessing(true);
-      setProcessingMsg(`Validating & enrolling reference photos for ${seed.id}…`);
-
-      try {
-        for (let i = 0; i < seed.defaultPhotos.length; i++) {
-          const photoUrl = seed.defaultPhotos[i]!;
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve();
-            img.onerror = () => reject(new Error(`Failed to load ${photoUrl}`));
-            img.src = photoUrl;
-          });
-
-          // Detect faces in photo
-          const faces = await detectFaces(img);
-
-          // Validation: exactly ONE face required
-          if (faces.length !== 1) {
-            console.warn(`Seed image ${photoUrl} rejected: found ${faces.length} faces.`);
-            continue;
-          }
-
-          const validFace = faces[0]!;
-
-          if (i === 0 && (!existing || !existing.referenceSamples || existing.referenceSamples.length === 0)) {
-            enrollStaff(seed.id, seed.name, validFace.descriptor, photoUrl, validFace.confidence);
-          } else {
-            addReferenceEmbedding(seed.id, validFace.descriptor, photoUrl, validFace.confidence);
-          }
-        }
-
-        onEnrollmentChange();
-      } catch (err) {
-        console.error(`Auto-seed failed for ${seed.id}:`, err);
-      } finally {
-        setIsProcessing(false);
-        setProcessingMsg("");
-      }
-    };
-
-    void runSeed();
-  }, [modelsReady, seed, onEnrollmentChange]);
-
-  // Handle manual photo upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploadError("");
-    setUploadSuccessMsg("");
-    setIsProcessing(true);
-    setProcessingMsg("Validating uploaded reference photo…");
-
-    try {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error("Failed to read uploaded image"));
-        img.src = url;
-      });
-
-      // 1. Detect faces
-      const faces = await detectFaces(img);
-
-      // 2. Validate face presence: exactly ONE face required
-      if (faces.length === 0) {
-        setUploadError("Reference image rejected: No face detected. Exactly one clear face is required.");
-        toast.error("Reference image rejected: No face detected");
-        setIsProcessing(false);
-        return;
-      }
-
-      if (faces.length > 1) {
-        setUploadError("Reference image rejected: Multiple faces detected. Exactly one clear face is required.");
-        toast.error("Reference image rejected: Multiple faces detected");
-        setIsProcessing(false);
-        return;
-      }
-
-      const singleFace = faces[0]!;
-
-      // 3. Reject poor confidence
-      if (singleFace.confidence < FACE_CONFIG.MIN_FACE_CONFIDENCE) {
-        setUploadError("Reference image rejected: Image quality too low for accurate biometrics.");
-        toast.error("Reference image rejected: Quality too low");
-        setIsProcessing(false);
-        return;
-      }
-
-      // 4. Generate & store embedding for this identity
-      const existing = getProfileById(seed.id);
-      if (!existing || existing.status !== "enrolled") {
-        enrollStaff(seed.id, seed.name, singleFace.descriptor, url, singleFace.confidence);
-      } else {
-        addReferenceEmbedding(seed.id, singleFace.descriptor, url, singleFace.confidence);
-      }
-
-      setUploadSuccessMsg(`✓ Valid face detected\n✓ Embedding generated\n✓ Added to ${seed.id} profile`);
-      toast.success(`Reference photo added to ${seed.id}`);
-      onEnrollmentChange();
-    } catch (err) {
-      setUploadError(`Failed to process photo: ${String(err)}`);
-    } finally {
-      setIsProcessing(false);
-      setProcessingMsg("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
-  const isEnrolled = profile !== undefined && profile.status === "enrolled";
-  const samples = profile?.referenceSamples ?? [];
-
-  return (
-    <Section
-      title={`Authorized Person: ${seed.id}`}
-      description={`${seed.name} (${seed.staffId}) — ${samples.length} reference embedding${samples.length === 1 ? "" : "s"} stored`}
-    >
-      <div className="space-y-4 p-5">
-        {/* Status bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Badge variant={isEnrolled ? "default" : "outline"} className={isEnrolled ? "bg-success text-white" : ""}>
-              {isEnrolled ? (
-                <span className="flex items-center gap-1">
-                  <UserCheck className="size-3.5" /> Enrolled · {samples.length} Reference Samples
-                </span>
-              ) : (
-                <span className="flex items-center gap-1">
-                  <AlertTriangle className="size-3.5" /> Pending Enrollment
-                </span>
+                  <dl className="grid grid-cols-2 gap-2 text-xs border-t border-border pt-3">
+                    <div>
+                      <dt className="text-muted-foreground">Department</dt>
+                      <dd className="font-medium text-foreground truncate">
+                        {selectedStaff.department || "—"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Designation</dt>
+                      <dd className="font-medium text-foreground truncate">
+                        {selectedStaff.designation || "—"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Embeddings</dt>
+                      <dd className="font-mono font-bold text-foreground">
+                        {selectedStaff.embeddingCount} stored
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Status</dt>
+                      <dd className="font-medium text-foreground">
+                        {selectedStaff.active ? "Active" : "Inactive"}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
               )}
-            </Badge>
-            <span className="text-xs font-mono text-muted-foreground">ID: {seed.staffId}</span>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleFileUpload}
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!modelsReady || isProcessing}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Plus className="mr-1.5 size-3.5" />
-              Add Reference Photo
-            </Button>
-            {isEnrolled && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:bg-destructive/10"
-                onClick={() => {
-                  removeStaff(seed.id);
-                  onEnrollmentChange();
-                  toast(`${seed.name} profile removed`);
-                }}
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-            )}
-          </div>
+              {/* Staff Switcher Quick Pills */}
+              <div>
+                <label className="mb-2 block text-xs font-semibold text-muted-foreground uppercase">
+                  Quick Switch:
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {staffList.slice(0, 6).map((s) => (
+                    <Button
+                      key={s.id}
+                      variant={selectedStaffId === s.id ? "default" : "outline"}
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setSelectedStaffId(s.id)}
+                    >
+                      {s.staffId}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </Section>
+
+          {/* Biometric Diagnostic & Live Vector Search Tester */}
+          <Section
+            title="Biometric Vector Search Tester"
+            description="Test live face vector matching against the database"
+          >
+            <div className="space-y-4 p-5">
+              <p className="text-xs text-muted-foreground">
+                Upload any face photo to execute real-time vector similarity search against all enrolled staff embeddings in PostgreSQL.
+              </p>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="file"
+                  accept="image/*"
+                  id="test-upload"
+                  className="hidden"
+                  onChange={handleTestPhotoUpload}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  disabled={!modelsReady || isTesting}
+                  onClick={() => document.getElementById("test-upload")?.click()}
+                >
+                  {isTesting ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" /> Searching Database…
+                    </>
+                  ) : (
+                    <>
+                      <ScanFace className="mr-2 size-4 text-primary" /> Test Photo Match
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {testResult && (
+                <div
+                  className={`rounded-xl border p-4 text-xs ${
+                    testResult.matched
+                      ? "border-success/30 bg-success-soft text-success"
+                      : "border-destructive/30 bg-danger-soft text-destructive"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 font-semibold">
+                    {testResult.matched ? (
+                      <CheckCircle2 className="size-4" />
+                    ) : (
+                      <XCircle className="size-4" />
+                    )}
+                    {testResult.matched
+                      ? `MATCHED: ${testResult.name} (${testResult.staffCode})`
+                      : "REJECTED: Face Not Recognized"}
+                  </div>
+
+                  <dl className="mt-2 space-y-1 font-mono text-[11px]">
+                    {testResult.distance !== undefined && (
+                      <div className="flex justify-between">
+                        <span>Euclidean Distance:</span>
+                        <span className="font-bold">{testResult.distance.toFixed(4)}</span>
+                      </div>
+                    )}
+                    {testResult.margin !== undefined && (
+                      <div className="flex justify-between">
+                        <span>Match Margin:</span>
+                        <span className="font-bold">{testResult.margin.toFixed(4)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span>Threshold:</span>
+                      <span>{FACE_CONFIG.MATCH_THRESHOLD}</span>
+                    </div>
+                    {testResult.reason && (
+                      <div className="mt-1 text-[10px] text-destructive/90 font-sans">
+                        {testResult.reason}
+                      </div>
+                    )}
+                  </dl>
+                </div>
+              )}
+            </div>
+          </Section>
         </div>
 
-        {/* Processing Indicator */}
-        {isProcessing && (
-          <div className="flex items-center gap-2 rounded-lg bg-primary-soft p-3 text-xs font-medium text-primary">
-            <Loader2 className="size-4 animate-spin" />
-            {processingMsg || "Processing reference biometrics…"}
-          </div>
-        )}
-
-        {/* Success feedback */}
-        {uploadSuccessMsg && (
-          <div className="rounded-lg bg-success-soft p-3 text-xs font-medium text-success whitespace-pre-line">
-            {uploadSuccessMsg}
-          </div>
-        )}
-
-        {/* Error feedback */}
-        {uploadError && (
-          <div className="rounded-lg bg-danger-soft p-3 text-xs font-medium text-destructive">
-            <p className="font-semibold">Reference image rejected</p>
-            <p className="mt-0.5 text-destructive/90">{uploadError}</p>
-          </div>
-        )}
-
-        {/* Reference Image Thumbnails */}
-        <div>
-          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Reference Images ({samples.length} samples)
-          </h4>
-
-          {samples.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-              <ImageIcon className="mb-2 size-6 text-muted-foreground/60" />
-              No reference photos added yet. Click &ldquo;Add Reference Photo&rdquo; to enroll.
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
-              {samples.map((sample, idx) => (
-                <div
-                  key={sample.id || idx}
-                  className="group relative aspect-square overflow-hidden rounded-xl border border-border bg-muted shadow-xs"
+        {/* Right Column: Enrollment Workstation & Gallery */}
+        <div className="space-y-6 lg:col-span-2">
+          {/* Enrollment Actions */}
+          <Section
+            title={`Enroll Reference Photos for ${selectedStaff?.name || selectedStaffId}`}
+            description="Upload single or multiple reference photos, or capture live camera snapshots (no special folder structure needed)"
+          >
+            <div className="space-y-5 p-5">
+              {/* Controls */}
+              <div className="flex flex-wrap gap-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleFilesSelected}
+                />
+                <Button
+                  disabled={!modelsReady || isProcessingBatch || cameraActive}
+                  onClick={() => fileInputRef.current?.click()}
                 >
-                  <img
-                    src={sample.photoUrl}
-                    alt={`Reference ${idx + 1} for ${seed.id}`}
-                    className="size-full object-cover transition-transform group-hover:scale-105"
-                  />
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2 text-center text-[10px] font-medium text-white">
-                    <span className="flex items-center justify-center gap-1">
-                      <CheckCircle2 className="size-3 text-success" />
-                      Sample #{idx + 1}
-                    </span>
+                  <UploadCloud className="mr-2 size-4" />
+                  Select / Upload Photos
+                </Button>
+
+                {!cameraActive ? (
+                  <Button
+                    variant="outline"
+                    disabled={!modelsReady || isProcessingBatch}
+                    onClick={() => void startCamera()}
+                  >
+                    <Camera className="mr-2 size-4" />
+                    Snap Camera Photo
+                  </Button>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button variant="default" onClick={() => void capturePhoto()}>
+                      Capture Snapshot
+                    </Button>
+                    <Button variant="outline" onClick={stopCamera}>
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Camera Preview */}
+              {cameraActive && (
+                <div className="relative aspect-video max-w-md overflow-hidden rounded-xl border border-border bg-black">
+                  <video ref={videoRef} autoPlay playsInline muted className="size-full object-cover scale-x-[-1]" />
+                </div>
+              )}
+
+              {/* Batch Processing Indicator */}
+              {isProcessingBatch && (
+                <div className="flex items-center gap-2 rounded-lg bg-primary-soft p-3 text-xs font-medium text-primary">
+                  <Loader2 className="size-4 animate-spin" />
+                  Processing reference photos: single-face validation & 128-d descriptor extraction…
+                </div>
+              )}
+
+              {/* Batch Results Feedback */}
+              {batchItems.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase">
+                    Upload Batch Status ({batchItems.length} photos)
+                  </h4>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {batchItems.map((item) => (
+                      <div
+                        key={item.id}
+                        className={`flex items-center gap-3 rounded-lg border p-2 text-xs ${
+                          item.status === "valid"
+                            ? "border-success/30 bg-success-soft text-success"
+                            : item.status === "rejected"
+                              ? "border-destructive/30 bg-danger-soft text-destructive"
+                              : "border-border bg-muted"
+                        }`}
+                      >
+                        <img
+                          src={item.url}
+                          alt={item.name}
+                          className="size-10 rounded-md object-cover"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium truncate">{item.name}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {item.message || item.status}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              )}
 
-        {/* Multi-angle info box */}
-        <div className="rounded-lg border border-border/60 bg-muted/40 p-3 text-[11px] text-muted-foreground">
-          <p className="font-semibold text-foreground">Multi-Angle Reference Set for {seed.id}:</p>
-          <p className="mt-0.5">
-            Stores multiple reference embeddings (front view, side angles, tilts, expressions, and lighting). Live attendance matching minimizes Euclidean distance across all samples to ensure high recognition accuracy.
-          </p>
+              {/* Reference Samples Gallery */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase">
+                    Stored Reference Gallery ({selectedStaff?.referenceSamples.length || 0} samples)
+                  </h4>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => void loadStaff()}
+                  >
+                    <RefreshCw className="mr-1 size-3" /> Refresh
+                  </Button>
+                </div>
+
+                {!selectedStaff?.referenceSamples || selectedStaff.referenceSamples.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border p-8 text-center text-xs text-muted-foreground">
+                    <ImageIcon className="mb-2 size-8 text-muted-foreground/50" />
+                    <p className="font-medium text-foreground">No reference photos enrolled yet</p>
+                    <p className="mt-1">
+                      Upload photos or snap via camera to store 128-d face embeddings for {selectedStaff?.name}.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                    {selectedStaff.referenceSamples.map((sample, idx) => (
+                      <div
+                        key={sample.id || idx}
+                        className="group relative aspect-square overflow-hidden rounded-xl border border-border bg-muted shadow-xs"
+                      >
+                        <img
+                          src={sample.photoUrl}
+                          alt={`Reference ${idx + 1} for ${selectedStaff.staffId}`}
+                          className="size-full object-cover transition-transform group-hover:scale-105"
+                        />
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2 text-center text-[10px] font-medium text-white flex items-center justify-between">
+                          <span className="flex items-center gap-1">
+                            <CheckCircle2 className="size-3 text-success" />
+                            #{idx + 1}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-white/80 hover:text-destructive transition-colors p-1"
+                            title="Delete this sample"
+                            onClick={() => void handleDeleteEmbedding(sample.id)}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Section>
         </div>
       </div>
-    </Section>
+    </AppShell>
   );
 }
