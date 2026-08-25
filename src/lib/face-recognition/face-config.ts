@@ -27,7 +27,7 @@ export const FACE_CONFIG = {
   MIN_MATCH_MARGIN: 0.08,
 
   /** Minimum detection confidence for a face to be considered valid. */
-  MIN_FACE_CONFIDENCE: 0.20,
+  MIN_FACE_CONFIDENCE: 0.25,
 
   /** Eye Aspect Ratio threshold for liveness blink detection. */
   LIVENESS_THRESHOLD: 0.235,
@@ -50,6 +50,7 @@ export const FACE_CONFIG = {
     MIN_SHARPNESS: 10.0,
     MIN_BRIGHTNESS: 25,
     MAX_BRIGHTNESS: 235,
+    MIN_CONFIDENCE: 0.25,
   },
 
   /** Layer 2: Viola–Jones Haar Cascade Detection Parameters */

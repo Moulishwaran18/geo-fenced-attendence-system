@@ -28,6 +28,8 @@ export type { ViolaJonesBox } from "./viola-jones";
 export {
   loadModels,
   areModelsLoaded,
+  getSsdOptions,
+  createAuthoritativeDetection,
   detectFaces,
   detectFacesWithLandmarks,
   detectSingleFace,
@@ -37,12 +39,13 @@ export {
   drawCompleteFaceOverlay,
   validateLandmarksInBox,
 } from "./face-detection";
-export type { DetectedFace, FaceCountValidation } from "./face-detection";
+export type { AuthoritativeFaceDetection, DetectedFace, FaceCountValidation } from "./face-detection";
 
 // Module 3: blinkDetection
 export {
   computeEyeAspectRatio,
   getAverageEAR,
+  getDetailedEAR,
   TemporalBlinkDetector,
 } from "./blink-detection";
 export type { BlinkPhase, BlinkTrackerState } from "./blink-detection";
@@ -136,6 +139,7 @@ export {
   extract5Landmarks,
   evaluateFaceCropQuality,
   generateAlignedFacePreview,
+  generateCroppedFacePreview,
 } from "./arcface-engine";
 export type { FrameQualityMetrics } from "./arcface-engine";
 

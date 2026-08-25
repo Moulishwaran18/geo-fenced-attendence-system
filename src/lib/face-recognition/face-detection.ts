@@ -14,6 +14,13 @@ import { FACE_CONFIG } from "./face-config";
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+export interface AuthoritativeFaceDetection {
+  detected: boolean;
+  confidence: number;
+  boundingBox: { x: number; y: number; width: number; height: number } | null;
+  faceCount: number;
+}
+
 export interface DetectedFace {
   /** 128-float face descriptor (biometric embedding). */
   descriptor: Float32Array;
@@ -67,13 +74,41 @@ export function areModelsLoaded(): boolean {
 
 // Pre-configured SSD MobileNet V1 options to avoid garbage-collection overhead
 let ssdOptionsInstance: faceapi.SsdMobilenetv1Options | null = null;
-function getSsdOptions(): faceapi.SsdMobilenetv1Options {
-  if (!ssdOptionsInstance) {
+export function getSsdOptions(): faceapi.SsdMobilenetv1Options {
+  if (!ssdOptionsInstance || ssdOptionsInstance.minConfidence !== FACE_CONFIG.MIN_FACE_CONFIDENCE) {
     ssdOptionsInstance = new faceapi.SsdMobilenetv1Options({
       minConfidence: FACE_CONFIG.MIN_FACE_CONFIDENCE,
     });
   }
   return ssdOptionsInstance;
+}
+
+/**
+ * Build one authoritative detection object from a set of detections.
+ */
+export function createAuthoritativeDetection(
+  faces: { landmarks?: faceapi.FaceLandmarks68; confidence: number; box: faceapi.Box }[],
+): AuthoritativeFaceDetection {
+  if (faces.length === 1 && faces[0]) {
+    const f = faces[0];
+    return {
+      detected: true,
+      confidence: f.confidence,
+      boundingBox: {
+        x: Math.round(f.box.x),
+        y: Math.round(f.box.y),
+        width: Math.round(f.box.width),
+        height: Math.round(f.box.height),
+      },
+      faceCount: 1,
+    };
+  }
+  return {
+    detected: false,
+    confidence: 0,
+    boundingBox: null,
+    faceCount: faces.length,
+  };
 }
 
 /**
@@ -113,12 +148,7 @@ export async function detectFaces(
   }
 
   const detections = await faceapi
-    .detectAllFaces(
-      input,
-      new faceapi.SsdMobilenetv1Options({
-        minConfidence: FACE_CONFIG.MIN_FACE_CONFIDENCE,
-      }),
-    )
+    .detectAllFaces(input, getSsdOptions())
     .withFaceLandmarks()
     .withFaceDescriptors();
 
@@ -143,12 +173,7 @@ export async function detectSingleFace(
   }
 
   const detection = await faceapi
-    .detectSingleFace(
-      input,
-      new faceapi.SsdMobilenetv1Options({
-        minConfidence: FACE_CONFIG.MIN_FACE_CONFIDENCE,
-      }),
-    )
+    .detectSingleFace(input, getSsdOptions())
     .withFaceLandmarks()
     .withFaceDescriptor();
 

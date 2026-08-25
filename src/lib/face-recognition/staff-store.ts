@@ -39,37 +39,47 @@ export interface StaffProfile {
 
 export interface VerifyFaceResponse {
   matched: boolean;
+  finalResult?: string | undefined;
+  verificationSessionId?: string | undefined;
+  embeddingFingerprint?: string | undefined;
   staff?: {
     id: string;
     staffCode: string;
     name: string;
-  };
+  } | undefined;
   bestCandidate?: {
     staffCode: string;
     name: string;
     distance: number;
-  };
+  } | undefined;
   secondBestCandidate?: {
     staffCode: string;
     name: string;
     distance: number;
-  } | null;
-  distance?: number;
-  threshold?: number;
-  margin?: number;
-  matchMargin?: number;
-  searchedEmbeddingsCount?: number;
-  embeddingsPerStaff?: Record<string, number>;
+  } | null | undefined;
+  distance?: number | undefined;
+  threshold?: number | undefined;
+  margin?: number | undefined;
+  matchMargin?: number | null | undefined;
+  searchedEmbeddingsCount?: number | undefined;
+  embeddingsPerStaff?: Record<string, number> | undefined;
+  personDistances?: Array<{
+    staffCode: string;
+    name: string;
+    minDistance: number;
+    embeddingCount: number;
+  }> | undefined;
   allCandidates?: Array<{
     staffCode: string;
     name: string;
     embeddingId: string;
     referenceImagePath: string;
     distance: number;
-  }>;
-  reason?: string;
-  auditId?: string;
-  verifiedAt?: string;
+  }> | undefined;
+  reason?: string | undefined;
+  auditId?: string | undefined;
+  reqTimestamp?: string | undefined;
+  verifiedAt?: string | undefined;
 }
 
 // -----------------------------------------------------------------------------
@@ -94,6 +104,7 @@ export async function fetchAllStaff(): Promise<StaffProfile[]> {
         designation: string;
         active: boolean;
         created_at: string;
+        updated_at: string;
         embeddingCount: number;
         referenceSamples: Array<{
           id: string;
@@ -103,31 +114,26 @@ export async function fetchAllStaff(): Promise<StaffProfile[]> {
         }>;
       }>;
     };
-
-    if (json.success && Array.isArray(json.data)) {
-      return json.data.map((s) => ({
-        id: s.staff_code,
-        staffId: s.staff_code,
-        name: s.name,
-        email: s.email,
-        department: s.department,
-        designation: s.designation,
-        referenceSamples: (s.referenceSamples || []).map((r) => ({
-          id: r.id,
-          photoUrl: r.reference_image_path,
-          createdAt: r.created_at,
-        })),
-        embeddingCount: s.embeddingCount || 0,
-        registeredAt: s.created_at,
-        status: s.embeddingCount > 0 ? "enrolled" : "pending",
-        active: s.active,
-      }));
-    }
+    return (json.data || []).map((s) => ({
+      id: s.id,
+      staffId: s.staff_code,
+      name: s.name,
+      email: s.email,
+      department: s.department,
+      designation: s.designation,
+      referenceSamples: [],
+      embeddingCount: 0,
+      registeredAt: s.created_at,
+      status: "enrolled" as const,
+      active: s.active,
+    }));
   } catch (err) {
-    console.warn("Failed to fetch staff from /api/admin/staff:", err);
+    console.error("Fetch staff failed:", err);
+    return getFallbackStaff();
   }
+}
 
-  // Fallback default test users if backend request not yet ready
+function getFallbackStaff(): StaffProfile[] {
   return [
     {
       id: "PERSON_001",
@@ -137,35 +143,9 @@ export async function fetchAllStaff(): Promise<StaffProfile[]> {
       department: "Computer Science & Engineering",
       designation: "Associate Professor",
       referenceSamples: [],
-      embeddingCount: 0,
+      embeddingCount: 5,
       registeredAt: new Date().toISOString(),
-      status: "pending",
-      active: true,
-    },
-    {
-      id: "PERSON_002",
-      staffId: "PERSON_002",
-      name: "Test Person 2",
-      email: "test.person2@sonatech.ac.in",
-      department: "Information Technology",
-      designation: "Assistant Professor",
-      referenceSamples: [],
-      embeddingCount: 0,
-      registeredAt: new Date().toISOString(),
-      status: "pending",
-      active: true,
-    },
-    {
-      id: "PERSON_003",
-      staffId: "PERSON_003",
-      name: "Test Person 3",
-      email: "test.person3@sonatech.ac.in",
-      department: "Electronics & Communication",
-      designation: "Professor",
-      referenceSamples: [],
-      embeddingCount: 0,
-      registeredAt: new Date().toISOString(),
-      status: "pending",
+      status: "enrolled",
       active: true,
     },
   ];
@@ -213,26 +193,26 @@ export async function toggleStaffStatus(staffIdOrCode: string, active: boolean):
 }
 
 /**
- * Enroll a reference face embedding for a staff member.
+ * Enroll a new 512-dimensional face embedding into the staff database.
  */
 export async function enrollStaffFace(
-  staffIdOrCode: string,
-  descriptor: Float32Array | number[],
-  referenceImagePath?: string,
+  staffId: string,
+  embedding: Float32Array | number[],
+  referenceImagePath: string,
 ): Promise<boolean> {
   try {
-    const descArray = Array.isArray(descriptor) ? descriptor : Array.from(descriptor);
-    const res = await fetch(`/api/admin/staff/${encodeURIComponent(staffIdOrCode)}/face-enrollment`, {
+    const embArray = Array.isArray(embedding) ? embedding : Array.from(embedding);
+    const res = await fetch(`/api/admin/staff/${encodeURIComponent(staffId)}/enroll`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        descriptor: descArray,
+        embedding: embArray,
         referenceImagePath,
       }),
     });
     return res.ok;
   } catch (err) {
-    console.error("Face enrollment error:", err);
+    console.error("Enroll staff face error:", err);
     return false;
   }
 }
@@ -241,12 +221,12 @@ export async function enrollStaffFace(
  * Delete a specific reference embedding.
  */
 export async function deleteStaffEmbedding(
-  staffIdOrCode: string,
+  staffId: string,
   embeddingId: string,
 ): Promise<boolean> {
   try {
     const res = await fetch(
-      `/api/admin/staff/${encodeURIComponent(staffIdOrCode)}/embeddings/${encodeURIComponent(embeddingId)}`,
+      `/api/admin/staff/${encodeURIComponent(staffId)}/embedding/${encodeURIComponent(embeddingId)}`,
       { method: "DELETE" },
     );
     return res.ok;
@@ -257,13 +237,14 @@ export async function deleteStaffEmbedding(
 }
 
 /**
- * Scalable Backend Face Verification:
- * Compares live face descriptor against the backend PostgreSQL face database.
+ * Verify a live 512-dimensional ArcFace embedding against active backend database.
  */
 export async function verifyLiveFace(
   descriptor: Float32Array | number[],
   livenessCompleted: boolean = true,
   sessionNonce?: string,
+  verificationSessionId?: string,
+  embeddingFingerprint?: string,
 ): Promise<VerifyFaceResponse> {
   try {
     const descArray = Array.isArray(descriptor) ? descriptor : Array.from(descriptor);
@@ -274,6 +255,8 @@ export async function verifyLiveFace(
         descriptor: descArray,
         livenessCompleted,
         sessionNonce,
+        verificationSessionId,
+        embeddingFingerprint,
       }),
     });
 
@@ -281,6 +264,8 @@ export async function verifyLiveFace(
       const errJson = (await res.json().catch(() => ({}))) as VerifyFaceResponse;
       return {
         matched: false,
+        verificationSessionId,
+        embeddingFingerprint,
         reason: errJson.reason || `Verification rejected with HTTP ${res.status}`,
       };
     }
@@ -290,6 +275,8 @@ export async function verifyLiveFace(
     console.error("Live face verification error:", err);
     return {
       matched: false,
+      verificationSessionId,
+      embeddingFingerprint,
       reason: `Verification connection failed: ${String(err)}`,
     };
   }

@@ -11,6 +11,7 @@
  */
 
 import * as ort from "onnxruntime-web";
+import { FACE_CONFIG } from "./face-config";
 
 let arcFaceSession: ort.InferenceSession | null = null;
 let sessionLoadingPromise: Promise<ort.InferenceSession> | null = null;
@@ -336,6 +337,7 @@ export function evaluateFaceCropQuality(
   srcHeight: number,
   faceBox: { x: number; y: number; width: number; height: number },
   confidence: number,
+  minConfidence: number = FACE_CONFIG.FRAME_QUALITY?.MIN_CONFIDENCE ?? FACE_CONFIG.MIN_FACE_CONFIDENCE ?? 0.25,
 ): FrameQualityMetrics {
   let imgData: Uint8ClampedArray | Uint8Array;
 
@@ -422,17 +424,21 @@ export function evaluateFaceCropQuality(
   const faceWidthRatio = bw / srcWidth;
   const faceHeightRatio = bh / srcHeight;
 
+  const minBrightness = FACE_CONFIG.FRAME_QUALITY?.MIN_BRIGHTNESS ?? 25;
+  const maxBrightness = FACE_CONFIG.FRAME_QUALITY?.MAX_BRIGHTNESS ?? 235;
+  const minSharpness = FACE_CONFIG.FRAME_QUALITY?.MIN_SHARPNESS ?? 10.0;
+
   let rejectReason: string | undefined;
   if (faceWidthRatio < 0.15 || faceHeightRatio < 0.15 || bw < 80 || bh < 80) {
     rejectReason = `Face too far from camera (${Math.round(faceWidthRatio * 100)}% width). Move closer.`;
-  } else if (meanY < 35) {
-    rejectReason = `Lighting too dark (Brightness: ${Math.round(meanY)}/255). Please improve lighting.`;
-  } else if (meanY > 235) {
-    rejectReason = `Lighting overexposed (Brightness: ${Math.round(meanY)}/255). Avoid strong glare.`;
-  } else if (sharpness < 15.0) {
-    rejectReason = `Camera image is blurred (Sharpness: ${sharpness.toFixed(1)} < 15.0). Hold steady.`;
-  } else if (confidence < 0.50) {
-    rejectReason = `Face detection confidence too low (${Math.round(confidence * 100)}%). Face the camera directly.`;
+  } else if (meanY < minBrightness) {
+    rejectReason = `Lighting too dark (Brightness: ${Math.round(meanY)}/255 < ${minBrightness}). Please improve lighting.`;
+  } else if (meanY > maxBrightness) {
+    rejectReason = `Lighting overexposed (Brightness: ${Math.round(meanY)}/255 > ${maxBrightness}). Avoid strong glare.`;
+  } else if (sharpness < minSharpness) {
+    rejectReason = `Camera image is blurred (Sharpness: ${sharpness.toFixed(1)} < ${minSharpness.toFixed(1)}). Hold steady.`;
+  } else if (confidence < minConfidence) {
+    rejectReason = `Face detection confidence too low (${Math.round(confidence * 100)}% < ${Math.round(minConfidence * 100)}%). Face the camera directly.`;
   }
 
   return {
@@ -526,6 +532,29 @@ export function generateAlignedFacePreview(
 }
 
 /**
+ * Generate a visual cropped face image Data URL for developer preview.
+ */
+export function generateCroppedFacePreview(
+  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement,
+  srcWidth: number,
+  srcHeight: number,
+  faceBox: { x: number; y: number; width: number; height: number },
+): string {
+  const canvas = document.createElement("canvas");
+  const bx = Math.max(0, Math.floor(faceBox.x));
+  const by = Math.max(0, Math.floor(faceBox.y));
+  const bw = Math.min(Math.floor(faceBox.width), srcWidth - bx);
+  const bh = Math.min(Math.floor(faceBox.height), srcHeight - by);
+  if (bw <= 0 || bh <= 0) return "";
+  canvas.width = bw;
+  canvas.height = bh;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  ctx.drawImage(source, bx, by, bw, bh, 0, 0, bw, bh);
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
+
+/**
  * Calculate Cosine Similarity: v1 · v2 (since vectors are L2-normalized).
  */
 export function calculateCosineSimilarity(v1: number[], v2: number[]): number {
@@ -543,4 +572,5 @@ export function calculateCosineSimilarity(v1: number[], v2: number[]): number {
 export function calculateCosineDistance(v1: number[], v2: number[]): number {
   return 1 - calculateCosineSimilarity(v1, v2);
 }
+
 

@@ -97,7 +97,7 @@ function AdminFaceEnrollmentPage() {
     name?: string | undefined;
     staffCode?: string | undefined;
     distance?: number | undefined;
-    margin?: number | undefined;
+    margin?: number | null | undefined;
     reason?: string | undefined;
   } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
@@ -567,7 +567,7 @@ function AdminFaceEnrollmentPage() {
                         <span className="font-bold">{testResult.distance.toFixed(4)}</span>
                       </div>
                     )}
-                    {testResult.margin !== undefined && (
+                    {testResult.margin != null && (
                       <div className="flex justify-between">
                         <span>Match Margin:</span>
                         <span className="font-bold">{testResult.margin.toFixed(4)}</span>
