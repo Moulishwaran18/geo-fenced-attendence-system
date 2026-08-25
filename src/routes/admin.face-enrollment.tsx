@@ -94,11 +94,11 @@ function AdminFaceEnrollmentPage() {
   // Live test bench state
   const [testResult, setTestResult] = useState<{
     matched: boolean;
-    name?: string;
-    staffCode?: string;
-    distance?: number;
-    margin?: number;
-    reason?: string;
+    name?: string | undefined;
+    staffCode?: string | undefined;
+    distance?: number | undefined;
+    margin?: number | undefined;
+    reason?: string | undefined;
   } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
 

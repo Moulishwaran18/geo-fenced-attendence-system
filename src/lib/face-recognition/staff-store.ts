@@ -16,6 +16,13 @@ export interface ReferenceSample {
   createdAt: string;
 }
 
+export interface MultiEmbeddingProfile {
+  id: string;
+  staffId: string;
+  name: string;
+  embeddings: (Float32Array | number[])[];
+}
+
 export interface StaffProfile {
   id: string;
   staffId: string;
@@ -51,6 +58,15 @@ export interface VerifyFaceResponse {
   threshold?: number;
   margin?: number;
   matchMargin?: number;
+  searchedEmbeddingsCount?: number;
+  embeddingsPerStaff?: Record<string, number>;
+  allCandidates?: Array<{
+    staffCode: string;
+    name: string;
+    embeddingId: string;
+    referenceImagePath: string;
+    distance: number;
+  }>;
   reason?: string;
   auditId?: string;
   verifiedAt?: string;

@@ -49,20 +49,20 @@ export interface VectorSearchResult {
 // PostgreSQL Pool Initialization
 // -----------------------------------------------------------------------------
 
-const dbUrl = process.env.DATABASE_URL || "";
+const dbUrl = process.env["DATABASE_URL"] || "";
 let pool: pg.Pool | null = null;
 
 export function getPgPool(): pg.Pool | null {
   if (pool) return pool;
-  if (dbUrl || (process.env.PGHOST && process.env.PGDATABASE)) {
+  if (dbUrl || (process.env["PGHOST"] && process.env["PGDATABASE"])) {
     try {
       pool = new Pool({
         connectionString: dbUrl || undefined,
-        host: process.env.PGHOST,
-        port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : 5432,
-        user: process.env.PGUSER,
-        password: process.env.PGPASSWORD,
-        database: process.env.PGDATABASE,
+        host: process.env["PGHOST"],
+        port: process.env["PGPORT"] ? parseInt(process.env["PGPORT"], 10) : 5432,
+        user: process.env["PGUSER"],
+        password: process.env["PGPASSWORD"],
+        database: process.env["PGDATABASE"],
         max: 20,
         idleTimeoutMillis: 30000,
       });

@@ -29,10 +29,13 @@ export {
   loadModels,
   areModelsLoaded,
   detectFaces,
+  detectFacesWithLandmarks,
   detectSingleFace,
   validateSingleFacePresence,
   generateEmbedding,
   drawFaceBox,
+  drawCompleteFaceOverlay,
+  validateLandmarksInBox,
 } from "./face-detection";
 export type { DetectedFace, FaceCountValidation } from "./face-detection";
 
@@ -131,5 +134,9 @@ export {
   calculateCosineDistance,
   estimateSimilarityTransform,
   extract5Landmarks,
+  evaluateFaceCropQuality,
+  generateAlignedFacePreview,
 } from "./arcface-engine";
+export type { FrameQualityMetrics } from "./arcface-engine";
+
 

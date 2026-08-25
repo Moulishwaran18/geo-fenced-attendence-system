@@ -84,6 +84,12 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
     const isWithinThreshold = best.distance <= MATCH_THRESHOLD;
     const hasAdequateMargin = matchMargin >= MIN_MATCH_MARGIN;
 
+    // Count active embeddings per person
+    const embeddingsPerStaff: Record<string, number> = {};
+    candidates.forEach((c) => {
+      embeddingsPerStaff[c.staff_code] = (embeddingsPerStaff[c.staff_code] || 0) + 1;
+    });
+
     const diagnosticPayload = {
       bestCandidate: {
         staffCode: best.staff_code,
@@ -101,14 +107,23 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
       margin: MIN_MATCH_MARGIN,
       matchMargin,
       distance: best.distance,
+      searchedEmbeddingsCount: candidates.length,
+      embeddingsPerStaff,
+      allCandidates: candidates.map((c) => ({
+        staffCode: c.staff_code,
+        name: c.name,
+        embeddingId: c.embedding_id,
+        referenceImagePath: c.reference_image_path,
+        distance: c.distance,
+      })),
     };
 
     if (!isWithinThreshold || !hasAdequateMargin) {
       return jsonResponse({
         matched: false,
         reason: !isWithinThreshold
-          ? "Face Not Recognized. Distance exceeds threshold (0.45)."
-          : "Face match ambiguous. Distance separation margin below threshold (0.08).",
+          ? `Face Not Recognized. Distance (${best.distance.toFixed(4)}) exceeds threshold (${MATCH_THRESHOLD}).`
+          : `Face match ambiguous. Distance separation margin (${matchMargin.toFixed(4)}) below threshold (${MIN_MATCH_MARGIN}).`,
         ...diagnosticPayload,
         auditId,
       });

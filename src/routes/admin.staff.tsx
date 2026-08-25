@@ -456,7 +456,7 @@ function AdminStaffPage() {
             : "become eligible to verify biometric attendance."
         }`}
         confirmLabel={statusTarget?.active ? "Deactivate" : "Activate"}
-        destructive={statusTarget?.active}
+        destructive={!!statusTarget?.active}
         onConfirm={() => void handleToggleStatus()}
       />
     </AppShell>

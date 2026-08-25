@@ -313,6 +313,219 @@ export async function generateArcFaceEmbedding(
 }
 
 /**
+ * Frame & Face Crop Quality Evaluation Metrics
+ */
+export interface FrameQualityMetrics {
+  sharpness: number;
+  brightness: number;
+  contrast: number;
+  faceConfidence: number;
+  faceBox: { x: number; y: number; width: number; height: number };
+  faceWidthRatio: number;
+  faceHeightRatio: number;
+  isQualityAcceptable: boolean;
+  rejectReason?: string | undefined;
+}
+
+/**
+ * Evaluate quality of face crop (sharpness, brightness, contrast, size).
+ */
+export function evaluateFaceCropQuality(
+  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageData,
+  srcWidth: number,
+  srcHeight: number,
+  faceBox: { x: number; y: number; width: number; height: number },
+  confidence: number,
+): FrameQualityMetrics {
+  let imgData: Uint8ClampedArray | Uint8Array;
+
+  if (source instanceof HTMLVideoElement || source instanceof HTMLImageElement) {
+    const canvas = document.createElement("canvas");
+    canvas.width = srcWidth;
+    canvas.height = srcHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Could not create 2d canvas context for quality check");
+    ctx.drawImage(source, 0, 0, srcWidth, srcHeight);
+    imgData = ctx.getImageData(0, 0, srcWidth, srcHeight).data;
+  } else if (source instanceof HTMLCanvasElement) {
+    const ctx = source.getContext("2d");
+    if (!ctx) throw new Error("Could not get canvas context");
+    imgData = ctx.getImageData(0, 0, srcWidth, srcHeight).data;
+  } else {
+    imgData = source.data;
+  }
+
+  const bx = Math.max(0, Math.floor(faceBox.x));
+  const by = Math.max(0, Math.floor(faceBox.y));
+  const bw = Math.min(Math.floor(faceBox.width), srcWidth - bx);
+  const bh = Math.min(Math.floor(faceBox.height), srcHeight - by);
+
+  if (bw <= 10 || bh <= 10) {
+    return {
+      sharpness: 0,
+      brightness: 0,
+      contrast: 0,
+      faceConfidence: confidence,
+      faceBox: { x: bx, y: by, width: bw, height: bh },
+      faceWidthRatio: bw / srcWidth,
+      faceHeightRatio: bh / srcHeight,
+      isQualityAcceptable: false,
+      rejectReason: "Face box is too small or outside frame bounds.",
+    };
+  }
+
+  // 1. Compute grayscale values on cropped face
+  const gray = new Float32Array(bw * bh);
+  let sumY = 0;
+  let sumY2 = 0;
+  const totalPixels = bw * bh;
+
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const idx = ((by + y) * srcWidth + (bx + x)) * 4;
+      const r = imgData[idx] ?? 0;
+      const g = imgData[idx + 1] ?? 0;
+      const b = imgData[idx + 2] ?? 0;
+      const yVal = 0.299 * r + 0.587 * g + 0.114 * b;
+      gray[y * bw + x] = yVal;
+      sumY += yVal;
+      sumY2 += yVal * yVal;
+    }
+  }
+
+  const meanY = sumY / totalPixels;
+  const varianceY = Math.max(0, sumY2 / totalPixels - meanY * meanY);
+  const contrast = Math.sqrt(varianceY);
+
+  // 2. Compute Laplacian variance for blur/sharpness estimation
+  let sumLap = 0;
+  let sumLap2 = 0;
+  let lapCount = 0;
+
+  for (let y = 1; y < bh - 1; y++) {
+    for (let x = 1; x < bw - 1; x++) {
+      const c = gray[y * bw + x]!;
+      const top = gray[(y - 1) * bw + x]!;
+      const bottom = gray[(y + 1) * bw + x]!;
+      const left = gray[y * bw + (x - 1)]!;
+      const right = gray[y * bw + (x + 1)]!;
+      const lap = 4 * c - top - bottom - left - right;
+      sumLap += lap;
+      sumLap2 += lap * lap;
+      lapCount++;
+    }
+  }
+
+  const meanLap = lapCount > 0 ? sumLap / lapCount : 0;
+  const sharpness = lapCount > 0 ? Math.max(0, sumLap2 / lapCount - meanLap * meanLap) : 0;
+
+  const faceWidthRatio = bw / srcWidth;
+  const faceHeightRatio = bh / srcHeight;
+
+  let rejectReason: string | undefined;
+  if (faceWidthRatio < 0.15 || faceHeightRatio < 0.15 || bw < 80 || bh < 80) {
+    rejectReason = `Face too far from camera (${Math.round(faceWidthRatio * 100)}% width). Move closer.`;
+  } else if (meanY < 35) {
+    rejectReason = `Lighting too dark (Brightness: ${Math.round(meanY)}/255). Please improve lighting.`;
+  } else if (meanY > 235) {
+    rejectReason = `Lighting overexposed (Brightness: ${Math.round(meanY)}/255). Avoid strong glare.`;
+  } else if (sharpness < 15.0) {
+    rejectReason = `Camera image is blurred (Sharpness: ${sharpness.toFixed(1)} < 15.0). Hold steady.`;
+  } else if (confidence < 0.50) {
+    rejectReason = `Face detection confidence too low (${Math.round(confidence * 100)}%). Face the camera directly.`;
+  }
+
+  return {
+    sharpness,
+    brightness: meanY,
+    contrast,
+    faceConfidence: confidence,
+    faceBox: { x: bx, y: by, width: bw, height: bh },
+    faceWidthRatio,
+    faceHeightRatio,
+    isQualityAcceptable: !rejectReason,
+    rejectReason,
+  };
+}
+
+/**
+ * Generate a visual 112x112 aligned face crop as a base64 JPEG Data URL for developer preview.
+ */
+export function generateAlignedFacePreview(
+  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageData,
+  width: number,
+  height: number,
+  landmarks: { positions: { x: number; y: number }[] },
+): string {
+  let imgData: Uint8ClampedArray | Uint8Array;
+
+  if (source instanceof HTMLVideoElement || source instanceof HTMLImageElement) {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "";
+    ctx.drawImage(source, 0, 0, width, height);
+    imgData = ctx.getImageData(0, 0, width, height).data;
+  } else if (source instanceof HTMLCanvasElement) {
+    const ctx = source.getContext("2d");
+    if (!ctx) return "";
+    imgData = ctx.getImageData(0, 0, width, height).data;
+  } else {
+    imgData = source.data;
+  }
+
+  const srcPoints = extract5Landmarks(landmarks);
+  const { invM } = estimateSimilarityTransform(srcPoints, ARCFACE_REFERENCE_POINTS);
+
+  const outW = ARCFACE_CONFIG.INPUT_SIZE;
+  const outH = ARCFACE_CONFIG.INPUT_SIZE;
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = outW;
+  previewCanvas.height = outH;
+  const pCtx = previewCanvas.getContext("2d");
+  if (!pCtx) return "";
+
+  const outImgData = pCtx.createImageData(outW, outH);
+
+  for (let dy = 0; dy < outH; dy++) {
+    for (let dx = 0; dx < outW; dx++) {
+      const sx = invM[0]![0]! * dx + invM[0]![1]! * dy + invM[0]![2]!;
+      const sy = invM[1]![0]! * dx + invM[1]![1]! * dy + invM[1]![2]!;
+
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(x0 + 1, width - 1);
+      const y1 = Math.min(y0 + 1, height - 1);
+
+      const wx = sx - x0;
+      const wy = sy - y0;
+
+      let r = 0, g = 0, b = 0;
+      if (x0 >= 0 && x0 < width && y0 >= 0 && y0 < height) {
+        const idx00 = (y0 * width + x0) * 4;
+        const idx10 = (y0 * width + x1) * 4;
+        const idx01 = (y1 * width + x0) * 4;
+        const idx11 = (y1 * width + x1) * 4;
+
+        r = (1 - wx) * (1 - wy) * imgData[idx00]! + wx * (1 - wy) * imgData[idx10]! + (1 - wx) * wy * imgData[idx01]! + wx * wy * imgData[idx11]!;
+        g = (1 - wx) * (1 - wy) * imgData[idx00 + 1]! + wx * (1 - wy) * imgData[idx10 + 1]! + (1 - wx) * wy * imgData[idx01 + 1]! + wx * wy * imgData[idx11 + 1]!;
+        b = (1 - wx) * (1 - wy) * imgData[idx00 + 2]! + wx * (1 - wy) * imgData[idx10 + 2]! + (1 - wx) * wy * imgData[idx01 + 2]! + wx * wy * imgData[idx11 + 2]!;
+      }
+
+      const outIdx = (dy * outW + dx) * 4;
+      outImgData.data[outIdx] = Math.round(r);
+      outImgData.data[outIdx + 1] = Math.round(g);
+      outImgData.data[outIdx + 2] = Math.round(b);
+      outImgData.data[outIdx + 3] = 255;
+    }
+  }
+
+  pCtx.putImageData(outImgData, 0, 0);
+  return previewCanvas.toDataURL("image/jpeg", 0.92);
+}
+
+/**
  * Calculate Cosine Similarity: v1 · v2 (since vectors are L2-normalized).
  */
 export function calculateCosineSimilarity(v1: number[], v2: number[]): number {
@@ -330,3 +543,4 @@ export function calculateCosineSimilarity(v1: number[], v2: number[]): number {
 export function calculateCosineDistance(v1: number[], v2: number[]): number {
   return 1 - calculateCosineSimilarity(v1, v2);
 }
+

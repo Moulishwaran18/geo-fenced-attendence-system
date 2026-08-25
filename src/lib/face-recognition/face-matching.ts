@@ -67,7 +67,7 @@ export function evaluateAllIdentities(
       let minDistance = 999;
       let minIndex = 0;
 
-      profile.embeddings.forEach((emb, idx) => {
+      profile.embeddings.forEach((emb: Float32Array | number[], idx: number) => {
         const dist = faceapi.euclideanDistance(liveArray, Array.from(emb));
         sampleDistances.push(dist);
         if (dist < minDistance) {

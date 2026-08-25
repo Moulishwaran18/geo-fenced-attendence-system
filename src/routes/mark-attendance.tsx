@@ -94,11 +94,20 @@ function MarkAttendancePage() {
       <FaceScanDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
-        onVerified={(result) => {
+        onVerified={async (result) => {
           setFace(result.snapshot);
           setFaceResult(result);
-          toast.success("Face verified", {
-            description: `Identity confirmed: ${result.staffName}`,
+          toast.success("Face Recognized", {
+            description: `Identity confirmed: ${result.staffName} (${result.staffId})`,
+          });
+
+          // Automatically record attendance for the recognized staff member
+          setStatus("verifying");
+          const attendanceReceipt = await markAttendance();
+          setReceipt(attendanceReceipt);
+          setStatus("success");
+          toast.success(`Attendance Marked Successfully!`, {
+            description: `${result.staffName} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
           });
         }}
       />

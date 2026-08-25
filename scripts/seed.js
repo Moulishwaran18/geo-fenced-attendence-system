@@ -31,6 +31,7 @@ const INITIAL_TEST_STAFF = [
     designation: "Associate Professor",
     photoDir: "public/staff-photos/person-001",
     urlPrefix: "/staff-photos/person-001",
+    verifiedPhotos: ["reference_01.jpg", "reference_02.jpg"],
   },
   {
     staff_code: "PERSON_002",
@@ -40,6 +41,7 @@ const INITIAL_TEST_STAFF = [
     designation: "Assistant Professor",
     photoDir: "public/staff-photos/person-002",
     urlPrefix: "/staff-photos/person-002",
+    verifiedPhotos: ["reference_01.jpg", "reference_05.jpg"],
   },
   {
     staff_code: "PERSON_003",
@@ -49,6 +51,7 @@ const INITIAL_TEST_STAFF = [
     designation: "Professor",
     photoDir: "public/staff-photos/person-003",
     urlPrefix: "/staff-photos/person-003",
+    verifiedPhotos: ["reference_02.jpg", "reference_03.jpg"],
   },
 ];
 
@@ -411,10 +414,10 @@ async function seed() {
 
     const files = fs
       .readdirSync(fullDir)
-      .filter((f) => /\.(jpe?g|png)$/i.test(f))
+      .filter((f) => /\.(jpe?g|png)$/i.test(f) && (!person.verifiedPhotos || person.verifiedPhotos.includes(f)))
       .sort();
 
-    console.log(`Found ${files.length} existing reference image(s) in ${person.photoDir}`);
+    console.log(`Found ${files.length} verified reference image(s) in ${person.photoDir}`);
 
     let validCount = 0;
     let rejectedCount = 0;
