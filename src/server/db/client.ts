@@ -28,6 +28,7 @@ export interface FaceEmbeddingRecord {
   staff_id: string;
   embedding: number[]; // 512-float descriptor
   reference_image_path: string;
+  photo_data?: string | undefined; // Base64 JPEG data URL stored directly in database
   created_at: string;
 }
 
@@ -43,6 +44,7 @@ export interface VectorSearchResult {
   distance: number;
   embedding_id: string;
   reference_image_path: string;
+  photo_data?: string | undefined;
 }
 
 // -----------------------------------------------------------------------------
@@ -168,6 +170,7 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
                 'id', f.id,
                 'staff_id', f.staff_id,
                 'reference_image_path', f.reference_image_path,
+                'photo_data', f.photo_data,
                 'created_at', f.created_at
               )
             ) FILTER (WHERE f.id IS NOT NULL),
@@ -195,6 +198,7 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
         staff_id: f.staff_id,
         embedding: [], // Never expose raw embedding to client
         reference_image_path: f.reference_image_path,
+        photo_data: f.photo_data,
         created_at: f.created_at,
       }));
 
@@ -225,6 +229,7 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
                 'id', f.id,
                 'staff_id', f.staff_id,
                 'reference_image_path', f.reference_image_path,
+                'photo_data', f.photo_data,
                 'created_at', f.created_at
               )
             ) FILTER (WHERE f.id IS NOT NULL),
@@ -256,6 +261,7 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
       staff_id: f.staff_id,
       embedding: [], // Redacted
       reference_image_path: f.reference_image_path,
+      photo_data: f.photo_data,
       created_at: f.created_at,
     }));
 
@@ -380,6 +386,7 @@ export async function storeFaceEmbedding(
   staffId: string,
   embedding: number[],
   referenceImagePath: string,
+  photoData?: string,
 ): Promise<FaceEmbeddingRecord> {
   if (embedding.length !== 512) {
     throw new Error(`Invalid embedding length: ${embedding.length}. Expected 512-dimensional descriptor.`);
@@ -390,17 +397,18 @@ export async function storeFaceEmbedding(
     try {
       const vecString = `[${embedding.join(",")}]`;
       const query = `
-        INSERT INTO face_embeddings (staff_id, embedding, reference_image_path)
-        VALUES ($1, $2, $3)
-        RETURNING id, staff_id, reference_image_path, created_at;
+        INSERT INTO face_embeddings (staff_id, embedding, reference_image_path, photo_data)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, staff_id, reference_image_path, photo_data, created_at;
       `;
-      const res = await p.query(query, [staffId, vecString, referenceImagePath]);
+      const res = await p.query(query, [staffId, vecString, referenceImagePath, photoData || null]);
       const row = res.rows[0];
       return {
         id: row.id,
         staff_id: row.staff_id,
         embedding,
         reference_image_path: row.reference_image_path,
+        photo_data: row.photo_data,
         created_at: row.created_at,
       };
     } catch (e) {
@@ -414,6 +422,7 @@ export async function storeFaceEmbedding(
     staff_id: staffId,
     embedding,
     reference_image_path: referenceImagePath,
+    photo_data: photoData,
     created_at: new Date().toISOString(),
   };
 
@@ -467,6 +476,7 @@ export async function searchFaceEmbeddings(
           s.name,
           f.id AS embedding_id,
           f.reference_image_path,
+          f.photo_data,
           (f.embedding <=> $1::vector) AS distance
         FROM face_embeddings f
         JOIN staff s ON f.staff_id = s.id
@@ -481,6 +491,7 @@ export async function searchFaceEmbeddings(
         name: r.name,
         embedding_id: r.embedding_id,
         reference_image_path: r.reference_image_path,
+        photo_data: r.photo_data,
         distance: parseFloat(r.distance),
       }));
     } catch (e) {
@@ -505,6 +516,7 @@ export async function searchFaceEmbeddings(
       name: staff.name,
       embedding_id: emb.id,
       reference_image_path: emb.reference_image_path,
+      photo_data: emb.photo_data,
       distance: dist,
     });
   }

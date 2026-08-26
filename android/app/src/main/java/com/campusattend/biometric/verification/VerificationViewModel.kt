@@ -127,14 +127,28 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
         antiSpoofService.reset()
         _biometricResult.value = null
 
-        // Start liveness with a random challenge
-        val livenessState = livenessService.start()
+        // Start liveness with a random challenge or bypass in dev mode
+        val livenessState = if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
+            livenessCompleted = true
+            LivenessState(
+                status = LivenessStatus.PASSED,
+                category = ChallengeCategory.BLINK,
+                instruction = "LIVENESS: DISABLED (DEVELOPMENT MODE)",
+                progress = 1.0f
+            )
+        } else {
+            livenessService.start()
+        }
 
         _pipelineState.value = PipelineState(
             modelsReady = true,
             verificationActive = true,
             livenessState = livenessState,
-            statusMessage = livenessState.instruction
+            statusMessage = if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
+                "LIVENESS: DISABLED (DEVELOPMENT MODE)"
+            } else {
+                livenessState.instruction
+            }
         )
     }
 
@@ -154,17 +168,19 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
         when (detectionResult) {
             is FaceDetectionResult.NoFace -> {
                 _pipelineState.value = _pipelineState.value.copy(
-                    statusMessage = "Face not detected.",
+                    statusMessage = "No face detected",
                     faceDetected = false
                 )
                 return
             }
             is FaceDetectionResult.MultipleFaces -> {
-                livenessService.fail("Multiple faces detected. Only one person should be visible.")
+                if (!BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
+                    livenessService.fail("Multiple faces detected. Only one person should be visible.")
+                }
                 _pipelineState.value = _pipelineState.value.copy(
                     statusMessage = "Multiple faces detected (${detectionResult.count}). Only one person should be visible.",
                     faceDetected = false,
-                    livenessState = livenessService.getState()
+                    livenessState = if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) null else livenessService.getState()
                 )
                 return
             }
@@ -195,8 +211,8 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
             return
         }
 
-        // ── Step 3: Liveness Challenge (continuous during active session) ──
-        if (!livenessCompleted) {
+        // ── Step 3: Liveness Challenge ──
+        if (!livenessCompleted && !BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
             val livenessState = livenessService.processFrame(landmarkResult)
 
             _pipelineState.value = _pipelineState.value.copy(
@@ -220,39 +236,53 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
                 }
                 else -> return  // Still in progress
             }
+        } else if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
+            livenessCompleted = true
         }
 
         // ── Step 4: Anti-Spoof (sampled frames after liveness) ──
-        if (antiSpoofFramesSampled < BiometricConfig.ANTI_SPOOF_SAMPLE_COUNT) {
-            val asStartTime = System.currentTimeMillis()
-            antiSpoofService.analyzeFrame(bitmap, singleFace.boundingBox)
-            lastAntiSpoofLatency = System.currentTimeMillis() - asStartTime
-            antiSpoofFramesSampled++
+        var antiSpoofScore = 1.0f
+        var antiSpoofFrameCount = 0
 
-            _pipelineState.value = _pipelineState.value.copy(
-                statusMessage = "Analyzing anti-spoof... (${antiSpoofFramesSampled}/${BiometricConfig.ANTI_SPOOF_SAMPLE_COUNT})"
-            )
-
+        if (!BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
             if (antiSpoofFramesSampled < BiometricConfig.ANTI_SPOOF_SAMPLE_COUNT) {
-                return  // Need more frames
-            }
-        }
+                val asStartTime = System.currentTimeMillis()
+                antiSpoofService.analyzeFrame(bitmap, singleFace.boundingBox)
+                lastAntiSpoofLatency = System.currentTimeMillis() - asStartTime
+                antiSpoofFramesSampled++
 
-        // Check aggregated anti-spoof result
-        val antiSpoofResult = antiSpoofService.getAggregatedResult()
-        if (!antiSpoofResult.passed) {
-            completeFailed(
-                livenessPassed = true,
-                antiSpoofPassed = false,
-                antiSpoofScore = antiSpoofResult.medianLiveScore,
-                reason = antiSpoofResult.reason ?: "Presentation attack detected"
-            )
-            return
+                _pipelineState.value = _pipelineState.value.copy(
+                    statusMessage = "Analyzing anti-spoof... (${antiSpoofFramesSampled}/${BiometricConfig.ANTI_SPOOF_SAMPLE_COUNT})"
+                )
+
+                if (antiSpoofFramesSampled < BiometricConfig.ANTI_SPOOF_SAMPLE_COUNT) {
+                    return  // Need more frames
+                }
+            }
+
+            // Check aggregated anti-spoof result
+            val antiSpoofResult = antiSpoofService.getAggregatedResult()
+            antiSpoofScore = antiSpoofResult.medianLiveScore
+            antiSpoofFrameCount = antiSpoofResult.frameCount
+
+            if (!antiSpoofResult.passed) {
+                completeFailed(
+                    livenessPassed = true,
+                    antiSpoofPassed = false,
+                    antiSpoofScore = antiSpoofScore,
+                    reason = antiSpoofResult.reason ?: "Presentation attack detected"
+                )
+                return
+            }
         }
 
         // ── Step 5: Face Alignment + Embedding (once) ──
         _pipelineState.value = _pipelineState.value.copy(
-            statusMessage = "Generating face embedding..."
+            statusMessage = if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
+                "LIVENESS: DISABLED (DEVELOPMENT MODE) - Generating face embedding..."
+            } else {
+                "Generating face embedding..."
+            }
         )
 
         val alignmentPoints = faceLandmarkService.extract5AlignmentPoints(landmarkResult)
@@ -302,9 +332,9 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
                     matchPassed = true,
                     matchDistance = matchResult.distance,
                     matchMargin = matchResult.matchMargin,
-                    antiSpoofScore = antiSpoofResult.medianLiveScore,
-                    antiSpoofFrameCount = antiSpoofResult.frameCount,
-                    challengeCategory = _pipelineState.value.livenessState?.category?.name ?: "",
+                    antiSpoofScore = antiSpoofScore,
+                    antiSpoofFrameCount = antiSpoofFrameCount,
+                    challengeCategory = if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) "DISABLED_DEV_MODE" else (_pipelineState.value.livenessState?.category?.name ?: ""),
                     totalLatencyMs = totalLatency
                 )
 

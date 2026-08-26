@@ -84,13 +84,50 @@ export function getSsdOptions(): faceapi.SsdMobilenetv1Options {
 }
 
 /**
+ * Validates anatomical proportions of a candidate face detection:
+ * 1. Minimum dimensions (>= 75x75 px)
+ * 2. Physiological aspect ratio: 0.72 <= height / width <= 1.85 (rejects horizontal hair/background boxes)
+ * 3. Landmark vertical geometry: eye Y < nose Y < mouth Y
+ * 4. Vertical eye-to-mouth distance >= 18% of box height
+ */
+export function isValidFaceGeometry(
+  box: faceapi.Box | { x: number; y: number; width: number; height: number },
+  landmarks?: faceapi.FaceLandmarks68,
+): boolean {
+  if (!box || box.width < 75 || box.height < 75) return false;
+
+  const aspectRatio = box.height / box.width;
+  if (aspectRatio < 0.72 || aspectRatio > 1.85) return false;
+
+  if (landmarks && landmarks.positions && landmarks.positions.length >= 68) {
+    const pts = landmarks.positions;
+    const leftEyeY = (pts[36]!.y + pts[39]!.y) / 2;
+    const rightEyeY = (pts[42]!.y + pts[45]!.y) / 2;
+    const meanEyeY = (leftEyeY + rightEyeY) / 2;
+    const noseY = pts[30]!.y;
+    const mouthY = (pts[48]!.y + pts[54]!.y) / 2;
+
+    // Eyes must be above nose and nose above mouth
+    if (meanEyeY >= mouthY || meanEyeY >= noseY) return false;
+
+    // Vertical eye-to-mouth distance must be at least 18% of bounding box height
+    const eyeMouthDist = mouthY - meanEyeY;
+    if (eyeMouthDist < box.height * 0.18) return false;
+  }
+
+  return true;
+}
+
+/**
  * Build one authoritative detection object from a set of detections.
  */
 export function createAuthoritativeDetection(
   faces: { landmarks?: faceapi.FaceLandmarks68; confidence: number; box: faceapi.Box }[],
 ): AuthoritativeFaceDetection {
-  if (faces.length === 1 && faces[0]) {
-    const f = faces[0];
+  const validFaces = faces.filter((f) => isValidFaceGeometry(f.box, f.landmarks));
+
+  if (validFaces.length === 1 && validFaces[0]) {
+    const f = validFaces[0];
     return {
       detected: true,
       confidence: f.confidence,
@@ -107,13 +144,13 @@ export function createAuthoritativeDetection(
     detected: false,
     confidence: 0,
     boundingBox: null,
-    faceCount: faces.length,
+    faceCount: validFaces.length,
   };
 }
 
 /**
  * Detect all faces with landmarks (optimized for real-time tracking).
- * Does not compute expensive ResNet descriptors on every frame.
+ * Filters out false positive hair / shadow / background detections.
  */
 export async function detectFacesWithLandmarks(
   input: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement,
@@ -128,11 +165,13 @@ export async function detectFacesWithLandmarks(
     .detectAllFaces(input, getSsdOptions())
     .withFaceLandmarks();
 
-  return detections.map((d) => ({
-    landmarks: d.landmarks,
-    confidence: d.detection.score,
-    box: d.detection.box,
-  }));
+  return detections
+    .filter((d) => isValidFaceGeometry(d.detection.box, d.landmarks))
+    .map((d) => ({
+      landmarks: d.landmarks,
+      confidence: d.detection.score,
+      box: d.detection.box,
+    }));
 }
 
 /**
@@ -336,6 +375,7 @@ export function drawCompleteFaceOverlay(
 
   // 4. Label with confidence & dimensions
   if (showLabel) {
+    ctx.save();
     ctx.shadowBlur = 0;
     const confText = confidence ? `${(confidence * 100).toFixed(0)}%` : "Detected";
     const dimText = `${Math.round(box.width)}x${Math.round(box.height)}px`;
@@ -343,13 +383,23 @@ export function drawCompleteFaceOverlay(
 
     ctx.font = "bold 11px monospace";
     const textWidth = ctx.measureText(label).width;
+    const pad = 6;
+    const labelW = textWidth + pad * 2;
+    const labelH = 18;
     const labelX = Math.max(0, box.x);
-    const labelY = Math.max(18, box.y - 6);
+    const labelY = Math.max(labelH, box.y - 4);
 
-    ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
-    ctx.fillRect(labelX, labelY - 14, textWidth + 10, 18);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+    ctx.fillRect(labelX, labelY - labelH, labelW, labelH);
+
+    // Un-mirror text so letters are upright and forward-facing
+    ctx.translate(labelX + labelW / 2, labelY - labelH / 2);
+    ctx.scale(-1, 1);
     ctx.fillStyle = "#34d399";
-    ctx.fillText(label, labelX + 5, labelY - 1);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
   }
 
   ctx.restore();

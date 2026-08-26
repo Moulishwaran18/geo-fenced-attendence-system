@@ -26,8 +26,8 @@ export const FACE_CONFIG = {
   /** Minimum margin between best match and second-best identity to prevent misidentification. */
   MIN_MATCH_MARGIN: 0.08,
 
-  /** Minimum detection confidence for a face to be considered valid. */
-  MIN_FACE_CONFIDENCE: 0.25,
+  /** Minimum detection confidence for a face to be considered valid (prevents false hair/shadow detections). */
+  MIN_FACE_CONFIDENCE: 0.50,
 
   /** Eye Aspect Ratio threshold for liveness blink detection. */
   LIVENESS_THRESHOLD: 0.235,

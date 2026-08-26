@@ -282,6 +282,43 @@ export async function verifyLiveFace(
   }
 }
 
+/**
+ * Verify a live camera image directly using Python DeepFace (RetinaFace + FaceNet-512).
+ */
+export async function verifyLiveFaceImage(
+  imageDataUrl: string,
+  verificationSessionId?: string,
+): Promise<VerifyFaceResponse> {
+  try {
+    const res = await fetch("/api/face/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        image: imageDataUrl,
+        verificationSessionId,
+      }),
+    });
+
+    if (!res.ok) {
+      const errJson = (await res.json().catch(() => ({}))) as VerifyFaceResponse;
+      return {
+        matched: false,
+        verificationSessionId,
+        reason: errJson.reason || `Verification rejected with HTTP ${res.status}`,
+      };
+    }
+
+    return (await res.json()) as VerifyFaceResponse;
+  } catch (err) {
+    console.error("DeepFace live verification error:", err);
+    return {
+      matched: false,
+      verificationSessionId,
+      reason: `Verification connection failed: ${String(err)}`,
+    };
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Synchronous Cache Helpers (for immediate initial UI renders)
 // -----------------------------------------------------------------------------

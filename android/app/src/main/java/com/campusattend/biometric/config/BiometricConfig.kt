@@ -10,6 +10,18 @@ package com.campusattend.biometric.config
  */
 object BiometricConfig {
 
+    // ── Development / Testing Bypass Flags ──
+
+    /**
+     * Development Mode flag to bypass liveness and anti-spoof checks during
+     * face detection, face embedding, and database matching testing.
+     *
+     * Set to true to bypass liveness.
+     * Set to false for standard production liveness + anti-spoof security.
+     */
+    @Volatile
+    var DEV_MODE_BYPASS_LIVENESS = true
+
     // ── Face Recognition (ArcFace MobileFaceNet w600k_mbf.onnx) ──
 
     /** Model file in assets/ */

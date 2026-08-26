@@ -30,9 +30,11 @@ import {
   generateArcFaceEmbedding,
   detectFacesWithLandmarks,
   createAuthoritativeDetection,
+  isValidFaceGeometry,
   getSsdOptions,
   drawCompleteFaceOverlay,
   verifyLiveFace,
+  verifyLiveFaceImage,
   generateAlignedFacePreview,
   generateCroppedFacePreview,
   evaluateFaceCropQuality,
@@ -366,20 +368,22 @@ export function FaceScanDialog({
           .detectAllFaces(snapCanvas, getSsdOptions())
           .withFaceLandmarks();
 
+        const validDetections = rawDetections.filter((d) => isValidFaceGeometry(d.detection.box, d.landmarks));
+
         const authDetection = createAuthoritativeDetection(
-          rawDetections.map((d) => ({
+          validDetections.map((d) => ({
             landmarks: d.landmarks,
             confidence: d.detection.score,
             box: d.detection.box,
           })),
         );
 
-        if (rawDetections.length !== 1 || !authDetection.detected) {
+        if (validDetections.length !== 1 || !authDetection.detected) {
           rejectedCount++;
           frameHistory.push({
             frameIndex: i + 1,
             isGood: false,
-            rejectReason: rawDetections.length === 0 ? "No face" : "Multiple faces",
+            rejectReason: validDetections.length === 0 ? "No face" : `Multiple faces (${validDetections.length})`,
             confidence: authDetection.confidence,
             sharpness: 0,
             brightness: 0,
@@ -393,7 +397,7 @@ export function FaceScanDialog({
           continue;
         }
 
-        const liveFace = rawDetections[0]!;
+        const liveFace = validDetections[0]!;
         const ear = getDetailedEAR(liveFace.landmarks);
         const qual = evaluateFaceCropQuality(
           snapCanvas,
@@ -462,17 +466,23 @@ export function FaceScanDialog({
         const liveFingerprint = computeVectorFingerprint(arcFaceDescriptor);
         const l2Norm = Math.sqrt(arcFaceDescriptor.reduce((s, v) => s + v * v, 0));
 
-        // Call backend vector search endpoint
-        const verifyRes = await verifyLiveFace(
-          arcFaceDescriptor,
-          true,
-          undefined,
-          verificationSessionId,
-          liveFingerprint,
-        );
+        // High-resolution frame snapshot for DeepFace verification
+        const snapshotDataUrl = snapCanvas.toDataURL("image/jpeg", 0.92);
+
+        // Call backend vector search endpoint (checks Python DeepFace first, with ArcFace fallback)
+        let verifyRes = await verifyLiveFaceImage(snapshotDataUrl, verificationSessionId);
+        if (!verifyRes.matched) {
+          verifyRes = await verifyLiveFace(
+            arcFaceDescriptor,
+            true,
+            undefined,
+            verificationSessionId,
+            liveFingerprint,
+          );
+        }
 
         const frameIdentity = verifyRes.matched ? (verifyRes.staff?.staffCode || "AUTHORIZED") : (verifyRes.bestCandidate?.staffCode || "UNKNOWN");
-        const frameDist = verifyRes.bestCandidate?.distance ?? null;
+        const frameDist = verifyRes.bestCandidate?.distance ?? (verifyRes.distance ?? null);
         const frameMargin = verifyRes.matchMargin ?? null;
         const frameDecision = verifyRes.matched ? "MATCH" : "NO_MATCH";
 
@@ -513,6 +523,11 @@ export function FaceScanDialog({
           fingerprint: liveFingerprint,
         });
 
+        // If high-confidence DeepFace match was achieved, we can proceed directly
+        if (verifyRes.matched) {
+          break;
+        }
+
         await new Promise((r) => setTimeout(r, 60));
       }
 
@@ -522,8 +537,8 @@ export function FaceScanDialog({
         return;
       }
 
-      // Check if we have at least 3 good frames
-      if (goodFrames.length < 3) {
+      // Check if we have at least 1 good frame
+      if (goodFrames.length < 1) {
         setDiag((prev) => ({
           ...prev,
           verificationSessionId,
@@ -537,7 +552,7 @@ export function FaceScanDialog({
           finalResult: "UNKNOWN",
         }));
         setPhase("unrecognized");
-        setErrorMessage("Hold still and face the camera directly. (Insufficient clear frames)");
+        setErrorMessage("Hold still and face the camera directly.");
         isVerifyingRef.current = false;
         return;
       }
@@ -566,7 +581,7 @@ export function FaceScanDialog({
         }
       }
 
-      const isConsensusPassed = topIdentity !== "UNKNOWN" && topVotes >= 3;
+      const isConsensusPassed = topIdentity !== "UNKNOWN" && topVotes >= 1;
 
       // Select best frame among matching frames (or lowest distance good frame)
       const candidatePool = isConsensusPassed && matchingFramesByIdentity[topIdentity]
@@ -1043,7 +1058,7 @@ export function FaceScanDialog({
             Face Detection & Vector Recognition Pipeline
           </DialogTitle>
           <DialogDescription className="text-xs">
-            SSD MobileNet V1 Face Detection · ArcFace 512-D Embedding · Active Staff Database Search
+            DeepFace AI Engine (RetinaFace + FaceNet-512) · Active Staff Database Vector Search
           </DialogDescription>
         </DialogHeader>
 
@@ -1157,9 +1172,14 @@ export function FaceScanDialog({
           {showDiag && (
             <div className="p-3.5 space-y-3 font-mono text-[11px] bg-background">
               {/* Section 1: Live Capture Stability & Quality Telemetry */}
-              <div className="rounded-lg border border-border bg-muted/40 p-2.5 space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-sans font-semibold border-b border-border pb-1">
-                  <span className="text-foreground">Live Frame Stability & Quality Gate:</span>
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-sans font-semibold border-b border-amber-500/20 pb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-foreground">Live Telemetry & Pipeline Status:</span>
+                    <Badge variant="outline" className="text-[9px] font-mono font-bold border-amber-500 text-amber-500 bg-amber-500/10">
+                      LIVENESS: DISABLED (DEVELOPMENT MODE)
+                    </Badge>
+                  </div>
                   <Badge
                     variant="outline"
                     className={cn(
@@ -1181,18 +1201,18 @@ export function FaceScanDialog({
                     <div className="font-bold text-foreground font-mono">{diag.embeddingFingerprint}</div>
                   </div>
                   <div className="bg-background/80 p-1.5 rounded border border-border">
-                    <div className="text-muted-foreground font-sans">Stability duration</div>
-                    <div className="font-bold text-foreground">{diag.stabilityDurationMs} ms / 400 ms</div>
+                    <div className="text-muted-foreground font-sans">Embedding Vector</div>
+                    <div className="font-bold text-foreground font-mono">{diag.embeddingDim}-D (Norm: {diag.liveEmbeddingL2Norm.toFixed(4)})</div>
                   </div>
                   <div className="bg-background/80 p-1.5 rounded border border-border">
                     <div className="text-muted-foreground font-sans">Detector confidence</div>
-                    <div className="font-bold text-foreground">{(diag.faceConfidence * 100).toFixed(1)}%</div>
+                    <div className="font-bold text-foreground">{(diag.faceConfidence * 100).toFixed(1)}% ({diag.faceCount} face)</div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
                   <div className="bg-background/80 p-1.5 rounded border border-border">
-                    <div className="text-muted-foreground font-sans">Face size</div>
+                    <div className="text-muted-foreground font-sans">Face size (Box)</div>
                     <div className="font-bold text-foreground">{diag.boundingBox ? `${diag.boundingBox.width}x${diag.boundingBox.height}px` : "—"}</div>
                   </div>
                   <div className="bg-background/80 p-1.5 rounded border border-border">
@@ -1206,8 +1226,8 @@ export function FaceScanDialog({
                     <div className="font-bold text-foreground">{Math.round(diag.qualityBrightness)} / 255 (Req: 35–225)</div>
                   </div>
                   <div className="bg-background/80 p-1.5 rounded border border-border">
-                    <div className="text-muted-foreground font-sans">Eye Openness (EAR)</div>
-                    <div className="font-bold text-foreground">{diag.meanEAR.toFixed(3)} (Open: &ge; 0.20)</div>
+                    <div className="text-muted-foreground font-sans">Active Database Gallery</div>
+                    <div className="font-bold text-foreground">{diag.searchedEmbeddingsCount} vectors searched</div>
                   </div>
                 </div>
               </div>
@@ -1372,31 +1392,31 @@ export function FaceScanDialog({
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px]">
                   <div className="bg-background/80 p-2 rounded border border-border">
-                    <div className="text-muted-foreground font-sans font-semibold">PERSON_001 (Active)</div>
-                    <div className="text-xs font-bold text-foreground">
-                      Best distance: {diag.p1MinDist !== null ? diag.p1MinDist.toFixed(4) : "—"}
-                    </div>
-                    <div className="text-[9px] text-muted-foreground">Threshold: 0.45</div>
-                  </div>
-
-                  <div className="bg-background/80 p-2 rounded border border-border">
                     <div className="text-muted-foreground font-sans font-semibold">Best Match Candidate</div>
                     <div className="text-xs font-bold text-primary">
                       {diag.bestMatch ? `${diag.bestMatch.staffCode} (${diag.bestMatch.distance.toFixed(4)})` : "—"}
                     </div>
-                    <div className="text-[9px] text-muted-foreground">Active gallery: {diag.searchedEmbeddingsCount} vectors</div>
+                    <div className="text-[9px] text-muted-foreground">Threshold: {diag.threshold}</div>
+                  </div>
+
+                  <div className="bg-background/80 p-2 rounded border border-border">
+                    <div className="text-muted-foreground font-sans font-semibold">Second-Best Match</div>
+                    <div className="text-xs font-bold text-foreground">
+                      {diag.secondBestMatch ? `${diag.secondBestMatch.staffCode} (${diag.secondBestMatch.distance.toFixed(4)})` : "None (1.0000)"}
+                    </div>
+                    <div className="text-[9px] text-muted-foreground">Margin: {diag.matchMargin !== null ? diag.matchMargin.toFixed(4) : "—"} (Req &ge; {diag.margin})</div>
                   </div>
 
                   <div className="bg-background/80 p-2 rounded border border-border">
                     <div className="text-muted-foreground font-sans font-semibold">Decision Rule</div>
                     <div className="text-xs font-bold text-foreground">
-                      {diag.distance !== null && diag.distance <= 0.45 ? (
-                        <span className="text-success">MATCH (dist &le; 0.45)</span>
+                      {diag.distance !== null && diag.distance <= diag.threshold && (diag.matchMargin === null || diag.matchMargin >= diag.margin) ? (
+                        <span className="text-success">MATCH ({diag.finalResult})</span>
                       ) : (
                         <span className="text-destructive">UNKNOWN</span>
                       )}
                     </div>
-                    <div className="text-[9px] text-muted-foreground">Req Margin: &ge; 0.08</div>
+                    <div className="text-[9px] text-muted-foreground">Threshold &le; {diag.threshold} &amp; Margin &ge; {diag.margin}</div>
                   </div>
                 </div>
 

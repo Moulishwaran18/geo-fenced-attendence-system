@@ -24,12 +24,13 @@ CREATE TABLE IF NOT EXISTS staff (
   updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
--- 3. Face Embeddings Table (1 staff -> many face embeddings)
+-- 3. Face Embeddings Table (1 staff -> many face embeddings + sample photos)
 CREATE TABLE IF NOT EXISTS face_embeddings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
   embedding vector(512) NOT NULL,
   reference_image_path TEXT NOT NULL,
+  photo_data TEXT, -- Base64 JPEG data URL stored directly in PostgreSQL
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 

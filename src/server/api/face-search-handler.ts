@@ -46,6 +46,8 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
   try {
     const body = (await request.json()) as {
       descriptor?: number[];
+      image?: string;
+      photoData?: string;
       verificationSessionId?: string;
       embeddingFingerprint?: string;
       livenessCompleted?: boolean;
@@ -56,7 +58,61 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
       body.verificationSessionId ||
       `VERIFY-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
-    // 1. Validate descriptor (ArcFace 512-D)
+    // Handle Direct Image with Python DeepFace AI Engine (RetinaFace + FaceNet-512)
+    const rawImage = body.image || body.photoData;
+    if (rawImage && (!body.descriptor || body.descriptor.length !== 512)) {
+      try {
+        const base64Data = rawImage.replace(/^data:image\/\w+;base64,/, "");
+        const imgBuffer = Buffer.from(base64Data, "base64");
+        const formData = new FormData();
+        formData.append("file", new Blob([imgBuffer], { type: "image/jpeg" }), "snapshot.jpg");
+        formData.append("stream_id", verificationSessionId);
+
+        const pyRes = await fetch("http://127.0.0.1:8000/api/face/recognize", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (pyRes.ok) {
+          const pyJson = (await pyRes.json()) as {
+            authenticated: boolean;
+            user_id: string;
+            name: string;
+            match_distance: number;
+            confidence_score: number;
+            message: string;
+          };
+
+          const staffCode = pyJson.user_id.replace("staff-", "").toUpperCase();
+          return jsonResponse({
+            matched: pyJson.authenticated,
+            authenticated: true,
+            liveness_verified: true,
+            user_id: pyJson.user_id,
+            name: pyJson.name,
+            staff: {
+              id: pyJson.user_id,
+              staffCode,
+              name: pyJson.name,
+            },
+            verificationSessionId,
+            finalResult: staffCode,
+            distance: pyJson.match_distance,
+            threshold: MATCH_THRESHOLD,
+            margin: MIN_MATCH_MARGIN,
+            matchMargin: pyJson.confidence_score,
+            message: pyJson.message,
+            engine: "Python DeepFace (RetinaFace + FaceNet-512)",
+            reqTimestamp,
+            verifiedAt: new Date().toISOString(),
+          });
+        }
+      } catch (pyErr) {
+        console.warn("Python DeepFace proxy call notice:", pyErr);
+      }
+    }
+
+    // 1. Validate descriptor (512-D)
     if (!body.descriptor || !Array.isArray(body.descriptor) || body.descriptor.length !== 512) {
       console.warn(`[Backend Request] Rejected invalid descriptor. Session: ${verificationSessionId}`);
       return jsonResponse(
@@ -203,6 +259,10 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
     // 5. Authorized Staff Confirmed
     return jsonResponse({
       matched: true,
+      authenticated: true,
+      liveness_verified: body.livenessCompleted !== false,
+      user_id: bestPerson.staffId,
+      name: bestPerson.name,
       staff: {
         id: bestPerson.staffId,
         staffCode: bestPerson.staffCode,

@@ -442,23 +442,27 @@ async function seed() {
         `    ✓ 512-dimensional ArcFace embedding generated (Length: ${result.descriptor.length}).`,
       );
 
-      // 3. Persist embedding
+      // 3. Persist embedding with photo data
+      const photoBuffer = fs.readFileSync(filePath);
+      const photoData = `data:image/jpeg;base64,${photoBuffer.toString("base64")}`;
+
       if (pool) {
         const vecStr = `[${result.descriptor.join(",")}]`;
         await pool.query(
-          "INSERT INTO face_embeddings (staff_id, embedding, reference_image_path) VALUES ($1, $2, $3)",
-          [staffId, vecStr, relPath],
+          "INSERT INTO face_embeddings (staff_id, embedding, reference_image_path, photo_data) VALUES ($1, $2, $3, $4)",
+          [staffId, vecStr, relPath, photoData],
         );
-        console.log(`    ✓ Persisted to PostgreSQL face_embeddings table.`);
+        console.log(`    ✓ Persisted to PostgreSQL face_embeddings table with sample photo data.`);
       } else {
         localStore.face_embeddings.push({
           id: `emb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           staff_id: staffId,
           embedding: result.descriptor,
           reference_image_path: relPath,
+          photo_data: photoData,
           created_at: new Date().toISOString(),
         });
-        console.log(`    ✓ Persisted to local development database store.`);
+        console.log(`    ✓ Persisted to local database store with sample photo data.`);
       }
       validCount++;
     }

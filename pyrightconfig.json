@@ -1,0 +1,6 @@
+{
+  "include": ["src/server/python"],
+  "reportMissingImports": false,
+  "reportMissingTypeStubs": false,
+  "pythonVersion": "3.10"
+}
