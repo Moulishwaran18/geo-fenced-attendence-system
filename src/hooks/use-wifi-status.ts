@@ -41,7 +41,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         dnsSuffix: "",
         auth: "",
         state: "disconnected",
-        reason: "Network offline or disconnected. Please connect to SONA-WIFI.",
+        reason: "Network offline or disconnected. Please connect to SONA-WIFI or authorized Wi-Fi.",
         timestamp: new Date().toISOString(),
       };
       setStatus(offlineStatus);

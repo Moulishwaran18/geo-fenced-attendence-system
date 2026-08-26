@@ -97,18 +97,22 @@ function estimateSimilarityTransform(src, dst = ARCFACE_REFERENCE_POINTS) {
   sxx /= n; sxy /= n; syx /= n; syy /= n;
 
   const a = (sxx + syy) / srcVar;
-  const b = (sxy - syx) / srcVar;
+  const b = (syx - sxy) / srcVar;
   const tx = dstMeanX - (a * srcMeanX - b * srcMeanY);
   const ty = dstMeanY - (b * srcMeanX + a * srcMeanY);
 
-  const denom = a * a + b * b;
-  if (denom === 0) return null;
-  const invA = a / denom;
-  const invB = -b / denom;
-  const invTx = -(invA * tx - invB * ty);
-  const invTy = -(invB * tx + invA * ty);
+  const det = a * a + b * b || 1e-6;
+  const invA = a / det;
+  const invB = -b / det;
+  const invTx = (-a * tx - b * ty) / det;
+  const invTy = (b * tx - a * ty) / det;
 
-  return { a, b, tx, ty, invA, invB, invTx, invTy };
+  const invM = [
+    [invA, -invB, invTx],
+    [invB, invA, invTy],
+  ];
+
+  return { M: [[a, -b, tx], [b, a, ty]], invM };
 }
 
 function extract5Landmarks(landmarks68) {
@@ -177,28 +181,16 @@ function analyzeQuality(rawJpeg) {
   const variance = (totalLumaSq / pixelCount) - (brightness * brightness);
   const contrast = Math.sqrt(Math.max(0, variance));
 
-  // Sharpness via discrete Laplacian variance
-  let lapSum = 0, lapSumSq = 0, count = 0;
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const idx = y * width + x;
-      const lap = gray[idx - width] + gray[idx + width] + gray[idx - 1] + gray[idx + 1] - 4 * gray[idx];
-      lapSum += lap;
-      lapSumSq += lap * lap;
-      count++;
-    }
-  }
-  const lapMean = lapSum / count;
-  const sharpness = Math.sqrt(Math.max(0, (lapSumSq / count) - (lapMean * lapMean)));
-
-  return { width, height, brightness, contrast, sharpness };
+  return { brightness, contrast };
 }
 
-function alignFaceToTensor(rawJpeg, landmarks68) {
+function alignFaceToTensor(rawJpeg, landmarks68, scaleX = 1.0, scaleY = 1.0) {
   const { width: srcW, height: srcH, data: srcData } = rawJpeg;
-  const pts5 = extract5Landmarks(landmarks68);
+  const detected5 = extract5Landmarks(landmarks68);
+  const pts5 = detected5.map(([x, y]) => [x / scaleX, y / scaleY]);
   const transform = estimateSimilarityTransform(pts5);
   if (!transform) throw new Error("Could not compute similarity transform");
+  const { invM } = transform;
 
   const targetW = 112, targetH = 112;
   const planarRGB = new Float32Array(1 * 3 * targetH * targetW);
@@ -206,8 +198,8 @@ function alignFaceToTensor(rawJpeg, landmarks68) {
 
   for (let y = 0; y < targetH; y++) {
     for (let x = 0; x < targetW; x++) {
-      const srcX = transform.invA * x - transform.invB * y + transform.invTx;
-      const srcY = transform.invB * x + transform.invA * y + transform.invTy;
+      const srcX = invM[0][0] * x + invM[0][1] * y + invM[0][2];
+      const srcY = invM[1][0] * x + invM[1][1] * y + invM[1][2];
 
       let r = 0, g = 0, b = 0;
       if (srcX >= 0 && srcX < srcW - 1 && srcY >= 0 && srcY < srcH - 1) {
@@ -271,12 +263,15 @@ async function run() {
       rgbValues[p * 3 + 2] = rawJpeg.data[p * 4 + 2];
     }
 
+    let scaleX = 1.0, scaleY = 1.0;
     let tensor3D = tf.tensor3d(rgbValues, [rawJpeg.height, rawJpeg.width, 3], "int32");
     const maxDim = Math.max(rawJpeg.height, rawJpeg.width);
     if (maxDim > 640) {
       const scale = 640 / maxDim;
       const targetH = Math.round(rawJpeg.height * scale);
       const targetW = Math.round(rawJpeg.width * scale);
+      scaleX = targetW / rawJpeg.width;
+      scaleY = targetH / rawJpeg.height;
       const resized = tf.image.resizeBilinear(tensor3D, [targetH, targetW]);
       tensor3D.dispose();
       tensor3D = tf.cast(resized, "int32");
@@ -310,7 +305,7 @@ async function run() {
       }
 
       // Generate ArcFace embedding
-      const alignedTensor = alignFaceToTensor(rawJpeg, face.landmarks);
+      const alignedTensor = alignFaceToTensor(rawJpeg, face.landmarks, scaleX, scaleY);
       const output = await session.run({ [session.inputNames[0]]: alignedTensor });
       const rawEmbedding = Array.from(output[session.outputNames[0]].data);
 

@@ -17,6 +17,7 @@ import {
   updateStaffStatus,
   storeFaceEmbedding,
   deleteFaceEmbedding,
+  getDatabaseDiagnostics,
 } from "../db/client";
 
 function jsonResponse(data: unknown, status: number = 200) {
@@ -35,6 +36,19 @@ function errorResponse(message: string, status: number = 400) {
 
 export async function handleStaffApi(request: Request, pathname: string): Promise<Response> {
   const method = request.method.toUpperCase();
+
+  // 0. GET /api/admin/db-diagnostic — Verify database connection and diagnostic state
+  if (pathname === "/api/admin/db-diagnostic" && method === "GET") {
+    try {
+      const diag = await getDatabaseDiagnostics();
+      return jsonResponse({
+        success: true,
+        data: diag,
+      });
+    } catch (err) {
+      return errorResponse(`Database diagnostic error: ${String(err)}`, 500);
+    }
+  }
 
   // 1. GET /api/admin/staff — List all staff with enrollment status
   if (pathname === "/api/admin/staff" && method === "GET") {

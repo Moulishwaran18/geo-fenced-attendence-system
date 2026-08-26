@@ -134,6 +134,9 @@ export {
   initArcFaceSession,
   isArcFaceLoaded,
   alignFaceToTensor,
+  alignFaceDetailed,
+  runArcFaceDoubleInference,
+  computeFloat32Checksum,
   generateArcFaceEmbedding,
   calculateCosineSimilarity,
   calculateCosineDistance,
@@ -144,5 +147,6 @@ export {
   generateCroppedFacePreview,
 } from "./arcface-engine";
 export type { FrameQualityMetrics } from "./arcface-engine";
+export type { DeterministicAuditData } from "./staff-store";
 
 

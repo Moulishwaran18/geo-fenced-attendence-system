@@ -53,7 +53,7 @@ export default {
       const url = new URL(request.url);
 
       // REST API Routes
-      if (url.pathname.startsWith("/api/admin/staff")) {
+      if (url.pathname.startsWith("/api/admin/")) {
         return await handleStaffApi(request, url.pathname);
       }
 

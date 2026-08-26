@@ -80,6 +80,46 @@ export interface VerifyFaceResponse {
   auditId?: string | undefined;
   reqTimestamp?: string | undefined;
   verifiedAt?: string | undefined;
+  accepted?: boolean | undefined;
+  attendanceToken?: string | undefined;
+  engine?: string | undefined;
+  deterministicAudit?: DeterministicAuditData | undefined;
+  telemetry?: {
+    recognitionModel: string;
+    modelFamily: string;
+    embeddingDimension: number;
+    embeddingNorm?: number;
+    databaseEmbeddingModel: string;
+    compatibility: string;
+  } | undefined;
+}
+
+export interface DeterministicAuditData {
+  recognitionFrameId: number | string;
+  detectorConfidence: number;
+  faceBox: { x: number; y: number; width: number; height: number } | null;
+  landmarks5: number[][] | null;
+  tensorChecksum: string;
+  embeddingChecksum: string;
+  embeddingDimension: number;
+  embeddingNorm: number;
+  doubleInferenceDist: number;
+  liveVsOfflineDistance: number | null;
+  offlineMinDistance: number | null;
+  p001Distances?: Record<string, number>;
+  p001_1: number | null;
+  p001_2: number | null;
+  p001_3: number | null;
+  p001_4: number | null;
+  p001_5: number | null;
+  bestDistance: number;
+  minDistance: number;
+  bestReference: string;
+  threshold: number;
+  margin: number;
+  matchMargin: number | null;
+  finalDecision: string;
+  rootCause: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -245,6 +285,18 @@ export async function verifyLiveFace(
   sessionNonce?: string,
   verificationSessionId?: string,
   embeddingFingerprint?: string,
+  extraPayload?: {
+    recognitionFrameId?: number | string;
+    rawFrameDataUrl?: string;
+    aligned112DataUrl?: string;
+    tensorChecksum?: string;
+    embeddingChecksum?: string;
+    descriptorB?: number[];
+    doubleInferenceDist?: number;
+    faceBox?: { x: number; y: number; width: number; height: number };
+    landmarks5?: number[][];
+    confidence?: number;
+  },
 ): Promise<VerifyFaceResponse> {
   try {
     const descArray = Array.isArray(descriptor) ? descriptor : Array.from(descriptor);
@@ -257,6 +309,7 @@ export async function verifyLiveFace(
         sessionNonce,
         verificationSessionId,
         embeddingFingerprint,
+        ...extraPayload,
       }),
     });
 

@@ -98,12 +98,12 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                 Access Restricted
               </h1>
               <p className="mt-1.5 text-sm font-medium text-destructive">
-                Sona Wi-Fi Connection Required
+                Authorized Wi-Fi Connection Required
               </p>
               <p className="mt-2.5 max-w-md text-sm text-muted-foreground leading-relaxed">
                 CampusAttend is protected by institutional network security. This system can only be
                 accessed when your device is connected to the authorized campus Wi-Fi (
-                <strong className="text-foreground">SONA-WIFI</strong>).
+                <strong className="text-foreground">SONA-WIFI</strong> or authorized network).
               </p>
             </div>
 
@@ -124,20 +124,12 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Required Wi-Fi:</span>
-                  <span className="font-semibold text-primary">SONA-WIFI (Institutional)</span>
+                  <span className="text-muted-foreground">Authorized Wi-Fi:</span>
+                  <span className="font-semibold text-primary">SONA-WIFI / Authorized Network</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Required Security:</span>
-                  <span className="font-semibold text-foreground">Open (No Hotspot WPA)</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Authorized Gateway:</span>
-                  <span className="font-mono text-foreground">172.16.16.16</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Authorized Subnet:</span>
-                  <span className="font-mono text-muted-foreground">172.16.0.0 / 16</span>
+                  <span className="text-muted-foreground">Security Mode:</span>
+                  <span className="font-mono text-muted-foreground">{status?.auth || "Standard"}</span>
                 </div>
                 {status?.ip && (
                   <div className="flex items-center justify-between">
@@ -151,17 +143,11 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                     <span className="font-mono text-muted-foreground">{status.gateway}</span>
                   </div>
                 )}
-                {status?.auth && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Security Mode:</span>
-                    <span className="font-mono text-muted-foreground">{status.auth}</span>
-                  </div>
-                )}
                 <div className="flex items-center justify-between pt-1 border-t border-border/60">
                   <span className="text-muted-foreground">Diagnostics:</span>
                   <span className="flex items-center gap-1.5 font-medium text-destructive">
                     <AlertTriangle className="size-3.5 shrink-0" />
-                    <span className="truncate">{status?.reason || "Restricted to genuine SONA-WIFI only"}</span>
+                    <span className="truncate">{status?.reason || "Restricted to authorized Wi-Fi only"}</span>
                   </span>
                 </div>
               </div>
@@ -176,7 +162,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside pl-1">
                 <li>Open your device Wi-Fi settings.</li>
                 <li>
-                  Select and connect to <strong className="text-foreground">SONA-WIFI</strong>.
+                  Connect to <strong className="text-foreground">SONA-WIFI</strong> or an authorized network.
                 </li>
                 <li>
                   Once connected, this page will <strong className="text-foreground">automatically unlock</strong>, or click below to re-check.

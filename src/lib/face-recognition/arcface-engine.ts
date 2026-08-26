@@ -95,7 +95,7 @@ export function estimateSimilarityTransform(
   syy /= n;
 
   const a = (sxx + syy) / srcVar;
-  const b = (sxy - syx) / srcVar;
+  const b = (syx - sxy) / srcVar;
   const tx = dstMeanX - (a * srcMeanX - b * srcMeanY);
   const ty = dstMeanY - (b * srcMeanX + a * srcMeanY);
 
@@ -183,15 +183,33 @@ export function isArcFaceLoaded(): boolean {
   return arcFaceSession !== null;
 }
 
+export function computeFloat32Checksum(arr: Float32Array | number[]): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < arr.length; i++) {
+    const val = arr[i]!;
+    const str = val.toFixed(6);
+    for (let c = 0; c < str.length; c++) {
+      h ^= str.charCodeAt(c);
+      h = Math.imul(h, 0x01000193);
+    }
+  }
+  return (h >>> 0).toString(16).toUpperCase().padStart(8, "0");
+}
+
 /**
- * Warp and align input image to 112x112 planar float tensor [1, 3, 112, 112].
+ * Warp and align input image to 112x112 planar float tensor [1, 3, 112, 112] with full artifacts.
  */
-export function alignFaceToTensor(
+export function alignFaceDetailed(
   source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageData | Uint8Array,
   width: number,
   height: number,
   landmarks: { positions: { x: number; y: number }[] },
-): Float32Array {
+): {
+  planar: Float32Array;
+  dataUrl: string;
+  tensorChecksum: string;
+  pts5: number[][];
+} {
   let imgData: Uint8ClampedArray | Uint8Array;
 
   if (source instanceof HTMLVideoElement || source instanceof HTMLImageElement) {
@@ -218,6 +236,12 @@ export function alignFaceToTensor(
   const outW = ARCFACE_CONFIG.INPUT_SIZE;
   const outH = ARCFACE_CONFIG.INPUT_SIZE;
   const floatPlanar = new Float32Array(3 * outW * outH); // [3, 112, 112]
+
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = outW;
+  previewCanvas.height = outH;
+  const pCtx = previewCanvas.getContext("2d");
+  const outImgData = pCtx ? pCtx.createImageData(outW, outH) : null;
 
   for (let dy = 0; dy < outH; dy++) {
     for (let dx = 0; dx < outW; dx++) {
@@ -263,10 +287,88 @@ export function alignFaceToTensor(
       floatPlanar[0 * outW * outH + pixelIdx] = (r - 127.5) / 128.0;
       floatPlanar[1 * outW * outH + pixelIdx] = (g - 127.5) / 128.0;
       floatPlanar[2 * outW * outH + pixelIdx] = (b - 127.5) / 128.0;
+
+      if (outImgData) {
+        const outIdx = pixelIdx * 4;
+        outImgData.data[outIdx] = Math.round(r);
+        outImgData.data[outIdx + 1] = Math.round(g);
+        outImgData.data[outIdx + 2] = Math.round(b);
+        outImgData.data[outIdx + 3] = 255;
+      }
     }
   }
 
-  return floatPlanar;
+  let dataUrl = "";
+  if (pCtx && outImgData) {
+    pCtx.putImageData(outImgData, 0, 0);
+    dataUrl = previewCanvas.toDataURL("image/jpeg", 0.95);
+  }
+
+  const tensorChecksum = computeFloat32Checksum(floatPlanar);
+
+  return {
+    planar: floatPlanar,
+    dataUrl,
+    tensorChecksum,
+    pts5: srcPoints,
+  };
+}
+
+/**
+ * Warp and align input image to 112x112 planar float tensor [1, 3, 112, 112].
+ */
+export function alignFaceToTensor(
+  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageData | Uint8Array,
+  width: number,
+  height: number,
+  landmarks: { positions: { x: number; y: number }[] },
+): Float32Array {
+  return alignFaceDetailed(source, width, height, landmarks).planar;
+}
+
+/**
+ * Run double ArcFace inference on identical planar tensor to verify determinism.
+ */
+export async function runArcFaceDoubleInference(
+  planarTensorData: Float32Array,
+): Promise<{
+  embeddingA: number[];
+  embeddingB: number[];
+  doubleInferenceDist: number;
+  embeddingChecksumA: string;
+  embeddingChecksumB: string;
+  l2NormA: number;
+}> {
+  const session = await initArcFaceSession();
+  const inputName = session.inputNames[0] || "input.1";
+  const outputName = session.outputNames[0] || "516";
+
+  // Inference A
+  const inputTensorA = new ort.Tensor("float32", planarTensorData, [1, 3, 112, 112]);
+  const resA = await session.run({ [inputName]: inputTensorA });
+  const rawA = Array.from(resA[outputName]?.data as Float32Array);
+  const normA = Math.sqrt(rawA.reduce((s, v) => s + v * v, 0)) || 1e-6;
+  const embeddingA = rawA.map((v) => v / normA);
+  const checksumA = computeFloat32Checksum(embeddingA);
+
+  // Inference B (using the exact same tensor data)
+  const inputTensorB = new ort.Tensor("float32", planarTensorData, [1, 3, 112, 112]);
+  const resB = await session.run({ [inputName]: inputTensorB });
+  const rawB = Array.from(resB[outputName]?.data as Float32Array);
+  const normB = Math.sqrt(rawB.reduce((s, v) => s + v * v, 0)) || 1e-6;
+  const embeddingB = rawB.map((v) => v / normB);
+  const checksumB = computeFloat32Checksum(embeddingB);
+
+  const doubleInferenceDist = calculateCosineDistance(embeddingA, embeddingB);
+
+  return {
+    embeddingA,
+    embeddingB,
+    doubleInferenceDist,
+    embeddingChecksumA: checksumA,
+    embeddingChecksumB: checksumB,
+    l2NormA: normA,
+  };
 }
 
 /**
@@ -278,39 +380,9 @@ export async function generateArcFaceEmbedding(
   height: number,
   landmarks: { positions: { x: number; y: number }[] },
 ): Promise<number[]> {
-  const session = await initArcFaceSession();
-
-  const alignedTensorData = alignFaceToTensor(source, width, height, landmarks);
-  const inputTensor = new ort.Tensor("float32", alignedTensorData, [1, 3, 112, 112]);
-
-  const inputName = session.inputNames[0] || "input.1";
-  const outputName = session.outputNames[0] || "516";
-
-  const feeds: Record<string, ort.Tensor> = {};
-  feeds[inputName] = inputTensor;
-
-  const results = await session.run(feeds);
-  const outputData = results[outputName]?.data as Float32Array;
-
-  if (!outputData || outputData.length !== 512) {
-    throw new Error(
-      `Unexpected ArcFace output dimension: expected 512, received ${outputData?.length ?? 0}`,
-    );
-  }
-
-  // L2 unit normalization: ||v|| = 1
-  let norm = 0;
-  for (let i = 0; i < 512; i++) {
-    norm += outputData[i]! * outputData[i]!;
-  }
-  norm = Math.sqrt(norm) || 1e-6;
-
-  const normalized = new Array<number>(512);
-  for (let i = 0; i < 512; i++) {
-    normalized[i] = outputData[i]! / norm;
-  }
-
-  return normalized;
+  const aligned = alignFaceDetailed(source, width, height, landmarks);
+  const res = await runArcFaceDoubleInference(aligned.planar);
+  return res.embeddingA;
 }
 
 /**

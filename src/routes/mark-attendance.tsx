@@ -95,10 +95,10 @@ function MarkAttendancePage() {
         open={scanOpen}
         onOpenChange={setScanOpen}
         onVerified={async (result) => {
-          setFace(result.snapshot);
+          setFace(result.snapshot ?? null);
           setFaceResult(result);
           toast.success("Face Recognized", {
-            description: `Identity confirmed: ${result.staffName} (${result.staffId})`,
+            description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
           });
 
           // Automatically record attendance for the recognized staff member
@@ -107,7 +107,7 @@ function MarkAttendancePage() {
           setReceipt(attendanceReceipt);
           setStatus("success");
           toast.success(`Attendance Marked Successfully!`, {
-            description: `${result.staffName} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
+            description: `${result.staffName || "Staff"} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
           });
         }}
       />
@@ -158,7 +158,7 @@ function MarkAttendancePage() {
                 key={s.key}
                 title={titles[s.key]}
                 value={s.key === "identity" && faceResult ? `Verified · ${faceResult.staffName}` : s.value}
-                detail={s.key === "identity" && faceResult ? `Match distance: ${faceResult.distance.toFixed(3)}` : s.detail}
+                detail={s.key === "identity" && faceResult && faceResult.distance !== undefined ? `Match distance: ${faceResult.distance.toFixed(3)}` : s.detail}
                 state={s.key === "identity" && faceResult ? "verified" : s.state}
                 icon={icons[s.key]}
               />
@@ -216,13 +216,13 @@ function MarkAttendancePage() {
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium">
                         {faceResult
-                          ? `✓ ${faceResult.staffName}`
+                          ? `✓ ${faceResult.staffName || "Staff"}`
                           : face
                             ? "Face matched"
                             : "Live face scan required"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {faceResult
+                        {faceResult && faceResult.distance !== undefined
                           ? `Verified · Distance: ${faceResult.distance.toFixed(3)}`
                           : face
                             ? "Captured just now on this device"
@@ -247,11 +247,11 @@ function MarkAttendancePage() {
                     </button>
                     {showDebug && (
                       <div className="mt-1.5 space-y-1 rounded-lg bg-muted p-2 font-mono text-[10px]">
-                        <p>Staff: {faceResult.staffId} · {faceResult.staffName}</p>
-                        <p>Distance: {faceResult.distance.toFixed(4)} (threshold: {FACE_CONFIG.MATCH_THRESHOLD})</p>
-                        <p>Audit ID: {faceResult.verification.auditId}</p>
-                        <p>Token: {faceResult.verification.attendanceToken || "—"}</p>
-                        <p>Server accepted: {faceResult.verification.accepted ? "Yes" : "No"}</p>
+                        <p>Staff: {faceResult.staffId || "—"} · {faceResult.staffName || "—"}</p>
+                        <p>Distance: {faceResult.distance !== undefined ? faceResult.distance.toFixed(4) : "—"} (threshold: {FACE_CONFIG.MATCH_THRESHOLD})</p>
+                        <p>Audit ID: {faceResult.verification?.auditId || faceResult.auditId || "—"}</p>
+                        <p>Token: {faceResult.verification?.attendanceToken || "—"}</p>
+                        <p>Server accepted: {faceResult.verification?.accepted ? "Yes" : "No"}</p>
                       </div>
                     )}
                   </div>

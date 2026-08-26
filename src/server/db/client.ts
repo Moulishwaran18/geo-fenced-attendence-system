@@ -51,15 +51,38 @@ export interface VectorSearchResult {
 // PostgreSQL Pool Initialization
 // -----------------------------------------------------------------------------
 
-const dbUrl = process.env["DATABASE_URL"] || "";
+function ensureEnvLoaded() {
+  if (!process.env["DATABASE_URL"]) {
+    try {
+      const envPath = path.resolve(process.cwd(), ".env");
+      if (fs.existsSync(envPath)) {
+        const lines = fs.readFileSync(envPath, "utf-8").split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith("#")) {
+            const [key, ...vals] = trimmed.split("=");
+            if (key && vals.length > 0 && !process.env[key.trim()]) {
+              process.env[key.trim()] = vals.join("=").trim();
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore env read failure
+    }
+  }
+}
+
 let pool: pg.Pool | null = null;
 
 export function getPgPool(): pg.Pool | null {
   if (pool) return pool;
-  if (dbUrl || (process.env["PGHOST"] && process.env["PGDATABASE"])) {
+  ensureEnvLoaded();
+  const currentDbUrl = process.env["DATABASE_URL"] || "";
+  if (currentDbUrl || (process.env["PGHOST"] && process.env["PGDATABASE"])) {
     try {
       pool = new Pool({
-        connectionString: dbUrl || undefined,
+        connectionString: currentDbUrl || undefined,
         host: process.env["PGHOST"],
         port: process.env["PGPORT"] ? parseInt(process.env["PGPORT"], 10) : 5432,
         user: process.env["PGUSER"],
@@ -159,36 +182,33 @@ export function calculateEuclideanDistance(a: number[], b: number[]): number {
 export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
   const p = getPgPool();
   if (p) {
-    try {
-      const query = `
-        SELECT 
-          s.id, s.staff_code, s.name, s.email, s.department, s.designation, s.active, s.created_at, s.updated_at,
-          COUNT(f.id)::int AS "embeddingCount",
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', f.id,
-                'staff_id', f.staff_id,
-                'reference_image_path', f.reference_image_path,
-                'photo_data', f.photo_data,
-                'created_at', f.created_at
-              )
-            ) FILTER (WHERE f.id IS NOT NULL),
-            '[]'
-          ) AS "referenceSamples"
-        FROM staff s
-        LEFT JOIN face_embeddings f ON s.id = f.staff_id
-        GROUP BY s.id
-        ORDER BY s.staff_code ASC;
-      `;
-      const res = await p.query(query);
-      return res.rows;
-    } catch (e) {
-      console.warn("Postgres query failed, reading from local store:", e);
-    }
+    // PostgreSQL IS configured — throw on failure (no silent JSON fallback in production).
+    const query = `
+      SELECT 
+        s.id, s.staff_code, s.name, s.email, s.department, s.designation, s.active, s.created_at, s.updated_at,
+        COUNT(f.id)::int AS "embeddingCount",
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', f.id,
+              'staff_id', f.staff_id,
+              'reference_image_path', f.reference_image_path,
+              'photo_data', f.photo_data,
+              'created_at', f.created_at
+            )
+          ) FILTER (WHERE f.id IS NOT NULL),
+          '[]'
+        ) AS "referenceSamples"
+      FROM staff s
+      LEFT JOIN face_embeddings f ON s.id = f.staff_id
+      GROUP BY s.id
+      ORDER BY s.staff_code ASC;
+    `;
+    const res = await p.query(query);
+    return res.rows;
   }
 
-  // Fallback
+  // Dev-only Fallback (only when DATABASE_URL / PGHOST are not configured)
   const store = readLocalStore();
   return store.staff.map((s) => {
     const samples = store.face_embeddings
@@ -216,38 +236,36 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
 export async function getStaffById(idOrCode: string): Promise<StaffWithEmbeddings | null> {
   const p = getPgPool();
   if (p) {
-    try {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
-      const whereClause = isUuid ? "s.id = $1" : "s.staff_code = $1";
-      const query = `
-        SELECT 
-          s.id, s.staff_code, s.name, s.email, s.department, s.designation, s.active, s.created_at, s.updated_at,
-          COUNT(f.id)::int AS "embeddingCount",
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', f.id,
-                'staff_id', f.staff_id,
-                'reference_image_path', f.reference_image_path,
-                'photo_data', f.photo_data,
-                'created_at', f.created_at
-              )
-            ) FILTER (WHERE f.id IS NOT NULL),
-            '[]'
-          ) AS "referenceSamples"
-        FROM staff s
-        LEFT JOIN face_embeddings f ON s.id = f.staff_id
-        WHERE ${whereClause}
-        GROUP BY s.id;
-      `;
-      const res = await p.query(query, [idOrCode]);
-      if (res.rows.length > 0) return res.rows[0];
-      return null;
-    } catch (e) {
-      console.warn("Postgres getStaffById failed, using local store:", e);
-    }
+    // PostgreSQL IS configured — throw on failure (no silent JSON fallback in production).
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
+    const whereClause = isUuid ? "s.id = $1" : "s.staff_code = $1";
+    const query = `
+      SELECT 
+        s.id, s.staff_code, s.name, s.email, s.department, s.designation, s.active, s.created_at, s.updated_at,
+        COUNT(f.id)::int AS "embeddingCount",
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', f.id,
+              'staff_id', f.staff_id,
+              'reference_image_path', f.reference_image_path,
+              'photo_data', f.photo_data,
+              'created_at', f.created_at
+            )
+          ) FILTER (WHERE f.id IS NOT NULL),
+          '[]'
+        ) AS "referenceSamples"
+      FROM staff s
+      LEFT JOIN face_embeddings f ON s.id = f.staff_id
+      WHERE ${whereClause}
+      GROUP BY s.id;
+    `;
+    const res = await p.query(query, [idOrCode]);
+    if (res.rows.length > 0) return res.rows[0];
+    return null;
   }
 
+  // Dev-only fallback
   const store = readLocalStore();
   const found = store.staff.find(
     (s) => s.id === idOrCode || s.staff_code.toUpperCase() === idOrCode.toUpperCase(),
@@ -285,26 +303,22 @@ export async function createStaff(data: {
 }): Promise<StaffRecord> {
   const p = getPgPool();
   if (p) {
-    try {
-      const query = `
-        INSERT INTO staff (staff_code, name, email, department, designation, active)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (staff_code) DO UPDATE
-        SET name = EXCLUDED.name, email = EXCLUDED.email, department = EXCLUDED.department, designation = EXCLUDED.designation, updated_at = NOW()
-        RETURNING *;
-      `;
-      const res = await p.query(query, [
-        data.staff_code,
-        data.name,
-        data.email,
-        data.department,
-        data.designation,
-        data.active !== undefined ? data.active : true,
-      ]);
-      return res.rows[0];
-    } catch (e) {
-      console.warn("Postgres createStaff failed, using local store:", e);
-    }
+    const query = `
+      INSERT INTO staff (staff_code, name, email, department, designation, active)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (staff_code) DO UPDATE
+      SET name = EXCLUDED.name, email = EXCLUDED.email, department = EXCLUDED.department, designation = EXCLUDED.designation, updated_at = NOW()
+      RETURNING *;
+    `;
+    const res = await p.query(query, [
+      data.staff_code,
+      data.name,
+      data.email,
+      data.department,
+      data.designation,
+      data.active !== undefined ? data.active : true,
+    ]);
+    return res.rows[0];
   }
 
   const store = readLocalStore();
@@ -350,21 +364,17 @@ export async function createStaff(data: {
 export async function updateStaffStatus(idOrCode: string, active: boolean): Promise<StaffRecord | null> {
   const p = getPgPool();
   if (p) {
-    try {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
-      const whereClause = isUuid ? "id = $1" : "staff_code = $1";
-      const query = `
-        UPDATE staff
-        SET active = $2, updated_at = NOW()
-        WHERE ${whereClause}
-        RETURNING *;
-      `;
-      const res = await p.query(query, [idOrCode, active]);
-      if (res.rows.length > 0) return res.rows[0];
-      return null;
-    } catch (e) {
-      console.warn("Postgres updateStaffStatus failed, using local store:", e);
-    }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
+    const whereClause = isUuid ? "id = $1" : "staff_code = $1";
+    const query = `
+      UPDATE staff
+      SET active = $2, updated_at = NOW()
+      WHERE ${whereClause}
+      RETURNING *;
+    `;
+    const res = await p.query(query, [idOrCode, active]);
+    if (res.rows.length > 0) return res.rows[0];
+    return null;
   }
 
   const store = readLocalStore();
@@ -394,26 +404,22 @@ export async function storeFaceEmbedding(
 
   const p = getPgPool();
   if (p) {
-    try {
-      const vecString = `[${embedding.join(",")}]`;
-      const query = `
-        INSERT INTO face_embeddings (staff_id, embedding, reference_image_path, photo_data)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, staff_id, reference_image_path, photo_data, created_at;
-      `;
-      const res = await p.query(query, [staffId, vecString, referenceImagePath, photoData || null]);
-      const row = res.rows[0];
-      return {
-        id: row.id,
-        staff_id: row.staff_id,
-        embedding,
-        reference_image_path: row.reference_image_path,
-        photo_data: row.photo_data,
-        created_at: row.created_at,
-      };
-    } catch (e) {
-      console.warn("Postgres storeFaceEmbedding failed, using local store:", e);
-    }
+    const vecString = `[${embedding.join(",")}]`;
+    const query = `
+      INSERT INTO face_embeddings (staff_id, embedding, reference_image_path, photo_data)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, staff_id, reference_image_path, photo_data, created_at;
+    `;
+    const res = await p.query(query, [staffId, vecString, referenceImagePath, photoData || null]);
+    const row = res.rows[0];
+    return {
+      id: row.id,
+      staff_id: row.staff_id,
+      embedding,
+      reference_image_path: row.reference_image_path,
+      photo_data: row.photo_data,
+      created_at: row.created_at,
+    };
   }
 
   const store = readLocalStore();
@@ -437,12 +443,8 @@ export async function storeFaceEmbedding(
 export async function deleteFaceEmbedding(embeddingId: string): Promise<boolean> {
   const p = getPgPool();
   if (p) {
-    try {
-      const res = await p.query("DELETE FROM face_embeddings WHERE id = $1", [embeddingId]);
-      return (res.rowCount ?? 0) > 0;
-    } catch (e) {
-      console.warn("Postgres deleteFaceEmbedding failed, using local store:", e);
-    }
+    const res = await p.query("DELETE FROM face_embeddings WHERE id = $1", [embeddingId]);
+    return (res.rowCount ?? 0) > 0;
   }
 
   const store = readLocalStore();
@@ -467,39 +469,37 @@ export async function searchFaceEmbeddings(
 
   const p = getPgPool();
   if (p) {
-    try {
-      const vecString = `[${liveDescriptor.join(",")}]`;
-      const query = `
-        SELECT 
-          s.id AS staff_id,
-          s.staff_code,
-          s.name,
-          f.id AS embedding_id,
-          f.reference_image_path,
-          f.photo_data,
-          (f.embedding <=> $1::vector) AS distance
-        FROM face_embeddings f
-        JOIN staff s ON f.staff_id = s.id
-        WHERE s.active = true
-        ORDER BY distance ASC
-        LIMIT $2;
-      `;
-      const res = await p.query(query, [vecString, limit]);
-      return res.rows.map((r) => ({
-        staff_id: r.staff_id,
-        staff_code: r.staff_code,
-        name: r.name,
-        embedding_id: r.embedding_id,
-        reference_image_path: r.reference_image_path,
-        photo_data: r.photo_data,
-        distance: parseFloat(r.distance),
-      }));
-    } catch (e) {
-      console.warn("Postgres vector search query failed, using local store fallback:", e);
-    }
+    // PostgreSQL IS configured — perform pgvector cosine distance search.
+    // Throws on failure (no silent JSON fallback when PG is the authoritative source).
+    const vecString = `[${liveDescriptor.join(",")}]`;
+    const query = `
+      SELECT 
+        s.id AS staff_id,
+        s.staff_code,
+        s.name,
+        f.id AS embedding_id,
+        f.reference_image_path,
+        f.photo_data,
+        (f.embedding <=> $1::vector) AS distance
+      FROM face_embeddings f
+      JOIN staff s ON f.staff_id = s.id
+      WHERE s.active = true
+      ORDER BY distance ASC
+      LIMIT $2;
+    `;
+    const res = await p.query(query, [vecString, limit]);
+    return res.rows.map((r) => ({
+      staff_id: r.staff_id,
+      staff_code: r.staff_code,
+      name: r.name,
+      embedding_id: r.embedding_id,
+      reference_image_path: r.reference_image_path,
+      photo_data: r.photo_data,
+      distance: parseFloat(r.distance),
+    }));
   }
 
-  // Local Store Fallback with exact Cosine distance (<=>)
+  // Dev-only Local Store fallback (cosine distance) — only when PG is not configured.
   const store = readLocalStore();
   const activeStaffMap = new Map<string, StaffRecord>();
   store.staff.filter((s) => s.active).forEach((s) => activeStaffMap.set(s.id, s));
@@ -522,4 +522,107 @@ export async function searchFaceEmbeddings(
   }
 
   return results.sort((a, b) => a.distance - b.distance).slice(0, limit);
+}
+
+export interface DatabaseDiagnostics {
+  status: "CONNECTED" | "DISCONNECTED";
+  databaseType: string;
+  host: string;
+  port: number | string;
+  databaseName: string;
+  user: string;
+  staffCount: number;
+  totalEmbeddingCount: number;
+  activeEmbeddingCount: number;
+  pgvector: "ENABLED" | "DISABLED";
+  activeSource: string;
+  provenanceProof?: Array<{ staff_code: string; name: string; embedding_count: number }>;
+  details?: string;
+}
+
+/**
+ * Developer diagnostic function: verifies live database connection and state
+ * without exposing credentials or modifying any tables.
+ */
+export async function getDatabaseDiagnostics(): Promise<DatabaseDiagnostics> {
+  const p = getPgPool();
+  if (p) {
+    try {
+      const client = await p.connect();
+      try {
+        const staffRes = await client.query("SELECT COUNT(*)::int as count FROM staff");
+        const embRes = await client.query("SELECT COUNT(*)::int as count FROM face_embeddings");
+        const activeEmbRes = await client.query(`
+          SELECT COUNT(f.id)::int as count 
+          FROM face_embeddings f 
+          JOIN staff s ON f.staff_id = s.id 
+          WHERE s.active = true
+        `);
+        const extRes = await client.query("SELECT extname FROM pg_extension WHERE extname = 'vector'");
+        const dbInfo = await client.query("SELECT current_database(), current_user, inet_server_addr(), inet_server_port()");
+        // Live proof: read staff + per-person embedding counts directly from PostgreSQL
+        const proofRes = await client.query(`
+          SELECT s.staff_code, s.name, COUNT(f.id)::int as embedding_count
+          FROM staff s
+          LEFT JOIN face_embeddings f ON f.staff_id = s.id
+          GROUP BY s.id
+          ORDER BY s.staff_code
+        `);
+
+        return {
+          status: "CONNECTED",
+          databaseType: "PostgreSQL",
+          host: String(dbInfo.rows[0]?.inet_server_addr || process.env["PGHOST"] || "PostgreSQL Server"),
+          port: dbInfo.rows[0]?.inet_server_port || (process.env["PGPORT"] ? parseInt(process.env["PGPORT"], 10) : 5432),
+          databaseName: String(dbInfo.rows[0]?.current_database || process.env["PGDATABASE"] || ""),
+          user: String(dbInfo.rows[0]?.current_user || process.env["PGUSER"] || ""),
+          staffCount: staffRes.rows[0]?.count ?? 0,
+          totalEmbeddingCount: embRes.rows[0]?.count ?? 0,
+          activeEmbeddingCount: activeEmbRes.rows[0]?.count ?? 0,
+          pgvector: extRes.rows.length > 0 ? "ENABLED" : "DISABLED",
+          activeSource: "PostgreSQL Live Database",
+          provenanceProof: proofRes.rows,
+        };
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      // PostgreSQL pool exists but connection failed — report partial error state
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return {
+        status: "DISCONNECTED",
+        databaseType: "PostgreSQL (connection failed)",
+        host: process.env["PGHOST"] || "localhost",
+        port: process.env["PGPORT"] ? parseInt(process.env["PGPORT"], 10) : 5432,
+        databaseName: process.env["PGDATABASE"] || "campus_biometrics",
+        user: process.env["PGUSER"] || "postgres",
+        staffCount: 0,
+        totalEmbeddingCount: 0,
+        activeEmbeddingCount: 0,
+        pgvector: "DISABLED",
+        activeSource: "ERROR: Cannot connect to PostgreSQL",
+        details: `PostgreSQL pool initialized but connection failed: ${errMsg}`,
+      };
+    }
+  }
+
+  // Standalone Dev-only Local JSON Store Fallback (no PostgreSQL configured)
+  const store = readLocalStore();
+  const activeStaffIds = new Set(store.staff.filter((s) => s.active).map((s) => s.id));
+  const activeEmbeddings = store.face_embeddings.filter((e) => activeStaffIds.has(e.staff_id));
+
+  return {
+    status: "DISCONNECTED",
+    databaseType: "local JSON",
+    host: process.env["PGHOST"] || "localhost (not configured)",
+    port: process.env["PGPORT"] || 5432,
+    databaseName: process.env["PGDATABASE"] || "campus_biometrics (not connected)",
+    user: process.env["PGUSER"] || "postgres",
+    staffCount: store.staff.length,
+    totalEmbeddingCount: store.face_embeddings.length,
+    activeEmbeddingCount: activeEmbeddings.length,
+    pgvector: "DISABLED",
+    activeSource: "data/staff-db.json",
+    details: "DATABASE_URL is not set in environment. PostgreSQL is not configured. All operations served from data/staff-db.json (dev-only mode).",
+  };
 }

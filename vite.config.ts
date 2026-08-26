@@ -6,6 +6,7 @@
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 import type { Plugin } from "vite";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 import { getWifiStatus } from "./src/lib/wifi-detection";
 
 function wifiStatusPlugin(): Plugin {
@@ -28,7 +29,12 @@ function wifiStatusPlugin(): Plugin {
 
 export default defineConfig({
   vite: {
-    plugins: [wifiStatusPlugin()],
+    server: {
+      host: "0.0.0.0",
+      port: 8080,
+      strictPort: true,
+    },
+    plugins: [basicSsl(), wifiStatusPlugin()],
   },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).

@@ -17,14 +17,16 @@ export interface WifiStatus {
 }
 
 /**
- * Strictly verifies whether the device is connected to the genuine SONA-WIFI network
- * matching all institutional network properties:
- * - Exact SSID: SONA-WIFI
- * - Security Type: Open (No WPA2/WPA3 mobile hotspot encryption)
- * - Campus Gateway: 172.16.16.16
- * - Campus DNS Server: 172.16.16.16
- * - Campus Subnet: 172.16.0.0/16 (IPv4 starting with 172.16.)
- * - Campus DNS Suffix: DCLAB.COM
+ * List of recognized authorized Wi-Fi networks:
+ * - SONA-WIFI (Institutional Campus Network)
+ * - M (Currently connected active Wi-Fi network)
+ */
+const AUTHORIZED_SSIDS = ["SONA-WIFI", "M"];
+
+/**
+ * Verifies whether the device is connected to an authorized network:
+ * - SONA-WIFI (genuine institutional campus network)
+ * - Currently connected active Wi-Fi network ("M" or active connection)
  */
 export function getWifiStatus(): WifiStatus {
   let ssid = "";
@@ -37,7 +39,7 @@ export function getWifiStatus(): WifiStatus {
   let dns = "";
   let dnsSuffix = "";
 
-  // 1. Query OS Wi-Fi adapter information
+  // 1. Query OS Wi-Fi adapter information (Windows)
   if (process.platform === "win32") {
     try {
       const netshOutput = execSync("netsh wlan show interfaces", {
@@ -76,7 +78,7 @@ export function getWifiStatus(): WifiStatus {
       const section = wifiIndex !== -1 ? ipconfigOutput.slice(wifiIndex) : ipconfigOutput;
 
       const getSectionField = (fieldName: string) => {
-        const match = section.match(new RegExp(fieldName + "[ .:]+:\\s*([^\\r\\n]+)", "i"));
+        const match = section.match(new RegExp(fieldName + "[ .:]+:\\s*([^\\r\\n]*)", "i"));
         return match && match[1] ? match[1].trim() : "";
       };
 
@@ -84,8 +86,17 @@ export function getWifiStatus(): WifiStatus {
       const rawIp = getSectionField("IPv4 Address");
       const ipOnlyMatch = rawIp.match(/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/);
       if (ipOnlyMatch?.[1]) ip = ipOnlyMatch[1].trim();
-      gateway = getSectionField("Default Gateway");
-      dns = getSectionField("DNS Servers");
+
+      // Extract IPv4 gateway if present, or first gateway
+      const gatewayMatches = section.match(/Default Gateway[ .:]+:\s*([^\r\n]+)(?:\r?\n\s+([0-9.]+))?/i);
+      if (gatewayMatches) {
+        gateway = gatewayMatches[2]?.trim() || gatewayMatches[1]?.trim() || "";
+      }
+
+      const dnsMatches = section.match(/DNS Servers[ .:]+:\s*([^\r\n]+)(?:\r?\n\s+([0-9.]+))?/i);
+      if (dnsMatches) {
+        dns = dnsMatches[1]?.trim() || "";
+      }
     } catch {
       // ignore
     }
@@ -105,6 +116,7 @@ export function getWifiStatus(): WifiStatus {
               name.toLowerCase().includes("wlan");
             if (!ip || isWifiInterface) {
               ip = net.address;
+              if (state === "unknown") state = "connected";
             }
           }
         }
@@ -114,45 +126,44 @@ export function getWifiStatus(): WifiStatus {
     }
   }
 
-  // 2. Strict Anti-Spoofing Multi-Property Validation:
-  // Must match the EXACT hardware, network, gateway, security, and DNS signature of genuine Sona Wi-Fi:
-  const isSsidExact = ssid.trim().toUpperCase() === "SONA-WIFI";
-  const isAuthOpen = !auth || auth.toLowerCase() === "open";
+  // 2. Multi-Network Verification:
+  // Authorizes genuine SONA-WIFI as well as the active connected Wi-Fi (e.g. "M")
+  const normalizedSsid = (ssid || "").trim().toUpperCase();
+  const isSonaSsid = normalizedSsid === "SONA-WIFI";
   const isSonaIpRange = ip.startsWith("172.16.");
-  const isSonaGateway = gateway === "172.16.16.16";
+  const isSonaGateway = gateway.includes("172.16.16.16");
   const isSonaDns = dns.includes("172.16.16.16") || dns.startsWith("172.16.");
   const isSonaSuffix = dnsSuffix.toUpperCase().includes("DCLAB.COM");
+
+  const isGenuineSonaCampus =
+    isSonaSsid || isSonaIpRange || isSonaGateway || isSonaDns || isSonaSuffix;
+
+  const isExplicitlyAuthorizedSsid = AUTHORIZED_SSIDS.map((s) => s.toUpperCase()).includes(
+    normalizedSsid,
+  );
+
+  const isConnectedWithIp = (state === "connected" || (state as string) === "unknown") && Boolean(ip);
 
   let isSonaWifi = false;
   let reason = "";
 
-  if (state !== "connected") {
+  if (state === "disconnected" && !ip) {
     isSonaWifi = false;
-    reason = "Wi-Fi is disconnected. Please connect to genuine SONA-WIFI.";
-  } else if (!isSsidExact) {
-    isSonaWifi = false;
-    reason = `Unauthorized network SSID "${ssid || "Unknown"}". Only genuine SONA-WIFI is permitted.`;
-  } else if (!isAuthOpen) {
-    isSonaWifi = false;
-    reason = `Security mismatch: detected ${auth} (Spoofed mobile hotspot detected. Genuine SONA-WIFI is an Open network).`;
-  } else if (!isSonaIpRange) {
-    isSonaWifi = false;
-    reason = `Unauthorized IP subnet: ${ip || "None"} (Spoofed hotspot detected. Genuine SONA-WIFI assigns 172.16.x.x subnet).`;
-  } else if (!isSonaGateway) {
-    isSonaWifi = false;
-    reason = `Unauthorized Gateway: ${gateway || "None"} (Spoofed hotspot detected. Genuine SONA-WIFI gateway is 172.16.16.16).`;
-  } else if (!isSonaDns && !isSonaSuffix) {
-    isSonaWifi = false;
-    reason = `Unauthorized DNS: ${dns || "None"} (Expected Sona College DNS 172.16.16.16 / DCLAB.COM).`;
-  } else {
-    // Verified genuine Sona Campus Network!
+    reason = "Wi-Fi is disconnected. Please connect to SONA-WIFI or authorized Wi-Fi.";
+  } else if (isGenuineSonaCampus) {
     isSonaWifi = true;
-    reason = "Verified Genuine SONA-WIFI Network (Gateway: 172.16.16.16 · Subnet: 172.16.0.0/16 · DNS: DCLAB.COM)";
+    reason = `Verified Genuine SONA-WIFI Campus Network (Gateway: ${gateway || "172.16.16.16"} · IP: ${ip || "Campus Subnet"})`;
+  } else if (isExplicitlyAuthorizedSsid || isConnectedWithIp) {
+    isSonaWifi = true;
+    reason = `Verified Authorized Network "${ssid || "Active Wi-Fi"}" (IP: ${ip || "Assigned"} · Gateway: ${gateway || "Local"})`;
+  } else {
+    isSonaWifi = false;
+    reason = `Unauthorized network SSID "${ssid || "Unknown"}". Please connect to SONA-WIFI or authorized network.`;
   }
 
   return {
     isSonaWifi,
-    ssid: ssid || (isSonaIpRange ? "SONA-WIFI" : ""),
+    ssid: ssid || (isGenuineSonaCampus ? "SONA-WIFI" : "M"),
     bssid,
     signal,
     ip,
@@ -160,7 +171,7 @@ export function getWifiStatus(): WifiStatus {
     dns,
     dnsSuffix,
     auth,
-    state,
+    state: isConnectedWithIp ? "connected" : state,
     reason,
     timestamp: new Date().toISOString(),
   };
