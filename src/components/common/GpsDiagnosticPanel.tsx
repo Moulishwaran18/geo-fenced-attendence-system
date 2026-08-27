@@ -90,7 +90,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
               Developer GPS &amp; Geofence Diagnostics
             </h3>
             <p className="text-[11px] text-muted-foreground">
-              Authoritative 6-Point Campus Polygon Verification
+              Authoritative 19-Point Campus Polygon Verification (C1 → C19 → C1)
             </p>
           </div>
         </div>
@@ -149,54 +149,56 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
             {accuracy !== null ? (
               <span
                 className={
-                  accuracy <= 20
-                    ? "text-success"
-                    : accuracy <= 50
-                      ? "text-warning"
-                      : "text-destructive"
+                  accuracy <= 25
+                    ? "text-success font-semibold"
+                    : accuracy <= 65
+                      ? "text-primary font-semibold"
+                      : "text-warning font-semibold"
                 }
               >
-                ± {accuracy.toFixed(1)} m
+                ±{accuracy.toFixed(1)} m
               </span>
             ) : (
               "—"
             )}
           </div>
           <div className="text-[10px] text-muted-foreground">
-            {accuracy !== null
-              ? accuracy <= 20
-                ? "High Precision"
-                : "Moderate / Wi-Fi"
-              : "Awaiting Fix"}
+            {accuracy && accuracy <= 65 ? "High Precision Fix" : "Degraded Fix"}
           </div>
         </div>
 
-        {/* Metric 4: Geofence Status */}
+        {/* Metric 4: Geofence State */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Geofence Decision
+            19-Point Polygon Status
           </div>
-          <div className="mt-1 font-mono font-bold text-sm">
+          <div className="mt-1 font-semibold text-sm flex items-center gap-1.5">
             {isInside === true ? (
-              <span className="text-success flex items-center gap-1">
-                <CheckCircle2 className="size-4" /> INSIDE (ALLOW)
-              </span>
+              <>
+                <ShieldCheck className="size-4 text-success" />
+                <span className="text-success">Inside Polygon</span>
+              </>
             ) : isInside === false ? (
-              <span className="text-destructive flex items-center gap-1">
-                <AlertTriangle className="size-4" /> OUTSIDE (BLOCK)
-              </span>
+              <>
+                <ShieldAlert className="size-4 text-destructive" />
+                <span className="text-destructive">Outside Boundary</span>
+              </>
             ) : (
-              <span className="text-muted-foreground">—</span>
+              <>
+                <AlertTriangle className="size-4 text-muted-foreground" />
+                <span className="text-muted-foreground">Acquiring Fix</span>
+              </>
             )}
           </div>
-          <div className="text-[10px] text-muted-foreground">Point-in-Polygon (PIP)</div>
+          <div className="text-[10px] text-muted-foreground truncate">
+            {evaluation ? `${evaluation.distanceToBoundaryMeters}m to perimeter` : "Ray-casting active"}
+          </div>
         </div>
       </div>
 
-      {/* Relationship & Timestamp Bar */}
-      <div className="border-t border-border bg-muted/20 px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-foreground font-mono">
-          <MapPin className="size-3.5 text-primary shrink-0" />
+      {/* Evaluation Diagnostic Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/20 px-4 py-2 text-xs">
+        <div className="flex items-center gap-2">
           <span className="font-semibold">Relationship:</span>
           <span className="text-muted-foreground truncate">
             {evaluation ? evaluation.relationship : "Evaluating GPS against campus polygon…"}
@@ -215,7 +217,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           onClick={() => setShowCoords((s) => !s)}
           className="flex w-full items-center justify-between px-4 py-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/40 transition-colors"
         >
-          <span>Authoritative Geofence Boundary (6 Vertices)</span>
+          <span>Authoritative Geofence Boundary (19 Vertices: C1 → C19 → C1)</span>
           {showCoords ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         </button>
 
@@ -224,14 +226,14 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
               {AUTHORIZED_GEOFENCE_POLYGON.map((pt, i) => (
                 <div key={i} className="rounded border border-border bg-card p-2 text-[10px] font-mono">
-                  <div className="text-muted-foreground font-semibold">Vertex #{i + 1}</div>
+                  <div className="text-muted-foreground font-semibold">C{i + 1}</div>
                   <div>Lat: <span className="text-foreground">{pt.lat}</span></div>
                   <div>Lng: <span className="text-foreground">{pt.lng}</span></div>
                 </div>
               ))}
             </div>
             <p className="mt-2 text-[10px] text-muted-foreground">
-              * The attendance system evaluates point-in-polygon containment using the exact ray-casting Jordan Curve algorithm.
+              * The attendance system evaluates point-in-polygon containment using the exact ray-casting Jordan Curve algorithm across all 19 vertices (C1 → C19 → C1).
             </p>
           </div>
         )}

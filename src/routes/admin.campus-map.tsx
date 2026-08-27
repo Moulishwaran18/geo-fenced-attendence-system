@@ -19,7 +19,7 @@ export const Route = createFileRoute("/admin/campus-map")({
       {
         name: "description",
         content:
-          "Live campus geofence view with authoritative 6-point polygon across Sona College of Technology.",
+          "Live campus geofence view with authoritative 19-point polygon across Sona College of Technology.",
       },
       { property: "og:title", content: "Campus Map — CampusAttend Admin" },
       { property: "og:description", content: "Live campus boundary and staff presence map." },
@@ -37,7 +37,7 @@ function CampusMapPage() {
     <AppShell nav={adminNav} role="admin">
       <PageHeader
         title="Campus Map"
-        description="Authoritative 6-point GPS Geofence covering Sona College of Technology."
+        description="Authoritative 19-point GPS Geofence covering Sona College of Technology."
         actions={
           <Button variant="outline" onClick={() => void geofence.checkLocation(true)}>
             <RefreshCcw className={`mr-2 size-4 ${geofence.isChecking ? "animate-spin" : ""}`} /> Refresh GPS
@@ -48,7 +48,7 @@ function CampusMapPage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Staff inside campus" value={172} icon={MapPinned} tone="success" />
         <StatCard label="Staff outside campus" value={12} icon={UserX} tone="danger" />
-        <StatCard label="Boundary status" value="Active" hint="6 Vertices Enforced" icon={ShieldCheck} tone="primary" />
+        <StatCard label="Boundary status" value="Active" hint="19 Vertices Enforced" icon={ShieldCheck} tone="primary" />
         <StatCard label="Live GPS Status" value={geofence.isInside === true ? "Inside" : geofence.isInside === false ? "Outside" : "Acquiring"} hint={geofence.accuracy ? `±${geofence.accuracy.toFixed(1)}m` : "Awaiting fix"} icon={RefreshCcw} tone="neutral" />
       </div>
 

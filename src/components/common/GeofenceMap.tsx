@@ -118,7 +118,7 @@ export function GeofenceMap({
     polygonLayerRef.current.bindPopup(
       `<div style="font-family:sans-serif;font-size:12px;padding:4px;">
         <strong style="color:${polygonColor};">Authorized Campus Geofence</strong><br/>
-        6 Authoritative Vertices
+        19 Authoritative Vertices (C1 → C19 → C1)
       </div>`,
     );
 

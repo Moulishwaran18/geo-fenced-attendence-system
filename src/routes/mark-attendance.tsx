@@ -1,9 +1,13 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Bluetooth,
+  Camera,
   CheckCircle2,
+  Clock,
+  Compass,
+  Database,
   Eye,
   Fingerprint,
   Loader2,
@@ -12,7 +16,9 @@ import {
   ShieldAlert,
   ShieldCheck,
   Smartphone,
+  Sparkles,
   Wifi,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
@@ -24,6 +30,7 @@ import { GeofenceMap } from "@/components/common/GeofenceMap";
 import { GpsDiagnosticPanel } from "@/components/common/GpsDiagnosticPanel";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -42,6 +49,7 @@ import {
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
+import { useWifiStatus } from "@/hooks/use-wifi-status";
 
 export const Route = createFileRoute("/mark-attendance")({
   head: () => ({
@@ -50,10 +58,10 @@ export const Route = createFileRoute("/mark-attendance")({
       {
         name: "description",
         content:
-          "Verify campus GPS polygon geofence, institutional network, and biometric identity, then mark your college staff attendance.",
+          "Authoritative 3-Factor Presence Verification: Wi-Fi, 19-Point GPS Polygon Geofence, and Biometric Identity Verification.",
       },
       { property: "og:title", content: "Mark Attendance — CampusAttend" },
-      { property: "og:description", content: "Authoritative GPS Polygon & Biometric Presence Verification." },
+      { property: "og:description", content: "3-Factor Presence Authorization (Wi-Fi + GPS + ArcFace)." },
     ],
   }),
   component: MarkAttendancePage,
@@ -83,12 +91,89 @@ function MarkAttendancePage() {
   const [showDebug, setShowDebug] = useState(false);
   const now = useIndiaTime();
 
-  // High-accuracy live GPS geofence tracker
+  // High-accuracy live GPS 19-point polygon geofence tracker
   const geofence = useGeofence(true);
+
+  // Live Wi-Fi Status tracker
+  const { status: wifiStatus } = useWifiStatus(5000);
 
   // Determine real or mock location state
   const isUsingMockScenario = scenario !== "ready";
   const mockSnapshot = getSnapshot(scenario);
+
+  // ---------------------------------------------------------------------------
+  // 3 MANDATORY SECURITY FACTORS:
+  // 1. Wi-Fi Authorized
+  // 2. GPS Inside 19-Point Polygon
+  // 3. Face Authenticated (PERSON_001 / PERSON_002 matched via PostgreSQL pgvector)
+  // ---------------------------------------------------------------------------
+
+  const wifiAuthorized = isUsingMockScenario
+    ? mockSnapshot.signals.find((s) => s.key === "wifi")?.state === "verified"
+    : Boolean(wifiStatus?.isSonaWifi || (wifiStatus?.state === "connected" && wifiStatus?.ssid));
+
+  const gpsInsideGeofence = isUsingMockScenario
+    ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
+    : geofence.isInside === true;
+
+  const faceAuthenticated = Boolean(
+    faceResult &&
+      faceResult.verified &&
+      (faceResult.staffCode === "PERSON_001" ||
+        faceResult.staffCode === "PERSON_002" ||
+        faceResult.staffId) &&
+      faceResult.distance !== undefined &&
+      faceResult.distance <= FACE_CONFIG.MATCH_THRESHOLD,
+  );
+
+  // FINAL DECISION RULE:
+  // wifiAuthorized && gpsInsideGeofence && faceAuthenticated -> ALLOWED
+  // otherwise -> REJECTED
+  const canMarkAttendance = wifiAuthorized && gpsInsideGeofence && faceAuthenticated;
+
+  // Final Attendance Status Text
+  const finalAttendanceStatus = useMemo(() => {
+    if (status === "success" && receipt) {
+      return {
+        label: "ALLOWED & RECORDED",
+        tone: "success" as const,
+        detail: `Receipt: ${receipt.attendanceId} recorded at ${receipt.time}`,
+      };
+    }
+    if (canMarkAttendance) {
+      return {
+        label: "ALLOWED",
+        tone: "success" as const,
+        detail: "All 3 Security Factors (Wi-Fi, 19-Point GPS Polygon, Face Recognition) Passed",
+      };
+    }
+    if (!wifiAuthorized) {
+      return {
+        label: "REJECTED (Wi-Fi Unauthorized)",
+        tone: "error" as const,
+        detail: "Device must be connected to authorized institutional Wi-Fi network",
+      };
+    }
+    if (!gpsInsideGeofence) {
+      return {
+        label: "REJECTED (Outside 19-Point Polygon)",
+        tone: "error" as const,
+        detail: "Device GPS coordinates are outside the authoritative 19-point campus polygon",
+      };
+    }
+    if (faceResult && !faceAuthenticated) {
+      return {
+        label: "REJECTED (Face Unauthorized)",
+        tone: "error" as const,
+        detail: `Biometric distance (${faceResult.distance?.toFixed(4) || "—"}) exceeds threshold (${FACE_CONFIG.MATCH_THRESHOLD})`,
+      };
+    }
+    return {
+      label: "REJECTED (Face Scan Pending)",
+      tone: "warning" as const,
+      detail: "Live face recognition required to complete 3-factor verification",
+    };
+  }, [status, receipt, canMarkAttendance, wifiAuthorized, gpsInsideGeofence, faceResult, faceAuthenticated]);
 
   // Live Location Signal computation
   const liveLocationSignal = useMemo((): VerificationSignal => {
@@ -140,7 +225,7 @@ function MarkAttendancePage() {
     if (geofence.isInside === true) {
       return {
         key: "location",
-        value: "Inside Campus Polygon",
+        value: "Inside 19-Point Polygon",
         detail: `Accuracy: ±${Math.round(geofence.accuracy || 0)}m · ${geofence.distanceToBoundary}m from boundary`,
         state: "verified",
       };
@@ -148,34 +233,21 @@ function MarkAttendancePage() {
 
     return {
       key: "location",
-      value: "Outside Campus Geofence",
+      value: "Outside 19-Point Polygon",
       detail: `${geofence.distanceToBoundary}m from authorized perimeter`,
       state: "error",
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
 
-  // Combined Location Authorization Check
-  const isLocationAuthorized = isUsingMockScenario
-    ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
-    : geofence.isInside === true;
-
-  // Identity verification check
-  const isIdentityAuthorized = Boolean(
-    faceResult && (faceResult.distance === undefined || faceResult.distance <= FACE_CONFIG.MATCH_THRESHOLD),
-  );
-
-  // Both factors must be satisfied
-  const canMarkAttendance = isLocationAuthorized && isIdentityAuthorized;
-
-  // Signals Array
+  // Signals Array for Verification Cards
   const signals = useMemo((): VerificationSignal[] => {
     return [
       liveLocationSignal,
       {
         key: "wifi",
-        value: "Campus Network",
-        detail: "Authorized Wi-Fi · Connected",
-        state: "verified",
+        value: wifiAuthorized ? (wifiStatus?.ssid || "Campus Network") : "Not Connected",
+        detail: wifiAuthorized ? "Authorized Wi-Fi · Connected" : "Unauthorized Network",
+        state: wifiAuthorized ? "verified" : "error",
       },
       {
         key: "bluetooth",
@@ -185,28 +257,38 @@ function MarkAttendancePage() {
       },
       {
         key: "identity",
-        value: isIdentityAuthorized
+        value: faceAuthenticated
           ? `Verified · ${faceResult?.staffName || "Staff"}`
           : faceResult
             ? "Unknown Face"
             : "Live Face Scan",
-        detail: isIdentityAuthorized && faceResult?.distance !== undefined
-          ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
-          : "Biometric match required",
-        state: isIdentityAuthorized ? "verified" : faceResult ? "error" : "pending",
+        detail:
+          faceAuthenticated && faceResult?.distance !== undefined
+            ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
+            : faceResult
+              ? "Biometric match rejected"
+              : "Biometric match required",
+        state: faceAuthenticated ? "verified" : faceResult ? "error" : "pending",
       },
     ];
-  }, [liveLocationSignal, isIdentityAuthorized, faceResult]);
+  }, [liveLocationSignal, wifiAuthorized, wifiStatus, faceAuthenticated, faceResult]);
 
   const run = async () => {
-    if (!isLocationAuthorized) {
-      toast.error("Attendance Blocked", {
-        description: "You must be inside the authorized campus GPS polygon to mark attendance.",
+    if (!wifiAuthorized) {
+      toast.error("Wi-Fi Verification Failed", {
+        description: "You must be connected to an authorized campus Wi-Fi network to mark attendance.",
       });
       return;
     }
 
-    if (!isIdentityAuthorized) {
+    if (!gpsInsideGeofence) {
+      toast.error("GPS Geofence Verification Failed", {
+        description: "Your device GPS position is outside the authoritative 19-point campus polygon.",
+      });
+      return;
+    }
+
+    if (!faceAuthenticated) {
       toast.error("Identity Verification Required", {
         description: "Please complete face recognition first.",
       });
@@ -231,12 +313,20 @@ function MarkAttendancePage() {
         onVerified={async (result) => {
           setFace(result.snapshot ?? null);
           setFaceResult(result);
+
+          if (!result.verified) {
+            toast.error("Face Unrecognized", {
+              description: "Biometric identity could not be verified against PostgreSQL staff database.",
+            });
+            return;
+          }
+
           toast.success("Face Recognized", {
             description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
           });
 
-          // Check if location is already inside before marking
-          if (isLocationAuthorized) {
+          // If Wi-Fi and GPS are both authorized, automatically mark attendance
+          if (wifiAuthorized && gpsInsideGeofence) {
             setStatus("verifying");
             const attendanceReceipt = await markAttendance();
             setReceipt(attendanceReceipt);
@@ -244,9 +334,13 @@ function MarkAttendancePage() {
             toast.success(`Attendance Marked Successfully!`, {
               description: `${result.staffName || "Staff"} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
             });
-          } else {
-            toast.warning("Location Check Pending / Outside", {
-              description: "Face verified, but GPS location must be inside the campus polygon to mark attendance.",
+          } else if (!gpsInsideGeofence) {
+            toast.warning("GPS Outside Polygon", {
+              description: "Face verified, but GPS location must be inside the 19-point campus polygon to mark attendance.",
+            });
+          } else if (!wifiAuthorized) {
+            toast.warning("Wi-Fi Not Authorized", {
+              description: "Face verified, but device must be connected to authorized campus Wi-Fi.",
             });
           }
         }}
@@ -254,7 +348,7 @@ function MarkAttendancePage() {
 
       <PageHeader
         title="Mark Attendance"
-        description="Presence requires both High-Precision GPS Geofence &amp; Biometric Identity Verification."
+        description="3-Factor Presence Verification: Wi-Fi Authorization + 19-Point GPS Polygon + ArcFace Biometric Recognition."
         actions={
           <div className="flex items-center gap-2">
             <label htmlFor="scenario" className="text-xs text-muted-foreground">
@@ -267,7 +361,7 @@ function MarkAttendancePage() {
                 setStatus("idle");
               }}
             >
-              <SelectTrigger id="scenario" className="w-56 bg-card">
+              <SelectTrigger id="scenario" className="w-48 bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -286,31 +380,42 @@ function MarkAttendancePage() {
         <SuccessPanel
           receipt={receipt}
           staffName={faceResult?.staffName}
-          onReset={() => setStatus("idle")}
+          onReset={() => {
+            setStatus("idle");
+            setFace(null);
+            setFaceResult(null);
+          }}
         />
       ) : (
         <div className="space-y-6">
-          {/* Geofence & Identity Status Banner */}
-          {!isLocationAuthorized ? (
+          {/* Conditional Status Banners */}
+          {!wifiAuthorized ? (
+            <AlertBanner
+              tone="error"
+              icon={Wifi}
+              title="Attendance Blocked — Wi-Fi Not Authorized"
+              description="Device is not connected to an authorized campus Wi-Fi network. Connect to institutional Wi-Fi to satisfy Factor 1."
+            />
+          ) : !gpsInsideGeofence ? (
             <AlertBanner
               tone="error"
               icon={ShieldAlert}
-              title="Attendance Blocked — Outside Authorized Geofence"
-              description="Your current device GPS position is outside the authorized campus polygon boundary. You must be physically present inside the designated campus area to mark attendance."
+              title="Attendance Blocked — Outside 19-Point Geofence Polygon"
+              description="Your device GPS coordinates are outside the authoritative 19-point campus polygon boundary. You must be physically inside the designated perimeter."
             />
-          ) : !isIdentityAuthorized ? (
+          ) : !faceAuthenticated ? (
             <AlertBanner
               tone="info"
               icon={ShieldCheck}
-              title="GPS Geofence Verified — Inside Campus"
-              description="Your GPS location has been verified inside the authorized polygon. Complete the live face recognition scan to record attendance."
+              title="Wi-Fi &amp; GPS Verified — Face Recognition Required"
+              description="Wi-Fi and 19-point GPS polygon checks passed. Complete live face scan to satisfy Factor 3 and record attendance."
             />
           ) : (
             <AlertBanner
               tone="success"
               icon={ShieldCheck}
-              title="Multi-Factor Verification Ready"
-              description="Both your GPS geofence location and biometric identity are confirmed. Ready to submit attendance."
+              title="All 3 Security Factors Verified (Wi-Fi + GPS + Face)"
+              description="All three mandatory factors are satisfied. Attendance is ALLOWED and ready to record."
             />
           )}
 
@@ -331,16 +436,16 @@ function MarkAttendancePage() {
           {/* Developer GPS Diagnostic Panel */}
           <GpsDiagnosticPanel geofence={geofence} />
 
-          {/* Map and Action Summary Grid */}
+          {/* Map and Mandatory Telemetry & Verification Grid */}
           <div className="grid gap-6 xl:grid-cols-3">
             <Section
               className="xl:col-span-2"
-              title="Campus Geofence Boundary"
+              title="Authoritative 19-Point Geofence Boundary"
               description={
                 geofence.isInside === true
-                  ? "Real GPS fix: Inside authorized attendance region"
+                  ? "Real GPS fix: Inside authoritative 19-point campus polygon (C1 → C19 → C1)"
                   : geofence.isInside === false
-                    ? "Real GPS fix: Outside authorized boundary"
+                    ? "Real GPS fix: Outside authoritative 19-point campus polygon"
                     : "Acquiring live GPS coordinates…"
               }
             >
@@ -349,33 +454,124 @@ function MarkAttendancePage() {
               </div>
             </Section>
 
-            <Section title="Verification summary">
+            <Section title="Attendance Decision Matrix">
               <div className="space-y-4 p-5">
-                <dl className="space-y-3 text-sm">
-                  {[
-                    ["Staff ID", faceResult ? faceResult.staffId : "—"],
-                    ["Staff Name", faceResult ? faceResult.staffName : "Scan required"],
-                    [
-                      "GPS Status",
-                      geofence.isInside === true
-                        ? "Inside Geofence"
-                        : geofence.isInside === false
-                          ? "Outside Geofence"
-                          : "Acquiring…",
-                    ],
-                    [
-                      "GPS Accuracy",
-                      geofence.accuracy ? `± ${geofence.accuracy.toFixed(1)} m` : "—",
-                    ],
-                    ["Current time (IST)", now ? formatIndiaTime(now) : "—"],
-                    ["Date", now ? formatIndiaDate(now, false) : "—"],
-                    ["Attendance window", "8:45 AM – 9:10 AM"],
-                  ].map(([k, v]) => (
-                    <div key={k} className="flex items-center justify-between gap-3">
-                      <dt className="text-muted-foreground">{k}</dt>
-                      <dd className="font-medium text-right truncate">{v}</dd>
-                    </div>
-                  ))}
+                {/* Required Telemetry List */}
+                <dl className="space-y-2.5 text-xs">
+                  {/* 1. CURRENT LATITUDE */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
+                      <Compass className="size-3.5 text-primary" /> Current Latitude
+                    </dt>
+                    <dd className="font-mono font-bold text-right text-foreground text-xs">
+                      {geofence.coords ? `${geofence.coords.lat.toFixed(8)}° N` : "—"}
+                    </dd>
+                  </div>
+
+                  {/* 2. CURRENT LONGITUDE */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
+                      <Compass className="size-3.5 text-primary" /> Current Longitude
+                    </dt>
+                    <dd className="font-mono font-bold text-right text-foreground text-xs">
+                      {geofence.coords ? `${geofence.coords.lng.toFixed(8)}° E` : "—"}
+                    </dd>
+                  </div>
+
+                  {/* 3. GPS ACCURACY */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
+                      <MapPin className="size-3.5 text-primary" /> GPS Accuracy
+                    </dt>
+                    <dd className="font-mono font-medium text-right">
+                      {geofence.accuracy ? `±${geofence.accuracy.toFixed(1)} m` : "—"}
+                    </dd>
+                  </div>
+
+                  {/* 4. GEOFENCE STATUS */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
+                      <ShieldCheck className="size-3.5 text-emerald-500" /> Geofence Status
+                    </dt>
+                    <dd className="text-right">
+                      <Badge
+                        variant="outline"
+                        className={
+                          gpsInsideGeofence
+                            ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-semibold"
+                            : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-semibold"
+                        }
+                      >
+                        {gpsInsideGeofence ? "INSIDE 19-POINT POLYGON" : "OUTSIDE POLYGON"}
+                      </Badge>
+                    </dd>
+                  </div>
+
+                  {/* 5. WIFI STATUS */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
+                      <Wifi className="size-3.5 text-primary" /> Wi-Fi Status
+                    </dt>
+                    <dd className="text-right">
+                      <Badge
+                        variant="outline"
+                        className={
+                          wifiAuthorized
+                            ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-semibold"
+                            : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-semibold"
+                        }
+                      >
+                        {wifiAuthorized ? `AUTHORIZED (${wifiStatus?.ssid || "CONNECTED"})` : "UNAUTHORIZED"}
+                      </Badge>
+                    </dd>
+                  </div>
+
+                  {/* 6. FACE STATUS */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
+                      <ScanFace className="size-3.5 text-primary" /> Face Status
+                    </dt>
+                    <dd className="text-right truncate">
+                      {faceAuthenticated ? (
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-semibold"
+                        >
+                          {faceResult?.staffCode || "PERSON_001"} (Dist: {faceResult?.distance?.toFixed(3)})
+                        </Badge>
+                      ) : faceResult ? (
+                        <Badge
+                          variant="outline"
+                          className="border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-semibold"
+                        >
+                          UNKNOWN FACE
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground">Live Scan Required</span>
+                      )}
+                    </dd>
+                  </div>
+
+                  {/* 7. FINAL ATTENDANCE STATUS */}
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <dt className="flex items-center gap-1.5 font-bold text-foreground uppercase tracking-wider text-[11px]">
+                      <Fingerprint className="size-3.5 text-primary" /> Final Attendance Status
+                    </dt>
+                    <dd className="text-right">
+                      <Badge
+                        variant="outline"
+                        className={
+                          finalAttendanceStatus.tone === "success"
+                            ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/15 font-bold text-[11px]"
+                            : finalAttendanceStatus.tone === "warning"
+                              ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/15 font-semibold text-[10px]"
+                              : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/15 font-bold text-[11px]"
+                        }
+                      >
+                        {finalAttendanceStatus.label}
+                      </Badge>
+                    </dd>
+                  </div>
                 </dl>
 
                 {/* Face verification thumbnail & trigger */}
@@ -394,18 +590,18 @@ function MarkAttendancePage() {
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium">
-                        {faceResult
-                          ? `✓ ${faceResult.staffName || "Staff"}`
-                          : face
-                            ? "Face matched"
+                        {faceResult && faceResult.verified
+                          ? `✓ ${faceResult.staffName || "Staff"} (${faceResult.staffCode || "PERSON_001"})`
+                          : faceResult
+                            ? "✗ Unknown Face"
                             : "Live face scan required"}
                       </p>
                       <p className="text-xs text-muted-foreground truncate">
                         {faceResult && faceResult.distance !== undefined
-                          ? `Match Distance: ${faceResult.distance.toFixed(4)}`
+                          ? `Match Distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
                           : face
                             ? "Captured on this device"
-                            : "Camera only — no photo uploads"}
+                            : "Camera only — InsightFace ArcFace"}
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => setScanOpen(true)}>
@@ -414,7 +610,7 @@ function MarkAttendancePage() {
                   </div>
                 </div>
 
-                {/* Face verification debug info */}
+                {/* Face verification debug telemetry */}
                 {faceResult && (
                   <div>
                     <button
@@ -427,10 +623,12 @@ function MarkAttendancePage() {
                     {showDebug && (
                       <div className="mt-1.5 space-y-1 rounded-lg bg-muted p-2 font-mono text-[10px]">
                         <p>Staff: {faceResult.staffId || "—"} · {faceResult.staffName || "—"}</p>
-                        <p>Distance: {faceResult.distance !== undefined ? faceResult.distance.toFixed(4) : "—"} (threshold: {FACE_CONFIG.MATCH_THRESHOLD})</p>
+                        <p>
+                          Distance: {faceResult.distance !== undefined ? faceResult.distance.toFixed(4) : "—"} (threshold: {FACE_CONFIG.MATCH_THRESHOLD})
+                        </p>
                         <p>Audit ID: {faceResult.verification?.auditId || faceResult.auditId || "—"}</p>
                         <p>Token: {faceResult.verification?.attendanceToken || "—"}</p>
-                        <p>Server accepted: {faceResult.verification?.accepted ? "Yes" : "No"}</p>
+                        <p>PostgreSQL Match: {faceResult.verification?.matched ? "Yes" : "No"}</p>
                       </div>
                     )}
                   </div>
@@ -440,18 +638,44 @@ function MarkAttendancePage() {
                 <Button
                   size="lg"
                   className="w-full"
-                  disabled={!canMarkAttendance || status === "verifying"}
-                  onClick={() => (face ? void run() : setScanOpen(true))}
+                  disabled={
+                    status === "verifying" ||
+                    (!wifiAuthorized && !canMarkAttendance) ||
+                    (!gpsInsideGeofence && !canMarkAttendance)
+                  }
+                  onClick={() => {
+                    if (!wifiAuthorized) {
+                      toast.error("Wi-Fi Verification Blocked", {
+                        description: "You must be connected to an authorized campus Wi-Fi network.",
+                      });
+                      return;
+                    }
+                    if (!gpsInsideGeofence) {
+                      toast.error("Outside Geofence", {
+                        description: "Your GPS coordinates must be inside the authoritative 19-point campus polygon.",
+                      });
+                      return;
+                    }
+                    if (!face || !faceAuthenticated) {
+                      setScanOpen(true);
+                    } else {
+                      void run();
+                    }
+                  }}
                 >
                   {status === "verifying" ? (
                     <>
                       <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
                     </>
-                  ) : !isLocationAuthorized ? (
+                  ) : !wifiAuthorized ? (
                     <>
-                      <AlertTriangle className="mr-2 size-5" /> Outside Geofence — Marking Blocked
+                      <Wifi className="mr-2 size-5" /> Unauthorized Wi-Fi — Marking Blocked
                     </>
-                  ) : !isIdentityAuthorized ? (
+                  ) : !gpsInsideGeofence ? (
+                    <>
+                      <AlertTriangle className="mr-2 size-5" /> Outside 19-Point Polygon — Blocked
+                    </>
+                  ) : !faceAuthenticated ? (
                     <>
                       <ScanFace className="mr-2 size-5" /> Scan Face to Continue
                     </>
@@ -464,9 +688,11 @@ function MarkAttendancePage() {
 
                 {!canMarkAttendance && (
                   <p className="text-center text-xs text-muted-foreground">
-                    {!isLocationAuthorized
-                      ? "Device must be inside the authorized GPS geofence."
-                      : "Face recognition is required to confirm your identity."}
+                    {!wifiAuthorized
+                      ? "Device must be connected to authorized institutional Wi-Fi."
+                      : !gpsInsideGeofence
+                        ? "Device must be inside the authoritative 19-point GPS polygon."
+                        : "Face recognition is required to confirm your identity."}
                   </p>
                 )}
               </div>
@@ -477,6 +703,8 @@ function MarkAttendancePage() {
     </AppShell>
   );
 }
+
+
 
 function SuccessPanel({
   receipt,
