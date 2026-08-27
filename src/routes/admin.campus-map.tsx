@@ -8,6 +8,10 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { campusZones, staffMarkers } from "@/mocks/data";
 
+import { useGeofence } from "@/hooks/use-geofence";
+import { GeofenceMap } from "@/components/common/GeofenceMap";
+import { GpsDiagnosticPanel } from "@/components/common/GpsDiagnosticPanel";
+
 export const Route = createFileRoute("/admin/campus-map")({
   head: () => ({
     meta: [
@@ -15,7 +19,7 @@ export const Route = createFileRoute("/admin/campus-map")({
       {
         name: "description",
         content:
-          "Live campus geofence view with staff markers across Sona College of Technology, Incubation Foundation, Arts & Science and Thiagarajar Polytechnic.",
+          "Live campus geofence view with authoritative 6-point polygon across Sona College of Technology.",
       },
       { property: "og:title", content: "Campus Map — CampusAttend Admin" },
       { property: "og:description", content: "Live campus boundary and staff presence map." },
@@ -25,6 +29,7 @@ export const Route = createFileRoute("/admin/campus-map")({
 });
 
 function CampusMapPage() {
+  const geofence = useGeofence(true);
   const inside = staffMarkers.filter((m) => m.state === "inside").length;
   const outside = staffMarkers.filter((m) => m.state === "outside").length;
 
@@ -32,10 +37,10 @@ function CampusMapPage() {
     <AppShell nav={adminNav} role="admin">
       <PageHeader
         title="Campus Map"
-        description="Geofence covering all four institutional blocks."
+        description="Authoritative 6-point GPS Geofence covering Sona College of Technology."
         actions={
-          <Button variant="outline">
-            <RefreshCcw className="mr-2 size-4" /> Refresh
+          <Button variant="outline" onClick={() => void geofence.checkLocation(true)}>
+            <RefreshCcw className={`mr-2 size-4 ${geofence.isChecking ? "animate-spin" : ""}`} /> Refresh GPS
           </Button>
         }
       />
@@ -43,14 +48,18 @@ function CampusMapPage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Staff inside campus" value={172} icon={MapPinned} tone="success" />
         <StatCard label="Staff outside campus" value={12} icon={UserX} tone="danger" />
-        <StatCard label="Boundary status" value="Active" hint="4 zones enforced" icon={ShieldCheck} tone="primary" />
-        <StatCard label="Last updated" value="09:14 AM" hint="Auto-refresh every 60 s" icon={RefreshCcw} tone="neutral" />
+        <StatCard label="Boundary status" value="Active" hint="6 Vertices Enforced" icon={ShieldCheck} tone="primary" />
+        <StatCard label="Live GPS Status" value={geofence.isInside === true ? "Inside" : geofence.isInside === false ? "Outside" : "Acquiring"} hint={geofence.accuracy ? `±${geofence.accuracy.toFixed(1)}m` : "Awaiting fix"} icon={RefreshCcw} tone="neutral" />
+      </div>
+
+      <div className="mt-6">
+        <GpsDiagnosticPanel geofence={geofence} />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-3">
-        <Section className="xl:col-span-2" title="Live boundary view">
+        <Section className="xl:col-span-2" title="Live Authoritative Geofence View">
           <div className="p-4">
-            <MapPanel height="h-[460px]" showControls showAllStaff />
+            <GeofenceMap geofence={geofence} height="h-[460px]" />
           </div>
         </Section>
 

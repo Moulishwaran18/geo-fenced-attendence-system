@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -9,6 +9,7 @@ import {
   Loader2,
   MapPin,
   ScanFace,
+  ShieldAlert,
   ShieldCheck,
   Smartphone,
   Wifi,
@@ -19,7 +20,8 @@ import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
 import { FaceScanDialog } from "@/components/common/FaceScanDialog";
 import type { FaceScanResult } from "@/components/common/FaceScanDialog";
-import { MapPanel } from "@/components/common/MapPanel";
+import { GeofenceMap } from "@/components/common/GeofenceMap";
+import { GpsDiagnosticPanel } from "@/components/common/GpsDiagnosticPanel";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,9 +37,11 @@ import {
   scenarioLabels,
   type AttendanceReceipt,
   type VerificationScenario,
+  type VerificationSignal,
 } from "@/mocks/attendance-service";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import { FACE_CONFIG } from "@/lib/face-recognition";
+import { useGeofence } from "@/hooks/use-geofence";
 
 export const Route = createFileRoute("/mark-attendance")({
   head: () => ({
@@ -46,10 +50,10 @@ export const Route = createFileRoute("/mark-attendance")({
       {
         name: "description",
         content:
-          "Verify campus location, network, beacon proximity and identity, then mark your college staff attendance.",
+          "Verify campus GPS polygon geofence, institutional network, and biometric identity, then mark your college staff attendance.",
       },
       { property: "og:title", content: "Mark Attendance — CampusAttend" },
-      { property: "og:description", content: "Multi-factor campus presence verification." },
+      { property: "og:description", content: "Authoritative GPS Polygon & Biometric Presence Verification." },
     ],
   }),
   component: MarkAttendancePage,
@@ -63,7 +67,7 @@ const icons = {
 } as const;
 
 const titles = {
-  location: "Location",
+  location: "GPS Geofence",
   wifi: "Wi-Fi",
   bluetooth: "Bluetooth",
   identity: "Identity",
@@ -79,14 +83,144 @@ function MarkAttendancePage() {
   const [showDebug, setShowDebug] = useState(false);
   const now = useIndiaTime();
 
-  const snapshot = getSnapshot(scenario);
+  // High-accuracy live GPS geofence tracker
+  const geofence = useGeofence(true);
+
+  // Determine real or mock location state
+  const isUsingMockScenario = scenario !== "ready";
+  const mockSnapshot = getSnapshot(scenario);
+
+  // Live Location Signal computation
+  const liveLocationSignal = useMemo((): VerificationSignal => {
+    if (isUsingMockScenario) {
+      return mockSnapshot.signals.find((s) => s.key === "location") || {
+        key: "location",
+        value: "Mock Location",
+        detail: "Mock scenario active",
+        state: "verified",
+      };
+    }
+
+    if (geofence.status === "acquiring") {
+      return {
+        key: "location",
+        value: "Acquiring GPS Fix…",
+        detail: "High-accuracy GPS requested",
+        state: "pending",
+      };
+    }
+
+    if (geofence.status === "permission_denied") {
+      return {
+        key: "location",
+        value: "Permission Denied",
+        detail: "Enable location in browser settings",
+        state: "error",
+      };
+    }
+
+    if (geofence.status === "position_unavailable" || geofence.status === "timeout") {
+      return {
+        key: "location",
+        value: "GPS Unavailable",
+        detail: "Enable device location / GPS",
+        state: "error",
+      };
+    }
+
+    if (geofence.status === "low_accuracy") {
+      return {
+        key: "location",
+        value: geofence.isInside ? "Inside (Low Accuracy)" : "Outside (Low Accuracy)",
+        detail: `Accuracy: ±${Math.round(geofence.accuracy || 0)}m · Move to open sky`,
+        state: "warning",
+      };
+    }
+
+    if (geofence.isInside === true) {
+      return {
+        key: "location",
+        value: "Inside Campus Polygon",
+        detail: `Accuracy: ±${Math.round(geofence.accuracy || 0)}m · ${geofence.distanceToBoundary}m from boundary`,
+        state: "verified",
+      };
+    }
+
+    return {
+      key: "location",
+      value: "Outside Campus Geofence",
+      detail: `${geofence.distanceToBoundary}m from authorized perimeter`,
+      state: "error",
+    };
+  }, [isUsingMockScenario, mockSnapshot, geofence]);
+
+  // Combined Location Authorization Check
+  const isLocationAuthorized = isUsingMockScenario
+    ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
+    : geofence.isInside === true;
+
+  // Identity verification check
+  const isIdentityAuthorized = Boolean(
+    faceResult && (faceResult.distance === undefined || faceResult.distance <= FACE_CONFIG.MATCH_THRESHOLD),
+  );
+
+  // Both factors must be satisfied
+  const canMarkAttendance = isLocationAuthorized && isIdentityAuthorized;
+
+  // Signals Array
+  const signals = useMemo((): VerificationSignal[] => {
+    return [
+      liveLocationSignal,
+      {
+        key: "wifi",
+        value: "Campus Network",
+        detail: "Authorized Wi-Fi · Connected",
+        state: "verified",
+      },
+      {
+        key: "bluetooth",
+        value: "Campus Beacon",
+        detail: "BLE-GATE-02 · Detected",
+        state: "verified",
+      },
+      {
+        key: "identity",
+        value: isIdentityAuthorized
+          ? `Verified · ${faceResult?.staffName || "Staff"}`
+          : faceResult
+            ? "Unknown Face"
+            : "Live Face Scan",
+        detail: isIdentityAuthorized && faceResult?.distance !== undefined
+          ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
+          : "Biometric match required",
+        state: isIdentityAuthorized ? "verified" : faceResult ? "error" : "pending",
+      },
+    ];
+  }, [liveLocationSignal, isIdentityAuthorized, faceResult]);
 
   const run = async () => {
+    if (!isLocationAuthorized) {
+      toast.error("Attendance Blocked", {
+        description: "You must be inside the authorized campus GPS polygon to mark attendance.",
+      });
+      return;
+    }
+
+    if (!isIdentityAuthorized) {
+      toast.error("Identity Verification Required", {
+        description: "Please complete face recognition first.",
+      });
+      setScanOpen(true);
+      return;
+    }
+
     setStatus("verifying");
     const result = await markAttendance();
     setReceipt(result);
     setStatus("success");
-    toast.success("Attendance recorded", { description: `${result.time} · ${result.date}` });
+    toast.success("Attendance Recorded Successfully!", {
+      description: `${faceResult?.staffName || "Staff"} · ${result.time} · ${result.date}`,
+    });
   };
 
   return (
@@ -101,19 +235,26 @@ function MarkAttendancePage() {
             description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
           });
 
-          // Automatically record attendance for the recognized staff member
-          setStatus("verifying");
-          const attendanceReceipt = await markAttendance();
-          setReceipt(attendanceReceipt);
-          setStatus("success");
-          toast.success(`Attendance Marked Successfully!`, {
-            description: `${result.staffName || "Staff"} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
-          });
+          // Check if location is already inside before marking
+          if (isLocationAuthorized) {
+            setStatus("verifying");
+            const attendanceReceipt = await markAttendance();
+            setReceipt(attendanceReceipt);
+            setStatus("success");
+            toast.success(`Attendance Marked Successfully!`, {
+              description: `${result.staffName || "Staff"} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
+            });
+          } else {
+            toast.warning("Location Check Pending / Outside", {
+              description: "Face verified, but GPS location must be inside the campus polygon to mark attendance.",
+            });
+          }
         }}
       />
+
       <PageHeader
         title="Mark Attendance"
-        description="Presence is confirmed with four independent checks before your entry is recorded."
+        description="Presence requires both High-Precision GPS Geofence &amp; Biometric Identity Verification."
         actions={
           <div className="flex items-center gap-2">
             <label htmlFor="scenario" className="text-xs text-muted-foreground">
@@ -142,41 +283,69 @@ function MarkAttendancePage() {
       />
 
       {status === "success" && receipt ? (
-        <SuccessPanel receipt={receipt} staffName={faceResult?.staffName} onReset={() => setStatus("idle")} />
+        <SuccessPanel
+          receipt={receipt}
+          staffName={faceResult?.staffName}
+          onReset={() => setStatus("idle")}
+        />
       ) : (
         <div className="space-y-6">
-          <AlertBanner
-            tone={snapshot.tone === "success" && !snapshot.canMark ? "info" : snapshot.tone}
-            icon={snapshot.tone === "success" ? ShieldCheck : AlertTriangle}
-            title={snapshot.headline}
-            description={snapshot.message}
-          />
+          {/* Geofence & Identity Status Banner */}
+          {!isLocationAuthorized ? (
+            <AlertBanner
+              tone="error"
+              icon={ShieldAlert}
+              title="Attendance Blocked — Outside Authorized Geofence"
+              description="Your current device GPS position is outside the authorized campus polygon boundary. You must be physically present inside the designated campus area to mark attendance."
+            />
+          ) : !isIdentityAuthorized ? (
+            <AlertBanner
+              tone="info"
+              icon={ShieldCheck}
+              title="GPS Geofence Verified — Inside Campus"
+              description="Your GPS location has been verified inside the authorized polygon. Complete the live face recognition scan to record attendance."
+            />
+          ) : (
+            <AlertBanner
+              tone="success"
+              icon={ShieldCheck}
+              title="Multi-Factor Verification Ready"
+              description="Both your GPS geofence location and biometric identity are confirmed. Ready to submit attendance."
+            />
+          )}
 
+          {/* Verification Cards */}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {snapshot.signals.map((s) => (
+            {signals.map((s) => (
               <VerificationCard
                 key={s.key}
                 title={titles[s.key]}
-                value={s.key === "identity" && faceResult ? `Verified · ${faceResult.staffName}` : s.value}
-                detail={s.key === "identity" && faceResult && faceResult.distance !== undefined ? `Match distance: ${faceResult.distance.toFixed(3)}` : s.detail}
-                state={s.key === "identity" && faceResult ? "verified" : s.state}
+                value={s.value}
+                detail={s.detail}
+                state={s.state}
                 icon={icons[s.key]}
               />
             ))}
           </div>
 
+          {/* Developer GPS Diagnostic Panel */}
+          <GpsDiagnosticPanel geofence={geofence} />
+
+          {/* Map and Action Summary Grid */}
           <div className="grid gap-6 xl:grid-cols-3">
             <Section
               className="xl:col-span-2"
-              title="Campus boundary"
+              title="Campus Geofence Boundary"
               description={
-                snapshot.scenario === "outside-campus"
-                  ? "You are outside the campus boundary"
-                  : "You are inside the campus"
+                geofence.isInside === true
+                  ? "Real GPS fix: Inside authorized attendance region"
+                  : geofence.isInside === false
+                    ? "Real GPS fix: Outside authorized boundary"
+                    : "Acquiring live GPS coordinates…"
               }
             >
               <div className="p-4">
-                <MapPanel height="h-[340px]" />
+                <GeofenceMap geofence={geofence} height="h-[360px]" />
               </div>
             </Section>
 
@@ -184,29 +353,39 @@ function MarkAttendancePage() {
               <div className="space-y-4 p-5">
                 <dl className="space-y-3 text-sm">
                   {[
-                    ["Staff ID", faceResult ? faceResult.staffId : "SCT-2417"],
-                    ["Device", "Redmi Note 13 Pro"],
-                    ["GPS accuracy", snapshot.accuracy],
+                    ["Staff ID", faceResult ? faceResult.staffId : "—"],
+                    ["Staff Name", faceResult ? faceResult.staffName : "Scan required"],
+                    [
+                      "GPS Status",
+                      geofence.isInside === true
+                        ? "Inside Geofence"
+                        : geofence.isInside === false
+                          ? "Outside Geofence"
+                          : "Acquiring…",
+                    ],
+                    [
+                      "GPS Accuracy",
+                      geofence.accuracy ? `± ${geofence.accuracy.toFixed(1)} m` : "—",
+                    ],
                     ["Current time (IST)", now ? formatIndiaTime(now) : "—"],
                     ["Date", now ? formatIndiaDate(now, false) : "—"],
                     ["Attendance window", "8:45 AM – 9:10 AM"],
-                    ["Nearest beacon", "BLE-GATE-02"],
                   ].map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between gap-3">
                       <dt className="text-muted-foreground">{k}</dt>
-                      <dd className="font-medium">{v}</dd>
+                      <dd className="font-medium text-right truncate">{v}</dd>
                     </div>
                   ))}
                 </dl>
 
-                {/* Face verification panel */}
+                {/* Face verification thumbnail & trigger */}
                 <div className="rounded-lg border border-border p-3">
                   <div className="flex items-center gap-3">
                     {face ? (
                       <img
                         src={face}
                         alt="Live face capture used for verification"
-                        className="size-12 rounded-lg object-cover"
+                        className="size-12 rounded-lg object-cover border border-border"
                       />
                     ) : (
                       <span className="grid size-12 place-items-center rounded-lg bg-muted text-muted-foreground">
@@ -221,12 +400,12 @@ function MarkAttendancePage() {
                             ? "Face matched"
                             : "Live face scan required"}
                       </p>
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-xs text-muted-foreground truncate">
                         {faceResult && faceResult.distance !== undefined
-                          ? `Verified · Distance: ${faceResult.distance.toFixed(3)}`
+                          ? `Match Distance: ${faceResult.distance.toFixed(4)}`
                           : face
-                            ? "Captured just now on this device"
-                            : "Camera only — no uploads"}
+                            ? "Captured on this device"
+                            : "Camera only — no photo uploads"}
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => setScanOpen(true)}>
@@ -243,7 +422,7 @@ function MarkAttendancePage() {
                       className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"
                       onClick={() => setShowDebug((d) => !d)}
                     >
-                      <Eye className="size-3" /> {showDebug ? "Hide" : "Show"} verification details
+                      <Eye className="size-3" /> {showDebug ? "Hide" : "Show"} biometric verification details
                     </button>
                     {showDebug && (
                       <div className="mt-1.5 space-y-1 rounded-lg bg-muted p-2 font-mono text-[10px]">
@@ -257,29 +436,37 @@ function MarkAttendancePage() {
                   </div>
                 )}
 
+                {/* Submission CTA Button */}
                 <Button
                   size="lg"
                   className="w-full"
-                  disabled={!snapshot.canMark || status === "verifying"}
+                  disabled={!canMarkAttendance || status === "verifying"}
                   onClick={() => (face ? void run() : setScanOpen(true))}
                 >
                   {status === "verifying" ? (
                     <>
                       <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
                     </>
-                  ) : face ? (
+                  ) : !isLocationAuthorized ? (
                     <>
-                      <Fingerprint className="mr-2 size-5" /> Verify &amp; Mark Attendance
+                      <AlertTriangle className="mr-2 size-5" /> Outside Geofence — Marking Blocked
+                    </>
+                  ) : !isIdentityAuthorized ? (
+                    <>
+                      <ScanFace className="mr-2 size-5" /> Scan Face to Continue
                     </>
                   ) : (
                     <>
-                      <ScanFace className="mr-2 size-5" /> Scan face to continue
+                      <Fingerprint className="mr-2 size-5" /> Verify &amp; Mark Attendance
                     </>
                   )}
                 </Button>
-                {!snapshot.canMark && (
+
+                {!canMarkAttendance && (
                   <p className="text-center text-xs text-muted-foreground">
-                    Marking is disabled until every check passes.
+                    {!isLocationAuthorized
+                      ? "Device must be inside the authorized GPS geofence."
+                      : "Face recognition is required to confirm your identity."}
                   </p>
                 )}
               </div>
@@ -315,7 +502,7 @@ function SuccessPanel({
 
         <ul className="mt-7 w-full max-w-md space-y-2 text-left">
           {[
-            { icon: MapPin, label: "Location verified" },
+            { icon: MapPin, label: "GPS Geofence polygon verified (Inside Campus)" },
             { icon: ScanFace, label: staffName ? `Identity verified — ${staffName}` : "Identity verified" },
             { icon: Smartphone, label: "Device verified" },
             { icon: CheckCircle2, label: "Attendance successfully recorded" },

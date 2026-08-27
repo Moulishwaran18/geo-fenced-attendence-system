@@ -338,6 +338,7 @@ export async function runArcFaceDoubleInference(
   embeddingChecksumA: string;
   embeddingChecksumB: string;
   l2NormA: number;
+  rawNormA?: number;
 }> {
   const session = await initArcFaceSession();
   const inputName = session.inputNames[0] || "input.1";
@@ -349,6 +350,7 @@ export async function runArcFaceDoubleInference(
   const rawA = Array.from(resA[outputName]?.data as Float32Array);
   const normA = Math.sqrt(rawA.reduce((s, v) => s + v * v, 0)) || 1e-6;
   const embeddingA = rawA.map((v) => v / normA);
+  const finalNormA = Math.sqrt(embeddingA.reduce((s, v) => s + v * v, 0));
   const checksumA = computeFloat32Checksum(embeddingA);
 
   // Inference B (using the exact same tensor data)
@@ -367,7 +369,8 @@ export async function runArcFaceDoubleInference(
     doubleInferenceDist,
     embeddingChecksumA: checksumA,
     embeddingChecksumB: checksumB,
-    l2NormA: normA,
+    l2NormA: finalNormA,
+    rawNormA: normA,
   };
 }
 
