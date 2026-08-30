@@ -2,20 +2,25 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   AUTHORIZED_GEOFENCE_POLYGON,
   evaluateGeofence,
+  haversineDistanceMeters,
   type GeofenceEvaluation,
   type LatLng,
-} from "@/lib/geofence/geofence-service";
+} from "../lib/geofence/geofence-service.ts";
 
 export type GpsStatus =
   | "idle"
   | "acquiring"
   | "inside"
   | "outside"
+  | "insufficient_accuracy"
+  | "low_accuracy"
   | "permission_denied"
   | "position_unavailable"
   | "timeout"
-  | "low_accuracy"
   | "unsupported";
+
+export type GpsQuality = "EXCELLENT" | "GOOD" | "ACQUIRING / WAIT" | "UNRELIABLE" | "UNKNOWN";
+export type PositionStability = "STABLE" | "UNSTABLE" | "MEASURING";
 
 export interface GpsCoordinates {
   lat: number;
@@ -28,41 +33,232 @@ export interface GpsCoordinates {
   timestamp: number;
 }
 
+export interface GpsReading extends GpsCoordinates {
+  quality: GpsQuality;
+  displacementFromPrev?: number | undefined;
+  sampleIndex: number;
+}
+
+export interface StabilityEvaluation {
+  isStable: boolean;
+  consecutiveGoodCount: number;
+  maxDisplacementMeters: number;
+  status: PositionStability;
+}
+
 export interface UseGeofenceResult {
   coords: GpsCoordinates | null;
+  currentCoords: GpsCoordinates | null;
+  bestCoords: GpsCoordinates | null;
   evaluation: GeofenceEvaluation | null;
   isInside: boolean | null;
+  isInsidePolygon: boolean | null;
+  isAcceptableAccuracy: boolean;
   status: GpsStatus;
   statusMessage: string;
+  instructionMessage: string | null;
   isChecking: boolean;
   accuracy: number | null;
+  bestAccuracy: number | null;
+  gpsQuality: GpsQuality;
+  positionStability: PositionStability;
+  readingsCollected: number;
+  readingsHistory: GpsReading[];
+  acquisitionTimer: number;
+  maxAcquisitionSeconds: number;
+  isStable: boolean;
+  consecutiveGoodCount: number;
   distanceToBoundary: number | null;
   distanceToCentroid: number | null;
   lastUpdated: Date | null;
   error: string | null;
+  refreshLocation: () => Promise<GeofenceEvaluation | null>;
   checkLocation: (fresh?: boolean) => Promise<GeofenceEvaluation | null>;
   polygon: LatLng[];
 }
 
+/**
+ * Determines GPS Quality tier based on exact reported accuracy:
+ * accuracy <= 10 m: EXCELLENT
+ * accuracy > 10 m && <= 20 m: GOOD
+ * accuracy > 20 m && <= 50 m: ACQUIRING / WAIT
+ * accuracy > 50 m: UNRELIABLE
+ */
+export function getGpsQuality(accuracy: number | null | undefined): GpsQuality {
+  if (accuracy === null || accuracy === undefined || isNaN(accuracy)) {
+    return "UNKNOWN";
+  }
+  if (accuracy <= 10) return "EXCELLENT";
+  if (accuracy <= 20) return "GOOD";
+  if (accuracy <= 50) return "ACQUIRING / WAIT";
+  return "UNRELIABLE";
+}
+
+/**
+ * Checks temporal stability across consecutive readings.
+ * Requires at least 2 consecutive good readings (<= 20m) where displacement <= 15m.
+ */
+export function checkTemporalStability(
+  readings: GpsReading[],
+  maxJumpMeters: number = 15,
+): StabilityEvaluation {
+  if (readings.length < 2) {
+    const singleGood = readings.filter((r) => r.accuracy <= 20).length;
+    return {
+      isStable: false,
+      consecutiveGoodCount: singleGood,
+      maxDisplacementMeters: 0,
+      status: "MEASURING",
+    };
+  }
+
+  // Count consecutive good readings at the tail of history
+  let consecutiveGood = 0;
+  for (let i = readings.length - 1; i >= 0; i--) {
+    if (readings[i]!.accuracy <= 20) {
+      consecutiveGood++;
+    } else {
+      break;
+    }
+  }
+
+  if (consecutiveGood < 2) {
+    return {
+      isStable: false,
+      consecutiveGoodCount: consecutiveGood,
+      maxDisplacementMeters: 0,
+      status: "MEASURING",
+    };
+  }
+
+  // Check displacement between the consecutive good readings
+  const goodSamples = readings.slice(-consecutiveGood);
+  let maxDisp = 0;
+  for (let i = 1; i < goodSamples.length; i++) {
+    const prev = goodSamples[i - 1]!;
+    const curr = goodSamples[i]!;
+    const disp = haversineDistanceMeters(
+      { lat: prev.lat, lng: prev.lng },
+      { lat: curr.lat, lng: curr.lng },
+    );
+    if (disp > maxDisp) {
+      maxDisp = disp;
+    }
+  }
+
+  const isStable = consecutiveGood >= 2 && maxDisp <= maxJumpMeters;
+  return {
+    isStable,
+    consecutiveGoodCount: consecutiveGood,
+    maxDisplacementMeters: parseFloat(maxDisp.toFixed(2)),
+    status: isStable ? "STABLE" : "UNSTABLE",
+  };
+}
+
+const DEFAULT_MAX_ACQUISITION_SECONDS = 15;
+
 export function useGeofence(
   autoWatch: boolean = true,
-  accuracyThresholdMeters: number = 65,
+  maxAcquisitionSeconds: number = DEFAULT_MAX_ACQUISITION_SECONDS,
 ): UseGeofenceResult {
   const [coords, setCoords] = useState<GpsCoordinates | null>(null);
+  const [bestCoords, setBestCoords] = useState<GpsCoordinates | null>(null);
   const [evaluation, setEvaluation] = useState<GeofenceEvaluation | null>(null);
   const [status, setStatus] = useState<GpsStatus>("idle");
-  const [statusMessage, setStatusMessage] = useState<string>("Initializing GPS…");
+  const [statusMessage, setStatusMessage] = useState<string>("Waiting for accurate GPS location...");
+  const [instructionMessage, setInstructionMessage] = useState<string | null>("Move to open sky if possible.");
   const [isChecking, setIsChecking] = useState<boolean>(false);
+  const [readingsCollected, setReadingsCollected] = useState<number>(0);
+  const [readingsHistory, setReadingsHistory] = useState<GpsReading[]>([]);
+  const [bestAccuracy, setBestAccuracy] = useState<number | null>(null);
+  const [acquisitionTimer, setAcquisitionTimer] = useState<number>(0);
+  const [isStable, setIsStable] = useState<boolean>(false);
+  const [consecutiveGoodCount, setConsecutiveGoodCount] = useState<number>(0);
+  const [positionStability, setPositionStability] = useState<PositionStability>("MEASURING");
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
   const watchIdRef = useRef<number | null>(null);
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const readingsRef = useRef<GpsReading[]>([]);
+  const bestReadingRef = useRef<GpsReading | null>(null);
+  const isAcquiringRef = useRef<boolean>(false);
 
-  const processPosition = useCallback(
-    (pos: GeolocationPosition): GeofenceEvaluation => {
-      const { latitude, longitude, accuracy, altitude, altitudeAccuracy, heading, speed } =
-        pos.coords;
+  const stopActiveAcquisition = useCallback(() => {
+    if (watchIdRef.current !== null && typeof window !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (timerIntervalRef.current !== null) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+    isAcquiringRef.current = false;
+    setIsChecking(false);
+  }, []);
 
-      const newCoords: GpsCoordinates = {
+  const evaluateAndFinalize = useCallback(
+    (reading: GpsReading, stability: StabilityEvaluation) => {
+      const { lat, lng, accuracy } = reading;
+      const evalResult = evaluateGeofence(
+        { lat, lng, accuracy },
+        AUTHORIZED_GEOFENCE_POLYGON,
+      );
+
+      setCoords(reading);
+      setEvaluation(evalResult);
+      setLastUpdated(new Date(reading.timestamp));
+      setError(null);
+      setIsStable(stability.isStable);
+      setConsecutiveGoodCount(stability.consecutiveGoodCount);
+      setPositionStability(stability.status);
+
+      // Gate: Requires accuracy <= 20m, at least 2 consecutive good readings, and stable position
+      const passesQualityGate = accuracy <= 20 && stability.isStable && stability.consecutiveGoodCount >= 2;
+
+      if (passesQualityGate) {
+        if (evalResult.isInside) {
+          setStatus("inside");
+          setStatusMessage(`Inside Authorized Region (±${accuracy.toFixed(1)}m accuracy · ${evalResult.distanceToBoundaryMeters}m from boundary)`);
+          setInstructionMessage(null);
+        } else {
+          setStatus("outside");
+          setStatusMessage(`Outside Authorized Region (${evalResult.distanceToBoundaryMeters}m from perimeter · ±${accuracy.toFixed(1)}m accuracy)`);
+          setInstructionMessage(null);
+        }
+      } else if (accuracy > 50) {
+        setStatus("insufficient_accuracy");
+        setStatusMessage(`GPS accuracy insufficient (Current accuracy: ±${Math.round(accuracy)} m)`);
+        setInstructionMessage("Move to open sky / enable Precise Location");
+      } else {
+        setStatus("insufficient_accuracy");
+        setStatusMessage(`GPS accuracy insufficient (Current accuracy: ±${Math.round(accuracy)} m)`);
+        setInstructionMessage("Move to open sky / enable Precise Location");
+      }
+
+      return evalResult;
+    },
+    [],
+  );
+
+  const handlePositionReading = useCallback(
+    (pos: GeolocationPosition) => {
+      const { latitude, longitude, accuracy, altitude, altitudeAccuracy, heading, speed } = pos.coords;
+      const quality = getGpsQuality(accuracy);
+
+      const history = readingsRef.current;
+      let displacementFromPrev: number | undefined = undefined;
+      if (history.length > 0) {
+        const prev = history[history.length - 1]!;
+        displacementFromPrev = parseFloat(
+          haversineDistanceMeters(
+            { lat: prev.lat, lng: prev.lng },
+            { lat: latitude, lng: longitude },
+          ).toFixed(2),
+        );
+      }
+
+      const reading: GpsReading = {
         lat: latitude,
         lng: longitude,
         accuracy,
@@ -71,147 +267,282 @@ export function useGeofence(
         heading,
         speed,
         timestamp: pos.timestamp,
+        quality,
+        displacementFromPrev,
+        sampleIndex: history.length + 1,
       };
 
+      // Always preserve reported accuracy exactly — never overwrite or round
+      setCoords(reading);
+      setLastUpdated(new Date(pos.timestamp));
+
+      // Append to history
+      readingsRef.current.push(reading);
+      const updatedHistory = [...readingsRef.current];
+      setReadingsHistory(updatedHistory);
+      setReadingsCollected(updatedHistory.length);
+
+      // Track best reading based on smallest reported accuracy
+      let currentBest = bestReadingRef.current;
+      if (!currentBest || reading.accuracy < currentBest.accuracy) {
+        currentBest = reading;
+        bestReadingRef.current = reading;
+        setBestCoords(reading);
+        setBestAccuracy(reading.accuracy);
+      }
+
+      // Check temporal stability across consecutive readings
+      const stability = checkTemporalStability(updatedHistory, 15);
+      setIsStable(stability.isStable);
+      setConsecutiveGoodCount(stability.consecutiveGoodCount);
+      setPositionStability(stability.status);
+
+      // Evaluate geofence with best available reading for continuous diagnostics
+      const evalReading = currentBest || reading;
       const evalResult = evaluateGeofence(
-        { lat: latitude, lng: longitude, accuracy },
+        { lat: evalReading.lat, lng: evalReading.lng, accuracy: evalReading.accuracy },
         AUTHORIZED_GEOFENCE_POLYGON,
       );
-
-      setCoords(newCoords);
       setEvaluation(evalResult);
-      setLastUpdated(new Date(pos.timestamp));
-      setError(null);
 
-      if (accuracy > accuracyThresholdMeters) {
-        setStatus("low_accuracy");
-        setStatusMessage(`Low GPS Accuracy (±${Math.round(accuracy)}m). Move to an open area.`);
-      } else if (evalResult.isInside) {
-        setStatus("inside");
-        setStatusMessage(
-          `Inside Authorized Region (±${Math.round(accuracy)}m accuracy · ${evalResult.distanceToBoundaryMeters}m from boundary)`,
-        );
-      } else {
-        setStatus("outside");
-        setStatusMessage(
-          `Outside Authorized Region (${evalResult.distanceToBoundaryMeters}m from perimeter)`,
-        );
+      // Early stop condition: at least 2 consecutive excellent fixes (<= 10 m) AND stable position
+      const consecutiveExcellent = updatedHistory
+        .slice(-2)
+        .every((r) => r.accuracy <= 10);
+
+      if (reading.accuracy <= 10 && stability.isStable && consecutiveExcellent) {
+        // High accuracy & stable fix attained — settle early
+        stopActiveAcquisition();
+        evaluateAndFinalize(currentBest || reading, stability);
+        return;
       }
 
-      return evalResult;
+      // If still acquiring, update live status indicators
+      if (reading.accuracy <= 10) {
+        setStatus("acquiring");
+        setStatusMessage(`EXCELLENT GPS accuracy (±${reading.accuracy.toFixed(1)} m) — verifying stability…`);
+        setInstructionMessage(null);
+      } else if (reading.accuracy <= 20) {
+        setStatus("acquiring");
+        setStatusMessage(`GOOD GPS accuracy (±${reading.accuracy.toFixed(1)} m) — verifying consecutive stability…`);
+        setInstructionMessage("Hold still while precision stabilizes…");
+      } else if (reading.accuracy <= 50) {
+        setStatus("acquiring");
+        setStatusMessage(`ACQUIRING / WAIT: Accuracy ±${Math.round(reading.accuracy)} m — waiting for GNSS satellite lock…`);
+        setInstructionMessage("Move to open sky if possible · Enable Precise Location.");
+      } else {
+        setStatus("acquiring");
+        setStatusMessage(`UNRELIABLE GPS accuracy (±${Math.round(reading.accuracy)} m) — waiting for GNSS lock…`);
+        setInstructionMessage("Move to open sky if possible · Enable Precise Location.");
+      }
     },
-    [accuracyThresholdMeters],
+    [evaluateAndFinalize, stopActiveAcquisition],
   );
 
-  const processError = useCallback((err: GeolocationPositionError) => {
-    let newStatus: GpsStatus = "position_unavailable";
-    let message = "Unable to determine location.";
+  const handlePositionError = useCallback(
+    (err: GeolocationPositionError) => {
+      stopActiveAcquisition();
 
-    switch (err.code) {
-      case err.PERMISSION_DENIED:
-        newStatus = "permission_denied";
-        message = "GPS permission denied. Please allow location access in browser settings.";
-        break;
-      case err.POSITION_UNAVAILABLE:
-        newStatus = "position_unavailable";
-        message = "GPS position unavailable. Ensure device location is turned on.";
-        break;
-      case err.TIMEOUT:
-        newStatus = "timeout";
-        message = "GPS request timed out. Retrying location…";
-        break;
-    }
+      let newStatus: GpsStatus = "position_unavailable";
+      let message = "Unable to determine location.";
+      let instruction: string | null = "Move to open sky / enable Precise Location";
 
-    setStatus(newStatus);
-    setStatusMessage(message);
-    setError(message);
-  }, []);
-
-  const checkLocation = useCallback(
-    async (fresh: boolean = true): Promise<GeofenceEvaluation | null> => {
-      if (typeof window === "undefined" || !navigator.geolocation) {
-        setStatus("unsupported");
-        setStatusMessage("Geolocation is not supported by this browser.");
-        setError("Geolocation unsupported");
-        return null;
+      switch (err.code) {
+        case err.PERMISSION_DENIED:
+          newStatus = "permission_denied";
+          message = "GPS permission denied. Please allow location access in browser settings.";
+          instruction = "Enable location permissions in browser settings.";
+          break;
+        case err.POSITION_UNAVAILABLE:
+          newStatus = "position_unavailable";
+          message = "GPS position unavailable. Ensure device location is turned on.";
+          instruction = "Turn on device location (GPS) and Precise Location.";
+          break;
+        case err.TIMEOUT:
+          newStatus = "timeout";
+          message = "GPS request timed out.";
+          instruction = "Move to open sky / enable Precise Location";
+          break;
       }
 
-      setIsChecking(true);
-      setStatus("acquiring");
-      setStatusMessage("Acquiring fresh high-accuracy GPS fix…");
+      setStatus(newStatus);
+      setStatusMessage(message);
+      setInstructionMessage(instruction);
+      setError(message);
+    },
+    [stopActiveAcquisition],
+  );
 
-      return new Promise<GeofenceEvaluation | null>((resolve) => {
-        navigator.geolocation.getCurrentPosition(
+  const startAcquisition = useCallback(async (): Promise<GeofenceEvaluation | null> => {
+    if (typeof window === "undefined" || !navigator.geolocation) {
+      setStatus("unsupported");
+      setStatusMessage("Geolocation is not supported by this browser.");
+      setInstructionMessage(null);
+      setError("Geolocation unsupported");
+      return null;
+    }
+
+    // Stop any existing session
+    stopActiveAcquisition();
+
+    // Reset acquisition session state for fresh reading
+    readingsRef.current = [];
+    bestReadingRef.current = null;
+    setReadingsHistory([]);
+    setReadingsCollected(0);
+    setBestAccuracy(null);
+    setBestCoords(null);
+    setIsStable(false);
+    setConsecutiveGoodCount(0);
+    setPositionStability("MEASURING");
+    setAcquisitionTimer(0);
+    setIsChecking(true);
+    isAcquiringRef.current = true;
+    setStatus("acquiring");
+    setStatusMessage("Waiting for accurate GPS location...");
+    setInstructionMessage("Move to open sky if possible.");
+    setError(null);
+
+    return new Promise<GeofenceEvaluation | null>((resolve) => {
+      let elapsedSeconds = 0;
+
+      // Start 1-second acquisition timer ticker up to 15 seconds
+      timerIntervalRef.current = setInterval(() => {
+        elapsedSeconds += 1;
+        setAcquisitionTimer(elapsedSeconds);
+
+        if (elapsedSeconds >= maxAcquisitionSeconds) {
+          // 15s acquisition window reached
+          stopActiveAcquisition();
+
+          const allReadings = readingsRef.current;
+          const best = bestReadingRef.current;
+
+          if (allReadings.length === 0 || !best) {
+            setStatus("timeout");
+            setStatusMessage("GPS accuracy insufficient (Current accuracy: ±— m)");
+            setInstructionMessage("Move to open sky / enable Precise Location");
+            resolve(null);
+            return;
+          }
+
+          const stability = checkTemporalStability(allReadings, 15);
+          setIsStable(stability.isStable);
+          setConsecutiveGoodCount(stability.consecutiveGoodCount);
+          setPositionStability(stability.status);
+
+          const evalResult = evaluateAndFinalize(best, stability);
+          resolve(evalResult);
+        }
+      }, 1000);
+
+      // Start live watchPosition with high accuracy and fresh readings
+      try {
+        watchIdRef.current = navigator.geolocation.watchPosition(
           (pos) => {
-            setIsChecking(false);
-            const evalResult = processPosition(pos);
-            resolve(evalResult);
+            handlePositionReading(pos);
           },
           (err) => {
-            setIsChecking(false);
-            processError(err);
+            handlePositionError(err);
             resolve(null);
           },
           {
             enableHighAccuracy: true,
             timeout: 15000,
-            maximumAge: fresh ? 0 : 5000,
+            maximumAge: 0,
           },
         );
-      });
+      } catch (e) {
+        console.warn("watchPosition execution notice:", e);
+        handlePositionError({
+          code: 2,
+          message: "Unable to start location watcher",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3,
+        } as GeolocationPositionError);
+        resolve(null);
+      }
+    });
+  }, [
+    evaluateAndFinalize,
+    handlePositionError,
+    handlePositionReading,
+    maxAcquisitionSeconds,
+    stopActiveAcquisition,
+  ]);
+
+  const refreshLocation = useCallback(async () => {
+    return startAcquisition();
+  }, [startAcquisition]);
+
+  const checkLocation = useCallback(
+    async (_fresh: boolean = true) => {
+      return startAcquisition();
     },
-    [processPosition, processError],
+    [startAcquisition],
   );
 
   useEffect(() => {
     if (typeof window === "undefined" || !navigator.geolocation) {
       setStatus("unsupported");
       setStatusMessage("Geolocation is not supported by this browser.");
+      setInstructionMessage(null);
       return;
     }
 
-    // Initial check
-    void checkLocation(false);
-
     if (autoWatch) {
-      try {
-        watchIdRef.current = navigator.geolocation.watchPosition(
-          (pos) => {
-            processPosition(pos);
-          },
-          (err) => {
-            processError(err);
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 20000,
-            maximumAge: 3000,
-          },
-        );
-      } catch (e) {
-        console.warn("watchPosition notice:", e);
-      }
+      void startAcquisition();
     }
 
     return () => {
-      if (watchIdRef.current !== null && typeof window !== "undefined" && navigator.geolocation) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-      }
+      stopActiveAcquisition();
     };
-  }, [autoWatch, checkLocation, processPosition, processError]);
+  }, [autoWatch, startAcquisition, stopActiveAcquisition]);
+
+  const currentAccuracy = coords ? coords.accuracy : null;
+  const gpsQuality = getGpsQuality(currentAccuracy);
+  // Quality gate passes only when accuracy <= 20m, at least 2 consecutive good readings, and stable position
+  const isAcceptableAccuracy =
+    currentAccuracy !== null &&
+    currentAccuracy <= 20 &&
+    isStable &&
+    consecutiveGoodCount >= 2;
+
+  const isInsidePolygonRaw = evaluation ? evaluation.isInside : null;
+  // Strict inside decision requires point inside 5-point polygon AND passed quality/stability gate
+  const isInsideAuthorized =
+    isInsidePolygonRaw === true &&
+    status === "inside" &&
+    isAcceptableAccuracy;
 
   return {
     coords,
+    currentCoords: coords,
+    bestCoords,
     evaluation,
-    isInside: evaluation ? evaluation.isInside : null,
+    isInside: isInsideAuthorized ? true : isInsidePolygonRaw === false ? false : null,
+    isInsidePolygon: isInsidePolygonRaw,
+    isAcceptableAccuracy,
     status,
     statusMessage,
+    instructionMessage,
     isChecking,
-    accuracy: coords ? coords.accuracy : null,
+    accuracy: currentAccuracy,
+    bestAccuracy,
+    gpsQuality,
+    positionStability,
+    readingsCollected,
+    readingsHistory,
+    acquisitionTimer,
+    maxAcquisitionSeconds,
+    isStable,
+    consecutiveGoodCount,
     distanceToBoundary: evaluation ? evaluation.distanceToBoundaryMeters : null,
     distanceToCentroid: evaluation ? evaluation.distanceToCentroidMeters : null,
     lastUpdated,
     error,
+    refreshLocation,
     checkLocation,
     polygon: AUTHORIZED_GEOFENCE_POLYGON,
   };

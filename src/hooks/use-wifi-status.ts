@@ -6,6 +6,7 @@ export interface UseWifiStatusReturn {
   isSonaWifi: boolean | null; // null during initial check
   isLoading: boolean;
   isChecking: boolean;
+  lastChecked: Date | null;
   checkConnection: () => Promise<WifiStatus | null>;
 }
 
@@ -13,6 +14,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
   const [status, setStatus] = useState<WifiStatus | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isChecking, setIsChecking] = useState<boolean>(false);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
   const fetchWifiStatus = useCallback(async (isManual = false): Promise<WifiStatus | null> => {
     if (isManual) {
@@ -26,6 +28,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       if (res.ok) {
         const data: WifiStatus = await res.json();
         setStatus(data);
+        setLastChecked(new Date());
         return data;
       }
     } catch {
@@ -45,6 +48,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         timestamp: new Date().toISOString(),
       };
       setStatus(offlineStatus);
+      setLastChecked(new Date());
       return offlineStatus;
     } finally {
       setIsLoading(false);
@@ -81,6 +85,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
     isSonaWifi: status ? status.isSonaWifi : null,
     isLoading,
     isChecking,
+    lastChecked,
     checkConnection: () => fetchWifiStatus(true),
   };
 }

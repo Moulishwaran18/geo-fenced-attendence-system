@@ -12,11 +12,14 @@ import {
   Fingerprint,
   Loader2,
   MapPin,
+  RefreshCw,
+  Satellite,
   ScanFace,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
   Sparkles,
+  Timer,
   Wifi,
   XCircle,
 } from "lucide-react";
@@ -24,6 +27,7 @@ import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
+import { WifiStatusCard } from "@/components/common/WifiStatusCard";
 import { FaceScanDialog } from "@/components/common/FaceScanDialog";
 import type { FaceScanResult } from "@/components/common/FaceScanDialog";
 import { GeofenceMap } from "@/components/common/GeofenceMap";
@@ -58,7 +62,7 @@ export const Route = createFileRoute("/mark-attendance")({
       {
         name: "description",
         content:
-          "Authoritative 3-Factor Presence Verification: Wi-Fi, 19-Point GPS Polygon Geofence, and Biometric Identity Verification.",
+          "Authoritative 3-Factor Presence Verification: Wi-Fi, 5-Point GPS Polygon Geofence, and Biometric Identity Verification.",
       },
       { property: "og:title", content: "Mark Attendance — CampusAttend" },
       { property: "og:description", content: "3-Factor Presence Authorization (Wi-Fi + GPS + ArcFace)." },
@@ -68,17 +72,17 @@ export const Route = createFileRoute("/mark-attendance")({
 });
 
 const icons = {
-  location: MapPin,
   wifi: Wifi,
-  bluetooth: Bluetooth,
+  location: MapPin,
   identity: ScanFace,
+  decision: Fingerprint,
 } as const;
 
 const titles = {
-  location: "GPS Geofence",
-  wifi: "Wi-Fi",
-  bluetooth: "Bluetooth",
-  identity: "Identity",
+  wifi: "1. Wi-Fi Authorization",
+  location: "2. GPS 5-Pt Polygon",
+  identity: "3. ArcFace Biometrics",
+  decision: "Attendance Decision",
 } as const;
 
 function MarkAttendancePage() {
@@ -91,11 +95,17 @@ function MarkAttendancePage() {
   const [showDebug, setShowDebug] = useState(false);
   const now = useIndiaTime();
 
-  // High-accuracy live GPS 19-point polygon geofence tracker
+  // High-accuracy live GPS 5-point polygon geofence tracker
   const geofence = useGeofence(true);
 
   // Live Wi-Fi Status tracker
-  const { status: wifiStatus } = useWifiStatus(5000);
+  const {
+    status: wifiStatus,
+    isLoading: isWifiLoading,
+    isChecking: isWifiChecking,
+    lastChecked: wifiLastChecked,
+    checkConnection: checkWifiConnection,
+  } = useWifiStatus(5000);
 
   // Determine real or mock location state
   const isUsingMockScenario = scenario !== "ready";
@@ -104,7 +114,7 @@ function MarkAttendancePage() {
   // ---------------------------------------------------------------------------
   // 3 MANDATORY SECURITY FACTORS:
   // 1. Wi-Fi Authorized
-  // 2. GPS Inside 19-Point Polygon
+  // 2. GPS Inside 5-Point Polygon (requires valid fresh fix & acceptable accuracy)
   // 3. Face Authenticated (PERSON_001 / PERSON_002 matched via PostgreSQL pgvector)
   // ---------------------------------------------------------------------------
 
@@ -144,7 +154,7 @@ function MarkAttendancePage() {
       return {
         label: "ALLOWED",
         tone: "success" as const,
-        detail: "All 3 Security Factors (Wi-Fi, 19-Point GPS Polygon, Face Recognition) Passed",
+        detail: "All 3 Security Factors (Wi-Fi, 5-Point GPS Polygon, Face Recognition) Passed",
       };
     }
     if (!wifiAuthorized) {
@@ -154,11 +164,30 @@ function MarkAttendancePage() {
         detail: "Device must be connected to authorized institutional Wi-Fi network",
       };
     }
+    if (!isUsingMockScenario && geofence.status === "acquiring") {
+      return {
+        label: "REJECTED (Acquiring GPS Fix)",
+        tone: "warning" as const,
+        detail: `Waiting for accurate GPS location (${geofence.acquisitionTimer}s / ${geofence.maxAcquisitionSeconds}s)…`,
+      };
+    }
+    if (
+      !isUsingMockScenario &&
+      (geofence.status === "insufficient_accuracy" ||
+        geofence.status === "low_accuracy" ||
+        (geofence.accuracy !== null && geofence.accuracy > 20))
+    ) {
+      return {
+        label: `REJECTED (GPS Accuracy Insufficient: ±${Math.round(geofence.accuracy || 0)} m)`,
+        tone: "error" as const,
+        detail: `GPS accuracy insufficient — Current accuracy: ±${Math.round(geofence.accuracy || 0)} m. Move to open sky / enable Precise Location.`,
+      };
+    }
     if (!gpsInsideGeofence) {
       return {
-        label: "REJECTED (Outside 19-Point Polygon)",
+        label: "REJECTED (Outside 5-Point Polygon)",
         tone: "error" as const,
-        detail: "Device GPS coordinates are outside the authoritative 19-point campus polygon",
+        detail: "Device GPS coordinates are outside the authoritative 5-point campus polygon",
       };
     }
     if (faceResult && !faceAuthenticated) {
@@ -173,7 +202,7 @@ function MarkAttendancePage() {
       tone: "warning" as const,
       detail: "Live face recognition required to complete 3-factor verification",
     };
-  }, [status, receipt, canMarkAttendance, wifiAuthorized, gpsInsideGeofence, faceResult, faceAuthenticated]);
+  }, [status, receipt, canMarkAttendance, wifiAuthorized, isUsingMockScenario, geofence, gpsInsideGeofence, faceResult, faceAuthenticated]);
 
   // Live Location Signal computation
   const liveLocationSignal = useMemo((): VerificationSignal => {
@@ -190,7 +219,7 @@ function MarkAttendancePage() {
       return {
         key: "location",
         value: "Acquiring GPS Fix…",
-        detail: "High-accuracy GPS requested",
+        detail: `Waiting for accurate GPS location (${geofence.acquisitionTimer}s / ${geofence.maxAcquisitionSeconds}s)`,
         state: "pending",
       };
     }
@@ -207,17 +236,17 @@ function MarkAttendancePage() {
     if (geofence.status === "position_unavailable" || geofence.status === "timeout") {
       return {
         key: "location",
-        value: "GPS Unavailable",
-        detail: "Enable device location / GPS",
+        value: geofence.status === "timeout" ? "GPS Request Timed Out" : "GPS Unavailable",
+        detail: "Move to open sky / enable Precise Location",
         state: "error",
       };
     }
 
-    if (geofence.status === "low_accuracy") {
+    if (geofence.status === "insufficient_accuracy" || geofence.status === "low_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)) {
       return {
         key: "location",
-        value: geofence.isInside ? "Inside (Low Accuracy)" : "Outside (Low Accuracy)",
-        detail: `Accuracy: ±${Math.round(geofence.accuracy || 0)}m · Move to open sky`,
+        value: "GPS accuracy insufficient",
+        detail: `Current accuracy: ±${Math.round(geofence.accuracy || 0)} m · Move to open sky / enable Precise Location`,
         state: "warning",
       };
     }
@@ -225,40 +254,47 @@ function MarkAttendancePage() {
     if (geofence.isInside === true) {
       return {
         key: "location",
-        value: "Inside 19-Point Polygon",
-        detail: `Accuracy: ±${Math.round(geofence.accuracy || 0)}m · ${geofence.distanceToBoundary}m from boundary`,
+        value: "Inside 5-Point Polygon",
+        detail: `High Accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "0.0"}m · ${geofence.distanceToBoundary}m from boundary`,
         state: "verified",
       };
     }
 
     return {
       key: "location",
-      value: "Outside 19-Point Polygon",
-      detail: `${geofence.distanceToBoundary}m from authorized perimeter`,
+      value: "Outside 5-Point Polygon",
+      detail: `${geofence.distanceToBoundary}m from authorized perimeter (±${Math.round(geofence.accuracy || 0)}m)`,
       state: "error",
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
 
-  // Signals Array for Verification Cards
-  const signals = useMemo((): VerificationSignal[] => {
+  // 4 Primary Verification Overview Cards
+  const signals = useMemo((): Array<{
+    key: "wifi" | "location" | "identity" | "decision";
+    value: string;
+    detail: string;
+    state: "verified" | "warning" | "error" | "pending";
+  }> => {
     return [
-      liveLocationSignal,
       {
         key: "wifi",
-        value: wifiAuthorized ? (wifiStatus?.ssid || "Campus Network") : "Not Connected",
-        detail: wifiAuthorized ? "Authorized Wi-Fi · Connected" : "Unauthorized Network",
-        state: wifiAuthorized ? "verified" : "error",
+        value: wifiAuthorized
+          ? "AUTHORIZED"
+          : wifiStatus?.state === "disconnected"
+            ? "UNAVAILABLE"
+            : "UNAUTHORIZED",
+        detail: wifiAuthorized
+          ? (wifiStatus?.ssid ? `SSID: ${wifiStatus.ssid}` : "Institutional Gateway Verified")
+          : wifiStatus?.state === "disconnected"
+            ? "Wi-Fi Disconnected / Offline"
+            : "Unauthorized Campus Network",
+        state: wifiAuthorized ? "verified" : wifiStatus?.state === "disconnected" ? "warning" : "error",
       },
-      {
-        key: "bluetooth",
-        value: "Campus Beacon",
-        detail: "BLE-GATE-02 · Detected",
-        state: "verified",
-      },
+      liveLocationSignal as any,
       {
         key: "identity",
         value: faceAuthenticated
-          ? `Verified · ${faceResult?.staffName || "Staff"}`
+          ? `Verified · ${faceResult?.staffName || faceResult?.staffCode || "Staff"}`
           : faceResult
             ? "Unknown Face"
             : "Live Face Scan",
@@ -267,11 +303,27 @@ function MarkAttendancePage() {
             ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
             : faceResult
               ? "Biometric match rejected"
-              : "Biometric match required",
+              : "ArcFace Biometrics Required",
         state: faceAuthenticated ? "verified" : faceResult ? "error" : "pending",
       },
+      {
+        key: "decision",
+        value: canMarkAttendance
+          ? "ALLOWED"
+          : status === "success"
+            ? "RECORDED"
+            : "REJECTED",
+        detail: canMarkAttendance
+          ? "All 3 Security Factors Passed"
+          : !wifiAuthorized
+            ? "Factor 1 (Wi-Fi) Failed"
+            : !gpsInsideGeofence
+              ? "Factor 2 (GPS) Failed"
+              : "Factor 3 (Face) Pending",
+        state: canMarkAttendance || status === "success" ? "verified" : "error",
+      },
     ];
-  }, [liveLocationSignal, wifiAuthorized, wifiStatus, faceAuthenticated, faceResult]);
+  }, [liveLocationSignal, wifiAuthorized, wifiStatus, faceAuthenticated, faceResult, canMarkAttendance, status]);
 
   const run = async () => {
     if (!wifiAuthorized) {
@@ -283,7 +335,10 @@ function MarkAttendancePage() {
 
     if (!gpsInsideGeofence) {
       toast.error("GPS Geofence Verification Failed", {
-        description: "Your device GPS position is outside the authoritative 19-point campus polygon.",
+        description:
+          geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+            ? `GPS accuracy insufficient (Current accuracy: ±${Math.round(geofence.accuracy || 0)} m). Move to open sky / enable Precise Location.`
+            : "Your device GPS position is outside the authoritative 5-point campus polygon.",
       });
       return;
     }
@@ -334,13 +389,16 @@ function MarkAttendancePage() {
             toast.success(`Attendance Marked Successfully!`, {
               description: `${result.staffName || "Staff"} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
             });
-          } else if (!gpsInsideGeofence) {
-            toast.warning("GPS Outside Polygon", {
-              description: "Face verified, but GPS location must be inside the 19-point campus polygon to mark attendance.",
-            });
           } else if (!wifiAuthorized) {
             toast.warning("Wi-Fi Not Authorized", {
               description: "Face verified, but device must be connected to authorized campus Wi-Fi.",
+            });
+          } else if (!gpsInsideGeofence) {
+            toast.warning("GPS Not Verified", {
+              description:
+                geofence.status === "insufficient_accuracy"
+                  ? `Face verified, but GPS accuracy (±${Math.round(geofence.accuracy || 0)}m) is insufficient. Move to open sky.`
+                  : "Face verified, but GPS location must be inside the 5-point campus polygon to mark attendance.",
             });
           }
         }}
@@ -348,30 +406,52 @@ function MarkAttendancePage() {
 
       <PageHeader
         title="Mark Attendance"
-        description="3-Factor Presence Verification: Wi-Fi Authorization + 19-Point GPS Polygon + ArcFace Biometric Recognition."
+        description="3-Factor Presence Verification: Wi-Fi Authorization + 5-Point GPS Polygon + ArcFace Biometric Recognition."
         actions={
           <div className="flex items-center gap-2">
-            <label htmlFor="scenario" className="text-xs text-muted-foreground">
-              Demo state
-            </label>
-            <Select
-              value={scenario}
-              onValueChange={(v) => {
-                setScenario(v as VerificationScenario);
-                setStatus("idle");
-              }}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void checkWifiConnection()}
+              disabled={isWifiChecking}
+              className="h-9 gap-1.5"
             >
-              <SelectTrigger id="scenario" className="w-48 bg-card">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(scenarioLabels).map(([k, label]) => (
-                  <SelectItem key={k} value={k}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              <Wifi className={`size-3.5 ${isWifiChecking ? "animate-spin" : ""}`} />
+              Recheck Wi-Fi
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void geofence.refreshLocation()}
+              disabled={geofence.isChecking}
+              className="h-9 gap-1.5"
+            >
+              <RefreshCw className={`size-3.5 ${geofence.isChecking ? "animate-spin" : ""}`} />
+              Refresh Location
+            </Button>
+            <div className="flex items-center gap-2">
+              <label htmlFor="scenario" className="text-xs text-muted-foreground">
+                Demo state
+              </label>
+              <Select
+                value={scenario}
+                onValueChange={(v) => {
+                  setScenario(v as VerificationScenario);
+                  setStatus("idle");
+                }}
+              >
+                <SelectTrigger id="scenario" className="w-44 bg-card">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(scenarioLabels).map(([k, label]) => (
+                    <SelectItem key={k} value={k}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         }
       />
@@ -394,21 +474,38 @@ function MarkAttendancePage() {
               tone="error"
               icon={Wifi}
               title="Attendance Blocked — Wi-Fi Not Authorized"
-              description="Device is not connected to an authorized campus Wi-Fi network. Connect to institutional Wi-Fi to satisfy Factor 1."
+              description="Device is not connected to an authorized campus Wi-Fi network. Connect to institutional Wi-Fi to satisfy Factor 1. (GPS & Face diagnostics remain accessible below)."
+            />
+          ) : !isUsingMockScenario && geofence.status === "acquiring" ? (
+            <AlertBanner
+              tone="warning"
+              icon={Timer}
+              title="Waiting for Accurate GPS Location…"
+              description={`Acquiring fresh high-accuracy GPS fix (${geofence.acquisitionTimer}s / ${geofence.maxAcquisitionSeconds}s). Move to open sky if possible.`}
+            />
+          ) : !isUsingMockScenario &&
+            (geofence.status === "insufficient_accuracy" ||
+              geofence.status === "low_accuracy" ||
+              (geofence.accuracy !== null && geofence.accuracy > 10)) ? (
+            <AlertBanner
+              tone="warning"
+              icon={AlertTriangle}
+              title="Attendance Blocked — GPS Accuracy Insufficient"
+              description={`Current GPS accuracy is ±${Math.round(geofence.accuracy || 0)}m (requires ≤10m precision). Instruction: Move to open sky / enable Precise Location.`}
             />
           ) : !gpsInsideGeofence ? (
             <AlertBanner
               tone="error"
               icon={ShieldAlert}
-              title="Attendance Blocked — Outside 19-Point Geofence Polygon"
-              description="Your device GPS coordinates are outside the authoritative 19-point campus polygon boundary. You must be physically inside the designated perimeter."
+              title="Attendance Blocked — Outside 5-Point Geofence Polygon"
+              description="Your device GPS coordinates are outside the authoritative 5-point campus polygon boundary. You must be physically inside the designated perimeter."
             />
           ) : !faceAuthenticated ? (
             <AlertBanner
               tone="info"
               icon={ShieldCheck}
               title="Wi-Fi &amp; GPS Verified — Face Recognition Required"
-              description="Wi-Fi and 19-point GPS polygon checks passed. Complete live face scan to satisfy Factor 3 and record attendance."
+              description="Wi-Fi and 5-point GPS polygon checks passed. Complete live face scan to satisfy Factor 3 and record attendance."
             />
           ) : (
             <AlertBanner
@@ -433,6 +530,17 @@ function MarkAttendancePage() {
             ))}
           </div>
 
+          {/* Dedicated Institutional Wi-Fi Status & Diagnostic Card */}
+          <WifiStatusCard
+            status={wifiStatus}
+            wifiAuthorized={wifiAuthorized}
+            isLoading={isWifiLoading}
+            isChecking={isWifiChecking}
+            lastChecked={wifiLastChecked}
+            onRecheck={checkWifiConnection}
+            isMockScenario={isUsingMockScenario}
+          />
+
           {/* Developer GPS Diagnostic Panel */}
           <GpsDiagnosticPanel geofence={geofence} />
 
@@ -440,13 +548,15 @@ function MarkAttendancePage() {
           <div className="grid gap-6 xl:grid-cols-3">
             <Section
               className="xl:col-span-2"
-              title="Authoritative 19-Point Geofence Boundary"
+              title="Authoritative 5-Point Geofence Boundary"
               description={
                 geofence.isInside === true
-                  ? "Real GPS fix: Inside authoritative 19-point campus polygon (C1 → C19 → C1)"
+                  ? "Real GPS fix: Inside authoritative 5-point campus polygon (C1 → C5 → C1)"
                   : geofence.isInside === false
-                    ? "Real GPS fix: Outside authoritative 19-point campus polygon"
-                    : "Acquiring live GPS coordinates…"
+                    ? "Real GPS fix: Outside authoritative 5-point campus polygon"
+                    : geofence.status === "acquiring"
+                      ? "Acquiring live GPS coordinates…"
+                      : "GPS fix pending or insufficient accuracy"
               }
             >
               <div className="p-4">
@@ -457,11 +567,11 @@ function MarkAttendancePage() {
             <Section title="Attendance Decision Matrix">
               <div className="space-y-4 p-5">
                 {/* Required Telemetry List */}
-                <dl className="space-y-2.5 text-xs">
+                <dl className="space-y-2 text-xs">
                   {/* 1. CURRENT LATITUDE */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
-                      <Compass className="size-3.5 text-primary" /> Current Latitude
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <Compass className="size-3.5 text-primary" /> 1. Current Latitude
                     </dt>
                     <dd className="font-mono font-bold text-right text-foreground text-xs">
                       {geofence.coords ? `${geofence.coords.lat.toFixed(8)}° N` : "—"}
@@ -470,28 +580,113 @@ function MarkAttendancePage() {
 
                   {/* 2. CURRENT LONGITUDE */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
-                      <Compass className="size-3.5 text-primary" /> Current Longitude
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <Compass className="size-3.5 text-primary" /> 2. Current Longitude
                     </dt>
                     <dd className="font-mono font-bold text-right text-foreground text-xs">
                       {geofence.coords ? `${geofence.coords.lng.toFixed(8)}° E` : "—"}
                     </dd>
                   </div>
 
-                  {/* 3. GPS ACCURACY */}
+                  {/* 3. CURRENT ACCURACY */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
-                      <MapPin className="size-3.5 text-primary" /> GPS Accuracy
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <MapPin className="size-3.5 text-primary" /> 3. Current Accuracy
                     </dt>
-                    <dd className="font-mono font-medium text-right">
-                      {geofence.accuracy ? `±${geofence.accuracy.toFixed(1)} m` : "—"}
+                    <dd className="font-mono font-bold text-right">
+                      {geofence.accuracy !== null ? (
+                        <span
+                          className={
+                            geofence.accuracy <= 10
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : geofence.accuracy <= 20
+                                ? "text-blue-600 dark:text-blue-400"
+                                : geofence.accuracy <= 50
+                                  ? "text-amber-600 dark:text-amber-400"
+                                  : "text-red-600 dark:text-red-400"
+                          }
+                        >
+                          ±{geofence.accuracy.toFixed(1)} m
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </dd>
                   </div>
 
-                  {/* 4. GEOFENCE STATUS */}
+                  {/* 4. BEST ACCURACY */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
-                      <ShieldCheck className="size-3.5 text-emerald-500" /> Geofence Status
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <MapPin className="size-3.5 text-primary" /> 4. Best Accuracy
+                    </dt>
+                    <dd className="font-mono font-bold text-right">
+                      {geofence.bestAccuracy !== null ? (
+                        <span
+                          className={
+                            geofence.bestAccuracy <= 10
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : geofence.bestAccuracy <= 20
+                                ? "text-blue-600 dark:text-blue-400"
+                                : geofence.bestAccuracy <= 50
+                                  ? "text-amber-600 dark:text-amber-400"
+                                  : "text-red-600 dark:text-red-400"
+                          }
+                        >
+                          ±{geofence.bestAccuracy.toFixed(1)} m
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </dd>
+                  </div>
+
+                  {/* 5. GPS QUALITY */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <Sparkles className="size-3.5 text-primary" /> 5. GPS Quality
+                    </dt>
+                    <dd className="text-right">
+                      <Badge
+                        variant="outline"
+                        className={
+                          geofence.gpsQuality === "EXCELLENT"
+                            ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-bold"
+                            : geofence.gpsQuality === "GOOD"
+                              ? "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10 text-[10px] font-bold"
+                              : geofence.gpsQuality === "ACQUIRING / WAIT"
+                                ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 text-[10px] font-bold"
+                                : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-bold"
+                        }
+                      >
+                        {geofence.gpsQuality}
+                      </Badge>
+                    </dd>
+                  </div>
+
+                  {/* 6. READINGS COLLECTED */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <Satellite className="size-3.5 text-primary" /> 6. Readings Collected
+                    </dt>
+                    <dd className="font-mono text-right text-foreground text-xs">
+                      {geofence.readingsCollected} ({geofence.isStable ? "Stable" : "Evaluating"})
+                    </dd>
+                  </div>
+
+                  {/* 7. ACQUISITION TIMER */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <Timer className="size-3.5 text-primary" /> 7. Acquisition Timer
+                    </dt>
+                    <dd className="font-mono text-right text-foreground text-xs">
+                      {geofence.acquisitionTimer}s / {geofence.maxAcquisitionSeconds}s
+                    </dd>
+                  </div>
+
+                  {/* 8. GEOFENCE STATUS */}
+                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <ShieldCheck className="size-3.5 text-emerald-500" /> 8. Geofence Status
                     </dt>
                     <dd className="text-right">
                       <Badge
@@ -502,15 +697,20 @@ function MarkAttendancePage() {
                             : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-semibold"
                         }
                       >
-                        {gpsInsideGeofence ? "INSIDE 19-POINT POLYGON" : "OUTSIDE POLYGON"}
+                        {gpsInsideGeofence
+                          ? "INSIDE 5-POINT POLYGON"
+                          : geofence.status === "insufficient_accuracy" ||
+                              (geofence.accuracy !== null && geofence.accuracy > 10)
+                            ? "POOR ACCURACY (BLOCKED)"
+                            : "OUTSIDE POLYGON"}
                       </Badge>
                     </dd>
                   </div>
 
-                  {/* 5. WIFI STATUS */}
+                  {/* 9. WIFI STATUS */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
-                      <Wifi className="size-3.5 text-primary" /> Wi-Fi Status
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <Wifi className="size-3.5 text-primary" /> 9. Wi-Fi Status
                     </dt>
                     <dd className="text-right">
                       <Badge
@@ -518,18 +718,24 @@ function MarkAttendancePage() {
                         className={
                           wifiAuthorized
                             ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-semibold"
-                            : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-semibold"
+                            : wifiStatus?.state === "disconnected"
+                              ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 text-[10px] font-semibold"
+                              : "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-semibold"
                         }
                       >
-                        {wifiAuthorized ? `AUTHORIZED (${wifiStatus?.ssid || "CONNECTED"})` : "UNAUTHORIZED"}
+                        {wifiAuthorized
+                          ? "AUTHORIZED"
+                          : wifiStatus?.state === "disconnected"
+                            ? "UNAVAILABLE"
+                            : "UNAUTHORIZED"}
                       </Badge>
                     </dd>
                   </div>
 
-                  {/* 6. FACE STATUS */}
+                  {/* 10. FACE STATUS */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[11px]">
-                      <ScanFace className="size-3.5 text-primary" /> Face Status
+                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
+                      <ScanFace className="size-3.5 text-primary" /> 10. Face Status
                     </dt>
                     <dd className="text-right truncate">
                       {faceAuthenticated ? (
@@ -552,10 +758,10 @@ function MarkAttendancePage() {
                     </dd>
                   </div>
 
-                  {/* 7. FINAL ATTENDANCE STATUS */}
+                  {/* 11. FINAL ATTENDANCE STATUS */}
                   <div className="flex items-center justify-between gap-2 pt-1">
                     <dt className="flex items-center gap-1.5 font-bold text-foreground uppercase tracking-wider text-[11px]">
-                      <Fingerprint className="size-3.5 text-primary" /> Final Attendance Status
+                      <Fingerprint className="size-3.5 text-primary" /> Final Decision
                     </dt>
                     <dd className="text-right">
                       <Badge
@@ -652,7 +858,10 @@ function MarkAttendancePage() {
                     }
                     if (!gpsInsideGeofence) {
                       toast.error("Outside Geofence", {
-                        description: "Your GPS coordinates must be inside the authoritative 19-point campus polygon.",
+                        description:
+                          geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 10)
+                            ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤10m precision.`
+                            : "Your GPS coordinates must be inside the authoritative 5-point campus polygon.",
                       });
                       return;
                     }
@@ -673,7 +882,10 @@ function MarkAttendancePage() {
                     </>
                   ) : !gpsInsideGeofence ? (
                     <>
-                      <AlertTriangle className="mr-2 size-5" /> Outside 19-Point Polygon — Blocked
+                      <AlertTriangle className="mr-2 size-5" />
+                      {geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 10)
+                        ? "GPS Accuracy Insufficient — Blocked"
+                        : "Outside 5-Point Polygon — Blocked"}
                     </>
                   ) : !faceAuthenticated ? (
                     <>
@@ -691,7 +903,9 @@ function MarkAttendancePage() {
                     {!wifiAuthorized
                       ? "Device must be connected to authorized institutional Wi-Fi."
                       : !gpsInsideGeofence
-                        ? "Device must be inside the authoritative 19-point GPS polygon."
+                        ? geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 10)
+                          ? "High accuracy GPS (≤ 10m) is required to authorize attendance."
+                          : "Device must be inside the authoritative 5-point GPS polygon."
                         : "Face recognition is required to confirm your identity."}
                   </p>
                 )}
@@ -703,8 +917,6 @@ function MarkAttendancePage() {
     </AppShell>
   );
 }
-
-
 
 function SuccessPanel({
   receipt,

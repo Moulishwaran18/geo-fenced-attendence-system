@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { searchFaceEmbeddings } from "../db/client";
-import { runOfflineArcFaceOn112Image, cosineDistance } from "../biometrics/offline-arcface";
+import { searchFaceEmbeddings } from "../db/client.ts";
+import { runOfflineArcFaceOn112Image, cosineDistance } from "../biometrics/offline-arcface.ts";
 
 const MATCH_THRESHOLD = 0.45;
 const MIN_MATCH_MARGIN = 0.08;

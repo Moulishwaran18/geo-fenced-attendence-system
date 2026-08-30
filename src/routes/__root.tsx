@@ -8,7 +8,6 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
-import { WifiGatekeeper } from "@/components/common/WifiGatekeeper";
 
 import appCss from "../styles.css?url";
 
@@ -116,10 +115,8 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <WifiGatekeeper>
-        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-        <Outlet />
-      </WifiGatekeeper>
+      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+      <Outlet />
     </QueryClientProvider>
   );
 }
