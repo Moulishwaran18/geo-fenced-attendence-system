@@ -49,7 +49,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
+        kotlinCompilerExtensionVersion = "1.5.11"
     }
 
     packaging {
@@ -114,6 +114,9 @@ dependencies {
 
     // ── Coroutines ──
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // ── Location Services (FusedLocationProviderClient) ──
+    implementation("com.google.android.gms:play-services-location:21.1.0")
 
     // ── Permission handling ──
     implementation("com.google.accompanist:accompanist-permissions:0.34.0")

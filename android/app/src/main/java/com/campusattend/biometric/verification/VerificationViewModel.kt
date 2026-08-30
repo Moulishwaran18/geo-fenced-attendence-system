@@ -128,16 +128,15 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
         _biometricResult.value = null
 
         // Start liveness with a random challenge or bypass in dev mode
+        val baseState = livenessService.start()
         val livenessState = if (BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
             livenessCompleted = true
-            LivenessState(
+            baseState.copy(
                 status = LivenessStatus.PASSED,
-                category = ChallengeCategory.BLINK,
-                instruction = "LIVENESS: DISABLED (DEVELOPMENT MODE)",
-                progress = 1.0f
+                instruction = "LIVENESS: DISABLED (DEVELOPMENT MODE)"
             )
         } else {
-            livenessService.start()
+            baseState
         }
 
         _pipelineState.value = PipelineState(

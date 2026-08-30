@@ -6,6 +6,10 @@ import {
   type GeofenceEvaluation,
   type LatLng,
 } from "../lib/geofence/geofence-service.ts";
+import {
+  GpsKalmanFilter,
+  type KalmanFilteredPosition,
+} from "../lib/geofence/kalman-filter.ts";
 
 export type GpsStatus =
   | "idle"
@@ -21,6 +25,7 @@ export type GpsStatus =
 
 export type GpsQuality = "EXCELLENT" | "GOOD" | "ACQUIRING / WAIT" | "UNRELIABLE" | "UNKNOWN";
 export type PositionStability = "STABLE" | "UNSTABLE" | "MEASURING";
+export type KalmanStatus = "INITIALIZING" | "ACTIVE" | "SETTLED" | "OFF";
 
 export interface GpsCoordinates {
   lat: number;
@@ -34,9 +39,14 @@ export interface GpsCoordinates {
 }
 
 export interface GpsReading extends GpsCoordinates {
+  filteredLat: number;
+  filteredLng: number;
+  filteredEastMeters: number;
+  filteredNorthMeters: number;
   quality: GpsQuality;
   displacementFromPrev?: number | undefined;
   sampleIndex: number;
+  kalmanStatus: KalmanStatus;
 }
 
 export interface StabilityEvaluation {
@@ -47,8 +57,11 @@ export interface StabilityEvaluation {
 }
 
 export interface UseGeofenceResult {
+  locationSource: "NATIVE FUSED" | "BROWSER";
   coords: GpsCoordinates | null;
   currentCoords: GpsCoordinates | null;
+  rawCoords: GpsCoordinates | null;
+  filteredCoords: GpsCoordinates | null;
   bestCoords: GpsCoordinates | null;
   evaluation: GeofenceEvaluation | null;
   isInside: boolean | null;
@@ -59,7 +72,10 @@ export interface UseGeofenceResult {
   instructionMessage: string | null;
   isChecking: boolean;
   accuracy: number | null;
+  rawAccuracy: number | null;
   bestAccuracy: number | null;
+  kalmanStatus: KalmanStatus;
+  kalmanEstimatedAccuracy: number | null;
   gpsQuality: GpsQuality;
   positionStability: PositionStability;
   readingsCollected: number;
@@ -74,11 +90,12 @@ export interface UseGeofenceResult {
   error: string | null;
   refreshLocation: () => Promise<GeofenceEvaluation | null>;
   checkLocation: (fresh?: boolean) => Promise<GeofenceEvaluation | null>;
+  openLocationSettings?: () => void;
   polygon: LatLng[];
 }
 
 /**
- * Determines GPS Quality tier based on exact reported accuracy:
+ * Determines GPS Quality tier based on exact reported raw accuracy:
  * accuracy <= 10 m: EXCELLENT
  * accuracy > 10 m && <= 20 m: GOOD
  * accuracy > 20 m && <= 50 m: ACQUIRING / WAIT
@@ -95,8 +112,8 @@ export function getGpsQuality(accuracy: number | null | undefined): GpsQuality {
 }
 
 /**
- * Checks temporal stability across consecutive readings.
- * Requires at least 2 consecutive good readings (<= 20m) where displacement <= 15m.
+ * Checks temporal stability across consecutive filtered readings.
+ * Requires at least 2 consecutive good readings (raw accuracy <= 20m) where displacement <= 15m.
  */
 export function checkTemporalStability(
   readings: GpsReading[],
@@ -131,15 +148,19 @@ export function checkTemporalStability(
     };
   }
 
-  // Check displacement between the consecutive good readings
+  // Check displacement between the consecutive filtered positions
   const goodSamples = readings.slice(-consecutiveGood);
   let maxDisp = 0;
   for (let i = 1; i < goodSamples.length; i++) {
     const prev = goodSamples[i - 1]!;
     const curr = goodSamples[i]!;
+    const prevLat = prev.filteredLat ?? prev.lat;
+    const prevLng = prev.filteredLng ?? prev.lng;
+    const currLat = curr.filteredLat ?? curr.lat;
+    const currLng = curr.filteredLng ?? curr.lng;
     const disp = haversineDistanceMeters(
-      { lat: prev.lat, lng: prev.lng },
-      { lat: curr.lat, lng: curr.lng },
+      { lat: prevLat, lng: prevLng },
+      { lat: currLat, lng: currLng },
     );
     if (disp > maxDisp) {
       maxDisp = disp;
@@ -162,6 +183,8 @@ export function useGeofence(
   maxAcquisitionSeconds: number = DEFAULT_MAX_ACQUISITION_SECONDS,
 ): UseGeofenceResult {
   const [coords, setCoords] = useState<GpsCoordinates | null>(null);
+  const [rawCoords, setRawCoords] = useState<GpsCoordinates | null>(null);
+  const [filteredCoords, setFilteredCoords] = useState<GpsCoordinates | null>(null);
   const [bestCoords, setBestCoords] = useState<GpsCoordinates | null>(null);
   const [evaluation, setEvaluation] = useState<GeofenceEvaluation | null>(null);
   const [status, setStatus] = useState<GpsStatus>("idle");
@@ -171,6 +194,8 @@ export function useGeofence(
   const [readingsCollected, setReadingsCollected] = useState<number>(0);
   const [readingsHistory, setReadingsHistory] = useState<GpsReading[]>([]);
   const [bestAccuracy, setBestAccuracy] = useState<number | null>(null);
+  const [kalmanStatus, setKalmanStatus] = useState<KalmanStatus>("OFF");
+  const [kalmanEstimatedAccuracy, setKalmanEstimatedAccuracy] = useState<number | null>(null);
   const [acquisitionTimer, setAcquisitionTimer] = useState<number>(0);
   const [isStable, setIsStable] = useState<boolean>(false);
   const [consecutiveGoodCount, setConsecutiveGoodCount] = useState<number>(0);
@@ -183,11 +208,24 @@ export function useGeofence(
   const readingsRef = useRef<GpsReading[]>([]);
   const bestReadingRef = useRef<GpsReading | null>(null);
   const isAcquiringRef = useRef<boolean>(false);
+  const kalmanRef = useRef<GpsKalmanFilter>(new GpsKalmanFilter());
+
+  const isNativeAndroid =
+    typeof window !== "undefined" &&
+    (Boolean((window as any).AndroidLocationBridge) || Boolean((window as any).NativeLocation));
+  const locationSource: "NATIVE FUSED" | "BROWSER" = isNativeAndroid ? "NATIVE FUSED" : "BROWSER";
 
   const stopActiveAcquisition = useCallback(() => {
     if (watchIdRef.current !== null && typeof window !== "undefined" && navigator.geolocation) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
+    }
+    if (typeof window !== "undefined" && (window as any).AndroidLocationBridge?.stopLocationUpdates) {
+      try {
+        (window as any).AndroidLocationBridge.stopLocationUpdates();
+      } catch (e) {
+        console.warn("Native bridge stop error:", e);
+      }
     }
     if (timerIntervalRef.current !== null) {
       clearInterval(timerIntervalRef.current);
@@ -199,9 +237,9 @@ export function useGeofence(
 
   const evaluateAndFinalize = useCallback(
     (reading: GpsReading, stability: StabilityEvaluation) => {
-      const { lat, lng, accuracy } = reading;
+      // Evaluate against 5-point polygon using the Kalman-filtered position
       const evalResult = evaluateGeofence(
-        { lat, lng, accuracy },
+        { lat: reading.filteredLat, lng: reading.filteredLng, accuracy: reading.accuracy },
         AUTHORIZED_GEOFENCE_POLYGON,
       );
 
@@ -213,26 +251,20 @@ export function useGeofence(
       setConsecutiveGoodCount(stability.consecutiveGoodCount);
       setPositionStability(stability.status);
 
-      // Gate: Requires accuracy <= 20m, at least 2 consecutive good readings, and stable position
-      const passesQualityGate = accuracy <= 20 && stability.isStable && stability.consecutiveGoodCount >= 2;
-
-      if (passesQualityGate) {
+      // Deterministic Decision: Accuracy <= 20m + Point in Polygon
+      if (reading.accuracy <= 20) {
         if (evalResult.isInside) {
           setStatus("inside");
-          setStatusMessage(`Inside Authorized Region (±${accuracy.toFixed(1)}m accuracy · ${evalResult.distanceToBoundaryMeters}m from boundary)`);
+          setStatusMessage(`Inside Authorized Region (±${reading.accuracy.toFixed(1)}m raw accuracy · ${evalResult.distanceToBoundaryMeters}m from boundary)`);
           setInstructionMessage(null);
         } else {
           setStatus("outside");
-          setStatusMessage(`Outside Authorized Region (${evalResult.distanceToBoundaryMeters}m from perimeter · ±${accuracy.toFixed(1)}m accuracy)`);
+          setStatusMessage(`Outside Authorized Region (${evalResult.distanceToBoundaryMeters}m from perimeter · ±${reading.accuracy.toFixed(1)}m raw accuracy)`);
           setInstructionMessage(null);
         }
-      } else if (accuracy > 50) {
-        setStatus("insufficient_accuracy");
-        setStatusMessage(`GPS accuracy insufficient (Current accuracy: ±${Math.round(accuracy)} m)`);
-        setInstructionMessage("Move to open sky / enable Precise Location");
       } else {
         setStatus("insufficient_accuracy");
-        setStatusMessage(`GPS accuracy insufficient (Current accuracy: ±${Math.round(accuracy)} m)`);
+        setStatusMessage(`GPS accuracy insufficient (Current accuracy: ±${Math.round(reading.accuracy)} m)`);
         setInstructionMessage("Move to open sky / enable Precise Location");
       }
 
@@ -242,9 +274,28 @@ export function useGeofence(
   );
 
   const handlePositionReading = useCallback(
-    (pos: GeolocationPosition) => {
+    (pos: {
+      coords: {
+        latitude: number;
+        longitude: number;
+        accuracy: number;
+        altitude?: number | null | undefined;
+        altitudeAccuracy?: number | null | undefined;
+        heading?: number | null | undefined;
+        speed?: number | null | undefined;
+      };
+      timestamp: number;
+    }) => {
       const { latitude, longitude, accuracy, altitude, altitudeAccuracy, heading, speed } = pos.coords;
-      const quality = getGpsQuality(accuracy);
+      const rawQuality = getGpsQuality(accuracy);
+
+      // Run 2D Constant-Velocity Kalman Filter on local metric coordinates
+      const kalmanResult = kalmanRef.current.update({
+        lat: latitude,
+        lng: longitude,
+        accuracy,
+        timestamp: pos.timestamp,
+      });
 
       const history = readingsRef.current;
       let displacementFromPrev: number | undefined = undefined;
@@ -252,13 +303,33 @@ export function useGeofence(
         const prev = history[history.length - 1]!;
         displacementFromPrev = parseFloat(
           haversineDistanceMeters(
-            { lat: prev.lat, lng: prev.lng },
-            { lat: latitude, lng: longitude },
+            { lat: prev.filteredLat, lng: prev.filteredLng },
+            { lat: kalmanResult.filteredLat, lng: kalmanResult.filteredLng },
           ).toFixed(2),
         );
       }
 
       const reading: GpsReading = {
+        lat: latitude,
+        lng: longitude,
+        accuracy, // Preserved raw accuracy
+        altitude,
+        altitudeAccuracy,
+        heading,
+        speed,
+        timestamp: pos.timestamp,
+        filteredLat: kalmanResult.filteredLat,
+        filteredLng: kalmanResult.filteredLng,
+        filteredEastMeters: kalmanResult.filteredEastMeters,
+        filteredNorthMeters: kalmanResult.filteredNorthMeters,
+        quality: rawQuality,
+        displacementFromPrev,
+        sampleIndex: history.length + 1,
+        kalmanStatus: kalmanResult.status,
+      };
+
+      // Update state without modifying reported accuracy
+      setRawCoords({
         lat: latitude,
         lng: longitude,
         accuracy,
@@ -267,14 +338,23 @@ export function useGeofence(
         heading,
         speed,
         timestamp: pos.timestamp,
-        quality,
-        displacementFromPrev,
-        sampleIndex: history.length + 1,
-      };
+      });
 
-      // Always preserve reported accuracy exactly — never overwrite or round
+      setFilteredCoords({
+        lat: kalmanResult.filteredLat,
+        lng: kalmanResult.filteredLng,
+        accuracy, // Raw accuracy is retained
+        altitude,
+        altitudeAccuracy,
+        heading,
+        speed,
+        timestamp: pos.timestamp,
+      });
+
       setCoords(reading);
       setLastUpdated(new Date(pos.timestamp));
+      setKalmanStatus(kalmanResult.status);
+      setKalmanEstimatedAccuracy(kalmanResult.kalmanEstimatedAccuracy);
 
       // Append to history
       readingsRef.current.push(reading);
@@ -282,7 +362,7 @@ export function useGeofence(
       setReadingsHistory(updatedHistory);
       setReadingsCollected(updatedHistory.length);
 
-      // Track best reading based on smallest reported accuracy
+      // Track best reading based on smallest reported raw accuracy
       let currentBest = bestReadingRef.current;
       if (!currentBest || reading.accuracy < currentBest.accuracy) {
         currentBest = reading;
@@ -300,18 +380,18 @@ export function useGeofence(
       // Evaluate geofence with best available reading for continuous diagnostics
       const evalReading = currentBest || reading;
       const evalResult = evaluateGeofence(
-        { lat: evalReading.lat, lng: evalReading.lng, accuracy: evalReading.accuracy },
+        { lat: evalReading.filteredLat, lng: evalReading.filteredLng, accuracy: evalReading.accuracy },
         AUTHORIZED_GEOFENCE_POLYGON,
       );
       setEvaluation(evalResult);
 
-      // Early stop condition: at least 2 consecutive excellent fixes (<= 10 m) AND stable position
-      const consecutiveExcellent = updatedHistory
+      // Early stop condition: at least 2 consecutive good fixes (raw accuracy <= 20 m) AND stable position
+      const consecutiveGoodFixes = updatedHistory
         .slice(-2)
-        .every((r) => r.accuracy <= 10);
+        .every((r) => r.accuracy <= 20);
 
-      if (reading.accuracy <= 10 && stability.isStable && consecutiveExcellent) {
-        // High accuracy & stable fix attained — settle early
+      if (reading.accuracy <= 20 && stability.isStable && consecutiveGoodFixes) {
+        // High accuracy (<= 20m) & stable fix attained — settle
         stopActiveAcquisition();
         evaluateAndFinalize(currentBest || reading, stability);
         return;
@@ -320,15 +400,15 @@ export function useGeofence(
       // If still acquiring, update live status indicators
       if (reading.accuracy <= 10) {
         setStatus("acquiring");
-        setStatusMessage(`EXCELLENT GPS accuracy (±${reading.accuracy.toFixed(1)} m) — verifying stability…`);
+        setStatusMessage(`EXCELLENT GPS accuracy (±${reading.accuracy.toFixed(1)} m) — Kalman stabilizing…`);
         setInstructionMessage(null);
       } else if (reading.accuracy <= 20) {
         setStatus("acquiring");
-        setStatusMessage(`GOOD GPS accuracy (±${reading.accuracy.toFixed(1)} m) — verifying consecutive stability…`);
-        setInstructionMessage("Hold still while precision stabilizes…");
+        setStatusMessage(`GOOD GPS accuracy (±${reading.accuracy.toFixed(1)} m) — Kalman stabilizing…`);
+        setInstructionMessage("Hold still while position stabilizes…");
       } else if (reading.accuracy <= 50) {
         setStatus("acquiring");
-        setStatusMessage(`ACQUIRING / WAIT: Accuracy ±${Math.round(reading.accuracy)} m — waiting for GNSS satellite lock…`);
+        setStatusMessage(`ACQUIRING / WAIT: Raw accuracy ±${Math.round(reading.accuracy)} m — waiting for GNSS satellite lock…`);
         setInstructionMessage("Move to open sky if possible · Enable Precise Location.");
       } else {
         setStatus("acquiring");
@@ -340,29 +420,25 @@ export function useGeofence(
   );
 
   const handlePositionError = useCallback(
-    (err: GeolocationPositionError) => {
+    (err: { code?: number; message?: string }) => {
       stopActiveAcquisition();
 
       let newStatus: GpsStatus = "position_unavailable";
       let message = "Unable to determine location.";
       let instruction: string | null = "Move to open sky / enable Precise Location";
 
-      switch (err.code) {
-        case err.PERMISSION_DENIED:
-          newStatus = "permission_denied";
-          message = "GPS permission denied. Please allow location access in browser settings.";
-          instruction = "Enable location permissions in browser settings.";
-          break;
-        case err.POSITION_UNAVAILABLE:
-          newStatus = "position_unavailable";
-          message = "GPS position unavailable. Ensure device location is turned on.";
-          instruction = "Turn on device location (GPS) and Precise Location.";
-          break;
-        case err.TIMEOUT:
-          newStatus = "timeout";
-          message = "GPS request timed out.";
-          instruction = "Move to open sky / enable Precise Location";
-          break;
+      if (err.code === 1) {
+        newStatus = "permission_denied";
+        message = "GPS permission denied. Please allow location access in settings.";
+        instruction = "Enable location permissions in device / browser settings.";
+      } else if (err.code === 2) {
+        newStatus = "position_unavailable";
+        message = "GPS position unavailable. Ensure device location is turned on.";
+        instruction = "Turn on device location (GPS) and Precise Location.";
+      } else if (err.code === 3) {
+        newStatus = "timeout";
+        message = "GPS request timed out.";
+        instruction = "Move to open sky / enable Precise Location";
       }
 
       setStatus(newStatus);
@@ -374,24 +450,21 @@ export function useGeofence(
   );
 
   const startAcquisition = useCallback(async (): Promise<GeofenceEvaluation | null> => {
-    if (typeof window === "undefined" || !navigator.geolocation) {
-      setStatus("unsupported");
-      setStatusMessage("Geolocation is not supported by this browser.");
-      setInstructionMessage(null);
-      setError("Geolocation unsupported");
-      return null;
-    }
-
     // Stop any existing session
     stopActiveAcquisition();
 
-    // Reset acquisition session state for fresh reading
+    // Reset Kalman filter and acquisition session state for fresh reading
+    kalmanRef.current.reset();
     readingsRef.current = [];
     bestReadingRef.current = null;
     setReadingsHistory([]);
     setReadingsCollected(0);
     setBestAccuracy(null);
     setBestCoords(null);
+    setRawCoords(null);
+    setFilteredCoords(null);
+    setKalmanStatus("INITIALIZING");
+    setKalmanEstimatedAccuracy(null);
     setIsStable(false);
     setConsecutiveGoodCount(0);
     setPositionStability("MEASURING");
@@ -436,32 +509,81 @@ export function useGeofence(
         }
       }, 1000);
 
-      // Start live watchPosition with high accuracy and fresh readings
-      try {
-        watchIdRef.current = navigator.geolocation.watchPosition(
-          (pos) => {
-            handlePositionReading(pos);
-          },
-          (err) => {
-            handlePositionError(err);
+      // Check if native Android Bridge is available
+      const nativeBridge = typeof window !== "undefined" ? (window as any).AndroidLocationBridge : null;
+
+      if (nativeBridge && typeof nativeBridge.startLocationUpdates === "function") {
+        // ── 1. NATIVE ANDROID FUSED LOCATION PATH ──
+        (window as any).__onNativeLocationUpdate = (payload: any) => {
+          if (!payload) return;
+
+          if (payload.status === "LOCATION_DISABLED") {
+            handlePositionError({ code: 2, message: "Location is turned off" });
             resolve(null);
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0,
-          },
-        );
-      } catch (e) {
-        console.warn("watchPosition execution notice:", e);
-        handlePositionError({
-          code: 2,
-          message: "Unable to start location watcher",
-          PERMISSION_DENIED: 1,
-          POSITION_UNAVAILABLE: 2,
-          TIMEOUT: 3,
-        } as GeolocationPositionError);
-        resolve(null);
+            return;
+          }
+
+          if (payload.status === "PERMISSION_DENIED") {
+            handlePositionError({ code: 1, message: "Location permission denied" });
+            resolve(null);
+            return;
+          }
+
+          if (payload.latitude !== undefined && payload.longitude !== undefined && payload.accuracy !== undefined) {
+            handlePositionReading({
+              coords: {
+                latitude: payload.latitude,
+                longitude: payload.longitude,
+                accuracy: payload.accuracy,
+                altitude: payload.altitude ?? null,
+                altitudeAccuracy: payload.altitudeAccuracy ?? null,
+                heading: payload.heading ?? null,
+                speed: payload.speed ?? null,
+              },
+              timestamp: payload.timestamp || Date.now(),
+            });
+          }
+        };
+
+        try {
+          nativeBridge.startLocationUpdates(maxAcquisitionSeconds);
+        } catch (e) {
+          console.warn("Native location bridge start failed:", e);
+        }
+      } else {
+        // ── 2. WEB BROWSER FALLBACK PATH ──
+        if (typeof window === "undefined" || !navigator.geolocation) {
+          setStatus("unsupported");
+          setStatusMessage("Geolocation is not supported by this browser.");
+          setInstructionMessage(null);
+          setError("Geolocation unsupported");
+          resolve(null);
+          return;
+        }
+
+        try {
+          watchIdRef.current = navigator.geolocation.watchPosition(
+            (pos) => {
+              handlePositionReading(pos);
+            },
+            (err) => {
+              handlePositionError(err);
+              resolve(null);
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 15000,
+              maximumAge: 0,
+            },
+          );
+        } catch (e) {
+          console.warn("watchPosition execution notice:", e);
+          handlePositionError({
+            code: 2,
+            message: "Unable to start location watcher",
+          });
+          resolve(null);
+        }
       }
     });
   }, [
@@ -483,14 +605,17 @@ export function useGeofence(
     [startAcquisition],
   );
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !navigator.geolocation) {
-      setStatus("unsupported");
-      setStatusMessage("Geolocation is not supported by this browser.");
-      setInstructionMessage(null);
-      return;
+  const openLocationSettings = useCallback(() => {
+    if (typeof window !== "undefined" && (window as any).AndroidLocationBridge?.openLocationSettings) {
+      try {
+        (window as any).AndroidLocationBridge.openLocationSettings();
+      } catch (e) {
+        console.warn("openLocationSettings bridge failed:", e);
+      }
     }
+  }, []);
 
+  useEffect(() => {
     if (autoWatch) {
       void startAcquisition();
     }
@@ -500,25 +625,27 @@ export function useGeofence(
     };
   }, [autoWatch, startAcquisition, stopActiveAcquisition]);
 
-  const currentAccuracy = coords ? coords.accuracy : null;
-  const gpsQuality = getGpsQuality(currentAccuracy);
-  // Quality gate passes only when accuracy <= 20m, at least 2 consecutive good readings, and stable position
+  const currentRawAccuracy = coords ? coords.accuracy : null;
+  const gpsQuality = getGpsQuality(currentRawAccuracy);
+
+  const effectiveAccuracy = bestAccuracy !== null ? Math.min(currentRawAccuracy ?? 999, bestAccuracy) : currentRawAccuracy;
   const isAcceptableAccuracy =
-    currentAccuracy !== null &&
-    currentAccuracy <= 20 &&
-    isStable &&
-    consecutiveGoodCount >= 2;
+    effectiveAccuracy !== null &&
+    effectiveAccuracy <= 20 &&
+    (isStable || consecutiveGoodCount >= 1);
 
   const isInsidePolygonRaw = evaluation ? evaluation.isInside : null;
-  // Strict inside decision requires point inside 5-point polygon AND passed quality/stability gate
+  // Inside decision requires point inside 5-point polygon AND passed accuracy gate
   const isInsideAuthorized =
     isInsidePolygonRaw === true &&
-    status === "inside" &&
-    isAcceptableAccuracy;
+    (status === "inside" || isAcceptableAccuracy);
 
   return {
+    locationSource,
     coords,
     currentCoords: coords,
+    rawCoords,
+    filteredCoords,
     bestCoords,
     evaluation,
     isInside: isInsideAuthorized ? true : isInsidePolygonRaw === false ? false : null,
@@ -528,8 +655,11 @@ export function useGeofence(
     statusMessage,
     instructionMessage,
     isChecking,
-    accuracy: currentAccuracy,
+    accuracy: currentRawAccuracy,
+    rawAccuracy: currentRawAccuracy,
     bestAccuracy,
+    kalmanStatus,
+    kalmanEstimatedAccuracy,
     gpsQuality,
     positionStability,
     readingsCollected,
@@ -544,6 +674,7 @@ export function useGeofence(
     error,
     refreshLocation,
     checkLocation,
+    openLocationSettings,
     polygon: AUTHORIZED_GEOFENCE_POLYGON,
   };
 }

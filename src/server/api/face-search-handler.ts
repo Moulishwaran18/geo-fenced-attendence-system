@@ -36,23 +36,21 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
   const reqTimestamp = new Date().toISOString();
 
   try {
-    const body = (await request.json()) as {
-      descriptor?: number[];
-      descriptorB?: number[];
-      doubleInferenceDist?: number;
-      recognitionFrameId?: number | string;
-      rawFrameDataUrl?: string;
-      aligned112DataUrl?: string;
-      tensorChecksum?: string;
-      embeddingChecksum?: string;
-      faceBox?: { x: number; y: number; width: number; height: number };
-      landmarks5?: number[][];
-      confidence?: number;
-      verificationSessionId?: string;
-      embeddingFingerprint?: string;
-      livenessCompleted?: boolean;
-      sessionNonce?: string;
-    };
+    let body: any;
+    try {
+      body = await request.json();
+    } catch (parseErr) {
+      console.warn("[FaceVerifyApi] Failed to parse request JSON:", parseErr);
+      return jsonResponse(
+        {
+          matched: false,
+          finalResult: "UNKNOWN",
+          reason: "Malformed request payload",
+          reqTimestamp,
+        },
+        400,
+      );
+    }
 
     const recognitionFrameId =
       body.recognitionFrameId ||
@@ -85,8 +83,9 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
       );
     }
 
-    const backendFingerprint = computeVectorFingerprint(body.descriptor);
-    const embeddingNorm = Math.sqrt(body.descriptor.reduce((s, v) => s + v * v, 0));
+    const descriptorList = body.descriptor as number[];
+    const backendFingerprint = computeVectorFingerprint(descriptorList);
+    const embeddingNorm = Math.sqrt(descriptorList.reduce((s: number, v: number) => s + v * v, 0));
 
     // 2. Save Exact Frame Artifacts to disk for audit
     const debugFramesDir = path.resolve("public", "debug-frames", `frame-${recognitionFrameId}`);

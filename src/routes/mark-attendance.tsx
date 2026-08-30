@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
+  Activity,
   AlertTriangle,
   Bluetooth,
   Camera,
@@ -173,9 +174,9 @@ function MarkAttendancePage() {
     }
     if (
       !isUsingMockScenario &&
-      (geofence.status === "insufficient_accuracy" ||
-        geofence.status === "low_accuracy" ||
-        (geofence.accuracy !== null && geofence.accuracy > 20))
+      geofence.accuracy !== null &&
+      geofence.accuracy > 20 &&
+      geofence.status !== "inside"
     ) {
       return {
         label: `REJECTED (GPS Accuracy Insufficient: ±${Math.round(geofence.accuracy || 0)} m)`,
@@ -228,7 +229,7 @@ function MarkAttendancePage() {
       return {
         key: "location",
         value: "Permission Denied",
-        detail: "Enable location in browser settings",
+        detail: "Enable location in settings",
         state: "error",
       };
     }
@@ -242,16 +243,7 @@ function MarkAttendancePage() {
       };
     }
 
-    if (geofence.status === "insufficient_accuracy" || geofence.status === "low_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)) {
-      return {
-        key: "location",
-        value: "GPS accuracy insufficient",
-        detail: `Current accuracy: ±${Math.round(geofence.accuracy || 0)} m · Move to open sky / enable Precise Location`,
-        state: "warning",
-      };
-    }
-
-    if (geofence.isInside === true) {
+    if (geofence.isInside === true || (geofence.accuracy !== null && geofence.accuracy <= 20 && geofence.isInsidePolygon === true)) {
       return {
         key: "location",
         value: "Inside 5-Point Polygon",
@@ -260,11 +252,29 @@ function MarkAttendancePage() {
       };
     }
 
+    if (geofence.accuracy !== null && geofence.accuracy <= 20 && geofence.isInsidePolygon === false) {
+      return {
+        key: "location",
+        value: "Outside 5-Point Polygon",
+        detail: `${geofence.distanceToBoundary}m from authorized perimeter (±${Math.round(geofence.accuracy || 0)}m)`,
+        state: "error",
+      };
+    }
+
+    if ((geofence.status as string) === "acquiring" || geofence.isChecking) {
+      return {
+        key: "location",
+        value: "Acquiring GPS Fix…",
+        detail: `Waiting for accurate GPS location (${geofence.acquisitionTimer}s / ${geofence.maxAcquisitionSeconds}s)`,
+        state: "pending",
+      };
+    }
+
     return {
       key: "location",
-      value: "Outside 5-Point Polygon",
-      detail: `${geofence.distanceToBoundary}m from authorized perimeter (±${Math.round(geofence.accuracy || 0)}m)`,
-      state: "error",
+      value: "GPS accuracy insufficient",
+      detail: `Current accuracy: ±${Math.round(geofence.accuracy || 0)} m · Move to open sky / enable Precise Location`,
+      state: "warning",
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
 
@@ -483,15 +493,12 @@ function MarkAttendancePage() {
               title="Waiting for Accurate GPS Location…"
               description={`Acquiring fresh high-accuracy GPS fix (${geofence.acquisitionTimer}s / ${geofence.maxAcquisitionSeconds}s). Move to open sky if possible.`}
             />
-          ) : !isUsingMockScenario &&
-            (geofence.status === "insufficient_accuracy" ||
-              geofence.status === "low_accuracy" ||
-              (geofence.accuracy !== null && geofence.accuracy > 10)) ? (
+          ) : !isUsingMockScenario && (geofence.accuracy !== null && geofence.accuracy > 20 && geofence.status !== "inside") ? (
             <AlertBanner
               tone="warning"
               icon={AlertTriangle}
               title="Attendance Blocked — GPS Accuracy Insufficient"
-              description={`Current GPS accuracy is ±${Math.round(geofence.accuracy || 0)}m (requires ≤10m precision). Instruction: Move to open sky / enable Precise Location.`}
+              description={`Current GPS accuracy is ±${Math.round(geofence.accuracy || 0)}m (requires ≤20m precision). Instruction: Move to open sky / enable Precise Location.`}
             />
           ) : !gpsInsideGeofence ? (
             <AlertBanner
@@ -566,32 +573,37 @@ function MarkAttendancePage() {
 
             <Section title="Attendance Decision Matrix">
               <div className="space-y-4 p-5">
-                {/* Required Telemetry List */}
                 <dl className="space-y-2 text-xs">
-                  {/* 1. CURRENT LATITUDE */}
+                  {/* 1. RAW POSITION */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
                     <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <Compass className="size-3.5 text-primary" /> 1. Current Latitude
+                      <Compass className="size-3.5 text-primary" /> 1. Raw Position (W3C)
                     </dt>
                     <dd className="font-mono font-bold text-right text-foreground text-xs">
-                      {geofence.coords ? `${geofence.coords.lat.toFixed(8)}° N` : "—"}
+                      {geofence.rawCoords
+                        ? `${geofence.rawCoords.lat.toFixed(6)}°, ${geofence.rawCoords.lng.toFixed(6)}°`
+                        : geofence.coords
+                          ? `${geofence.coords.lat.toFixed(6)}°, ${geofence.coords.lng.toFixed(6)}°`
+                          : "—"}
                     </dd>
                   </div>
 
-                  {/* 2. CURRENT LONGITUDE */}
+                  {/* 2. FILTERED POSITION (KALMAN) */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
                     <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <Compass className="size-3.5 text-primary" /> 2. Current Longitude
+                      <Sparkles className="size-3.5 text-primary" /> 2. Filtered Position (Kalman)
                     </dt>
-                    <dd className="font-mono font-bold text-right text-foreground text-xs">
-                      {geofence.coords ? `${geofence.coords.lng.toFixed(8)}° E` : "—"}
+                    <dd className="font-mono font-bold text-right text-primary text-xs">
+                      {geofence.filteredCoords
+                        ? `${geofence.filteredCoords.lat.toFixed(6)}°, ${geofence.filteredCoords.lng.toFixed(6)}°`
+                        : "—"}
                     </dd>
                   </div>
 
-                  {/* 3. CURRENT ACCURACY */}
+                  {/* 3. RAW ACCURACY */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
                     <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <MapPin className="size-3.5 text-primary" /> 3. Current Accuracy
+                      <MapPin className="size-3.5 text-primary" /> 3. Raw Accuracy
                     </dt>
                     <dd className="font-mono font-bold text-right">
                       {geofence.accuracy !== null ? (
@@ -614,36 +626,31 @@ function MarkAttendancePage() {
                     </dd>
                   </div>
 
-                  {/* 4. BEST ACCURACY */}
+                  {/* 5. KALMAN FILTER STATUS */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
                     <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <MapPin className="size-3.5 text-primary" /> 4. Best Accuracy
+                      <Activity className="size-3.5 text-primary" /> 5. Kalman Status
                     </dt>
-                    <dd className="font-mono font-bold text-right">
-                      {geofence.bestAccuracy !== null ? (
-                        <span
-                          className={
-                            geofence.bestAccuracy <= 10
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : geofence.bestAccuracy <= 20
-                                ? "text-blue-600 dark:text-blue-400"
-                                : geofence.bestAccuracy <= 50
-                                  ? "text-amber-600 dark:text-amber-400"
-                                  : "text-red-600 dark:text-red-400"
-                          }
-                        >
-                          ±{geofence.bestAccuracy.toFixed(1)} m
-                        </span>
-                      ) : (
-                        "—"
-                      )}
+                    <dd className="text-right">
+                      <Badge
+                        variant="outline"
+                        className={
+                          geofence.kalmanStatus === "SETTLED"
+                            ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-bold"
+                            : geofence.kalmanStatus === "ACTIVE"
+                              ? "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10 text-[10px] font-bold"
+                              : "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 text-[10px] font-bold"
+                        }
+                      >
+                        {geofence.kalmanStatus}
+                      </Badge>
                     </dd>
                   </div>
 
-                  {/* 5. GPS QUALITY */}
+                  {/* 6. GPS QUALITY */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
                     <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <Sparkles className="size-3.5 text-primary" /> 5. GPS Quality
+                      <Sparkles className="size-3.5 text-primary" /> 6. GPS Quality
                     </dt>
                     <dd className="text-right">
                       <Badge
@@ -663,23 +670,24 @@ function MarkAttendancePage() {
                     </dd>
                   </div>
 
-                  {/* 6. READINGS COLLECTED */}
+                  {/* 7. POSITION STABILITY */}
                   <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
                     <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <Satellite className="size-3.5 text-primary" /> 6. Readings Collected
+                      <Satellite className="size-3.5 text-primary" /> 7. Position Stability
                     </dt>
-                    <dd className="font-mono text-right text-foreground text-xs">
-                      {geofence.readingsCollected} ({geofence.isStable ? "Stable" : "Evaluating"})
-                    </dd>
-                  </div>
-
-                  {/* 7. ACQUISITION TIMER */}
-                  <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5">
-                    <dt className="flex items-center gap-1.5 text-muted-foreground uppercase font-medium text-[10px]">
-                      <Timer className="size-3.5 text-primary" /> 7. Acquisition Timer
-                    </dt>
-                    <dd className="font-mono text-right text-foreground text-xs">
-                      {geofence.acquisitionTimer}s / {geofence.maxAcquisitionSeconds}s
+                    <dd className="text-right">
+                      <Badge
+                        variant="outline"
+                        className={
+                          geofence.positionStability === "STABLE"
+                            ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 text-[10px] font-bold"
+                            : geofence.positionStability === "UNSTABLE"
+                              ? "border-red-500/40 text-red-600 dark:text-red-400 bg-red-500/10 text-[10px] font-bold"
+                              : "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10 text-[10px] font-bold"
+                        }
+                      >
+                        {geofence.positionStability}
+                      </Badge>
                     </dd>
                   </div>
 
@@ -699,10 +707,9 @@ function MarkAttendancePage() {
                       >
                         {gpsInsideGeofence
                           ? "INSIDE 5-POINT POLYGON"
-                          : geofence.status === "insufficient_accuracy" ||
-                              (geofence.accuracy !== null && geofence.accuracy > 10)
-                            ? "POOR ACCURACY (BLOCKED)"
-                            : "OUTSIDE POLYGON"}
+                          : geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+                            ? "BLOCKED (ACCURACY INSUFFICIENT)"
+                            : "OUTSIDE 5-POINT POLYGON"}
                       </Badge>
                     </dd>
                   </div>
@@ -859,8 +866,8 @@ function MarkAttendancePage() {
                     if (!gpsInsideGeofence) {
                       toast.error("Outside Geofence", {
                         description:
-                          geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 10)
-                            ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤10m precision.`
+                          geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+                            ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤20m precision.`
                             : "Your GPS coordinates must be inside the authoritative 5-point campus polygon.",
                       });
                       return;
@@ -883,7 +890,7 @@ function MarkAttendancePage() {
                   ) : !gpsInsideGeofence ? (
                     <>
                       <AlertTriangle className="mr-2 size-5" />
-                      {geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 10)
+                      {geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
                         ? "GPS Accuracy Insufficient — Blocked"
                         : "Outside 5-Point Polygon — Blocked"}
                     </>
@@ -903,8 +910,8 @@ function MarkAttendancePage() {
                     {!wifiAuthorized
                       ? "Device must be connected to authorized institutional Wi-Fi."
                       : !gpsInsideGeofence
-                        ? geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 10)
-                          ? "High accuracy GPS (≤ 10m) is required to authorize attendance."
+                        ? geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+                          ? "GPS accuracy ≤20m is required to authorize attendance."
                           : "Device must be inside the authoritative 5-point GPS polygon."
                         : "Face recognition is required to confirm your identity."}
                   </p>

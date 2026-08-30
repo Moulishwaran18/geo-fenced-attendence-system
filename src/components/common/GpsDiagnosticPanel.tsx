@@ -23,6 +23,7 @@ import {
   Check,
   Database,
   History,
+  Sliders,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,7 @@ import {
   type UseGeofenceResult,
   type GpsQuality,
   type PositionStability,
+  type KalmanStatus,
   type GpsReading,
 } from "@/hooks/use-geofence";
 import { AUTHORIZED_GEOFENCE_POLYGON } from "@/lib/geofence/geofence-service";
@@ -46,7 +48,10 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
   const [showAndroidGuide, setShowAndroidGuide] = useState(true);
 
   const {
+    locationSource,
     coords,
+    rawCoords,
+    filteredCoords,
     evaluation,
     isInside,
     isInsidePolygon,
@@ -55,7 +60,10 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
     statusMessage,
     instructionMessage,
     accuracy,
+    rawAccuracy,
     bestAccuracy,
+    kalmanStatus,
+    kalmanEstimatedAccuracy,
     gpsQuality,
     positionStability,
     readingsCollected,
@@ -174,10 +182,38 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
     }
   };
 
+  const getKalmanBadge = (kStatus: KalmanStatus) => {
+    switch (kStatus) {
+      case "SETTLED":
+        return {
+          label: "SETTLED (2D CV Filter)",
+          color: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10",
+        };
+      case "ACTIVE":
+        return {
+          label: "ACTIVE (Smoothing)",
+          color: "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10",
+        };
+      case "INITIALIZING":
+        return {
+          label: "INITIALIZING",
+          color: "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10",
+        };
+      case "OFF":
+      default:
+        return {
+          label: "OFF",
+          color: "border-muted text-muted-foreground bg-muted/30",
+        };
+    }
+  };
+
   const badge = getStatusBadge();
   const qualityBadge = getQualityBadge(gpsQuality);
   const stabilityBadge = getStabilityBadge(positionStability);
-  const isPoorAccuracy = accuracy !== null && accuracy > 20;
+  const kalmanBadge = getKalmanBadge(kalmanStatus);
+  const displayAccuracy = rawAccuracy ?? accuracy;
+  const isPoorAccuracy = displayAccuracy !== null && displayAccuracy > 20;
   const isInsuff = status === "insufficient_accuracy" || status === "low_accuracy";
 
   return (
@@ -190,15 +226,22 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           </span>
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-foreground">
-              Live GPS Telemetry &amp; 5-Point Polygon Verification
+              Live GPS Telemetry, 2D Kalman Filter &amp; 5-Point Polygon Verification
             </h3>
             <p className="text-[11px] text-muted-foreground">
-              15s fresh watchPosition window · Quality &amp; Stability filter · Strict 5-point polygon check
+              Raw GPS quality gating · Local tangent-plane 2D Kalman smoothing · 5-point point-in-polygon
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <Badge
+            variant="outline"
+            className="text-[10px] font-bold border-primary/40 bg-primary/10 text-primary px-2 py-0.5"
+          >
+            Source: {locationSource}
+          </Badge>
+
           <span
             className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-wide ${badge.color}`}
           >
@@ -228,13 +271,23 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
               {status === "acquiring"
                 ? "Waiting for accurate GPS location..."
                 : isInsuff
-                  ? `GPS accuracy insufficient — Current accuracy: ±${accuracy ? accuracy.toFixed(1) : "—"} m`
+                  ? `GPS accuracy insufficient — Current accuracy: ±${displayAccuracy ? displayAccuracy.toFixed(1) : "—"} m`
                   : statusMessage}
             </p>
             <p className="text-[11px] text-amber-700 dark:text-amber-400/90">
               {instructionMessage || "Move to open sky / enable Precise Location"}
             </p>
           </div>
+          {geofence.openLocationSettings && (status === "position_unavailable" || status === "permission_denied") && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => geofence.openLocationSettings?.()}
+              className="h-7 text-[11px] px-2.5"
+            >
+              Open Location Settings
+            </Button>
+          )}
           {isChecking && (
             <div className="flex items-center gap-1 text-[11px] font-mono text-amber-700 dark:text-amber-300">
               <Timer className="size-3.5 animate-spin" />
@@ -244,7 +297,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
         </div>
       )}
 
-      {/* 8 Primary Required Metrics Grid */}
+      {/* Primary Telemetry Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-border text-xs">
         {/* 1. GPS STATUS */}
         <div className="p-3">
@@ -259,31 +312,31 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           </div>
         </div>
 
-        {/* 2. CURRENT ACCURACY */}
+        {/* 2. RAW ACCURACY */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            2. Current Accuracy
+            2. Raw Accuracy
           </div>
           <div className="mt-1 font-mono font-bold text-xs">
-            {accuracy !== null ? (
+            {displayAccuracy !== null ? (
               <span
                 className={
-                  accuracy <= 10
+                  displayAccuracy <= 10
                     ? "text-emerald-600 dark:text-emerald-400"
-                    : accuracy <= 20
+                    : displayAccuracy <= 20
                       ? "text-blue-600 dark:text-blue-400"
-                      : accuracy <= 50
+                      : displayAccuracy <= 50
                         ? "text-amber-600 dark:text-amber-400"
                         : "text-destructive"
                 }
               >
-                ±{accuracy.toFixed(1)} m
+                ±{displayAccuracy.toFixed(1)} m
               </span>
             ) : (
               "—"
             )}
           </div>
-          <div className="text-[10px] text-muted-foreground">Reported by device GNSS</div>
+          <div className="text-[10px] text-muted-foreground">Authoritative W3C quality gate</div>
         </div>
 
         {/* 3. BEST ACCURACY */}
@@ -327,17 +380,18 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           </div>
         </div>
 
-        {/* 5. ACQUISITION TIMER */}
+        {/* 5. KALMAN FILTER STATUS */}
         <div className="p-3 border-t">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            5. Acquisition Timer
+            5. Kalman Filter
           </div>
-          <div className="mt-1 font-mono font-bold text-xs text-foreground flex items-center gap-1.5">
-            <Timer className="size-3.5 text-primary" />
-            {acquisitionTimer}s / {maxAcquisitionSeconds}s
+          <div className="mt-1">
+            <Badge variant="outline" className={`text-[10px] font-bold px-1.5 py-0 ${kalmanBadge.color}`}>
+              {kalmanBadge.label}
+            </Badge>
           </div>
           <div className="text-[10px] text-muted-foreground">
-            {isChecking ? "Live watchPosition active" : "Window completed"}
+            2D Constant-Velocity East/North
           </div>
         </div>
 
@@ -387,13 +441,13 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
               <>
                 <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
                 <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                  INSIDE (AUTHORIZED)
+                  INSIDE 5-POINT POLYGON
                 </span>
               </>
             ) : isInside === false ? (
               <>
                 <ShieldAlert className="size-4 text-destructive shrink-0" />
-                <span className="text-destructive font-bold">OUTSIDE (BLOCKED)</span>
+                <span className="text-destructive font-bold">OUTSIDE 5-POINT POLYGON</span>
               </>
             ) : (
               <>
@@ -414,19 +468,45 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
         </div>
       </div>
 
-      {/* Lat/Lng Quick Telemetry Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/20 px-4 py-2 text-xs">
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-muted-foreground">
-            Lat: <strong className="text-foreground">{coords ? `${coords.lat.toFixed(7)}° N` : "—"}</strong>
-          </span>
-          <span className="font-mono text-muted-foreground">
-            Lng: <strong className="text-foreground">{coords ? `${coords.lng.toFixed(7)}° E` : "—"}</strong>
-          </span>
+      {/* Raw vs Kalman Filtered Coordinate Comparison Strip */}
+      <div className="border-t border-border bg-muted/20 px-4 py-3 text-xs">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* Raw Position */}
+          <div className="rounded-lg border border-border/80 bg-background/80 p-2.5 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                Raw Sensor Position (Unmodified W3C)
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground">
+                Accuracy: ±{displayAccuracy !== null ? displayAccuracy.toFixed(1) : "—"} m
+              </span>
+            </div>
+            <div className="font-mono text-xs text-foreground flex items-center gap-3">
+              <span>Lat: <strong>{rawCoords ? rawCoords.lat.toFixed(7) : coords ? coords.lat.toFixed(7) : "—"}° N</strong></span>
+              <span>Lng: <strong>{rawCoords ? rawCoords.lng.toFixed(7) : coords ? coords.lng.toFixed(7) : "—"}° E</strong></span>
+            </div>
+          </div>
+
+          {/* Kalman Filtered Position */}
+          <div className="rounded-lg border border-primary/30 bg-primary/5 p-2.5 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-primary">
+                Kalman-Filtered Position (Jitter-Smoothed)
+              </span>
+              <span className="font-mono text-[10px] text-primary">
+                Status: {kalmanStatus}
+              </span>
+            </div>
+            <div className="font-mono text-xs text-foreground flex items-center gap-3">
+              <span>Lat: <strong className="text-primary">{filteredCoords ? filteredCoords.lat.toFixed(7) : "—"}° N</strong></span>
+              <span>Lng: <strong className="text-primary">{filteredCoords ? filteredCoords.lng.toFixed(7) : "—"}° E</strong></span>
+            </div>
+          </div>
         </div>
 
-        <div className="text-[11px] text-muted-foreground font-mono">
-          Last GNSS Sample: {lastUpdated ? `${formatIndiaTime(lastUpdated)} IST` : "—"}
+        <div className="mt-2 text-[10px] text-muted-foreground flex items-center justify-between">
+          <span>* Note: The Kalman filter smooths positional jitter. The raw GPS accuracy remains the authoritative authorization gate.</span>
+          <span className="font-mono">Last GNSS Fix: {lastUpdated ? `${formatIndiaTime(lastUpdated)} IST` : "—"}</span>
         </div>
       </div>
 
@@ -502,7 +582,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
         >
           <span className="flex items-center gap-1.5">
             <History className="size-3.5 text-primary" />
-            Developer Diagnostic: Every Collected Reading ({readingsHistory.length} Samples in Window)
+            Developer Diagnostic: Raw vs Kalman-Filtered Readings ({readingsHistory.length} Samples in Window)
           </span>
           {showReadingsLog ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         </button>
@@ -510,7 +590,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
         {showReadingsLog && (
           <div className="p-3 bg-muted/20 border-t border-border space-y-2">
             <div className="text-[10px] text-muted-foreground flex items-center justify-between">
-              <span>Raw GNSS fixes captured in current 15s acquisition window:</span>
+              <span>Raw GNSS fixes and 2D Kalman-smoothed positions captured in current 15s window:</span>
               <span className="font-mono">Total Samples: {readingsHistory.length}</span>
             </div>
 
@@ -524,11 +604,11 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                   <thead>
                     <tr className="border-b border-border bg-muted/60 text-muted-foreground text-[10px] uppercase font-mono">
                       <th className="px-2.5 py-1.5">#</th>
-                      <th className="px-2.5 py-1.5">Timestamp (IST)</th>
-                      <th className="px-2.5 py-1.5">Latitude</th>
-                      <th className="px-2.5 py-1.5">Longitude</th>
-                      <th className="px-2.5 py-1.5">Accuracy</th>
-                      <th className="px-2.5 py-1.5">Quality Tier</th>
+                      <th className="px-2.5 py-1.5">Time (IST)</th>
+                      <th className="px-2.5 py-1.5">Raw Lat/Lng</th>
+                      <th className="px-2.5 py-1.5">Raw Accuracy</th>
+                      <th className="px-2.5 py-1.5">Filtered Lat/Lng</th>
+                      <th className="px-2.5 py-1.5">Kalman Status</th>
                       <th className="px-2.5 py-1.5">Displacement</th>
                     </tr>
                   </thead>
@@ -540,8 +620,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                         <tr key={i} className="hover:bg-muted/30">
                           <td className="px-2.5 py-1 text-muted-foreground">{r.sampleIndex || i + 1}</td>
                           <td className="px-2.5 py-1 text-foreground">{timeStr}</td>
-                          <td className="px-2.5 py-1 text-foreground">{r.lat.toFixed(7)}°</td>
-                          <td className="px-2.5 py-1 text-foreground">{r.lng.toFixed(7)}°</td>
+                          <td className="px-2.5 py-1 text-foreground">{r.lat.toFixed(6)}°, {r.lng.toFixed(6)}°</td>
                           <td className="px-2.5 py-1">
                             <span
                               className={
@@ -557,19 +636,18 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                               ±{r.accuracy.toFixed(1)} m
                             </span>
                           </td>
+                          <td className="px-2.5 py-1 text-primary">{r.filteredLat.toFixed(6)}°, {r.filteredLng.toFixed(6)}°</td>
                           <td className="px-2.5 py-1">
                             <span
                               className={`px-1 py-0.2 rounded text-[9px] font-bold ${
-                                r.quality === "EXCELLENT"
+                                r.kalmanStatus === "SETTLED"
                                   ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                                  : r.quality === "GOOD"
+                                  : r.kalmanStatus === "ACTIVE"
                                     ? "bg-blue-500/15 text-blue-600 dark:text-blue-400"
-                                    : r.quality === "ACQUIRING / WAIT"
-                                      ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
-                                      : "bg-destructive/15 text-destructive"
+                                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
                               }`}
                             >
-                              {r.quality}
+                              {r.kalmanStatus}
                             </span>
                           </td>
                           <td className="px-2.5 py-1 text-muted-foreground">

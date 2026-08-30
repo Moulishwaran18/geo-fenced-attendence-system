@@ -14,7 +14,10 @@
     "db:seed": "node --env-file=.env scripts/seed.js",
     "db:migrate-json": "node --env-file=.env scripts/migrate-json-to-pg.js",
     "db:verify": "node --env-file=.env scripts/verify-pg-live.js",
-    "verify:model-parity": "node --env-file=.env scripts/verify-arcface-model-parity.js"
+    "verify:model-parity": "node --env-file=.env scripts/verify-arcface-model-parity.js",
+    "test:kalman": "node scripts/test-kalman-filter.js",
+    "test:gps": "node scripts/test-gps-accuracy-suite.js",
+    "test:android-location": "node scripts/test-native-android-location.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

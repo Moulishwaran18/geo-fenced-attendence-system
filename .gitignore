@@ -27,6 +27,12 @@ dist-ssr
 .DS_Store
 *.suo
 *.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# Android & Native Build
+.gradle/
+android/.gradle/
+android/app/build/
+android/local.properties
+android/*.zip
+*.apk
+public/debug-frames/
+
