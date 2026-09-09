@@ -39,11 +39,11 @@ const filter = new GpsKalmanFilter(DEFAULT_GEOFENCE_ORIGIN);
 
 // Simulated 5 consecutive outdoor GNSS fixes from FusedLocationProviderClient (PRIORITY_HIGH_ACCURACY)
 const outdoorSamples = [
-  { sampleIndex: 1, lat: 11.680306, lng: 78.121824, accuracy: 6.5, timestamp: 1000, provider: "fused/gps" },
-  { sampleIndex: 2, lat: 11.680308, lng: 78.121826, accuracy: 5.2, timestamp: 2000, provider: "fused/gps" },
-  { sampleIndex: 3, lat: 11.680305, lng: 78.121822, accuracy: 4.8, timestamp: 3000, provider: "fused/gps" },
-  { sampleIndex: 4, lat: 11.680307, lng: 78.121825, accuracy: 4.5, timestamp: 4000, provider: "fused/gps" },
-  { sampleIndex: 5, lat: 11.680306, lng: 78.121824, accuracy: 4.2, timestamp: 5000, provider: "fused/gps" },
+  { sampleIndex: 1, lat: centroid.lat, lng: centroid.lng, accuracy: 6.5, timestamp: 1000, provider: "fused/gps" },
+  { sampleIndex: 2, lat: centroid.lat + 0.000002, lng: centroid.lng + 0.000002, accuracy: 5.2, timestamp: 2000, provider: "fused/gps" },
+  { sampleIndex: 3, lat: centroid.lat - 0.000001, lng: centroid.lng - 0.000002, accuracy: 4.8, timestamp: 3000, provider: "fused/gps" },
+  { sampleIndex: 4, lat: centroid.lat + 0.000001, lng: centroid.lng + 0.000001, accuracy: 4.5, timestamp: 4000, provider: "fused/gps" },
+  { sampleIndex: 5, lat: centroid.lat, lng: centroid.lng, accuracy: 4.2, timestamp: 5000, provider: "fused/gps" },
 ];
 
 console.log("\n  --- Collected Native Fused Readings ---");
@@ -92,7 +92,7 @@ console.log(`  • Best Raw Accuracy:       ±${bestReading.accuracy.toFixed(1)}
 console.log(`  • Final Selected Accuracy: ±${bestReading.accuracy.toFixed(1)} m (Real Unmodified GNSS Value)`);
 console.log(`  • Filtered Position:       Lat ${finalReading.filteredLat.toFixed(7)}° N, Lng ${finalReading.filteredLng.toFixed(7)}° E`);
 console.log(`  • Position Stability:      ${stability.status} (${stability.consecutiveGoodCount}/2 req. good fixes, max displacement ${stability.maxDisplacementMeters}m)`);
-console.log(`  • Geofence Result:         ${geofenceEval.isInside ? "INSIDE 5-POINT POLYGON" : "OUTSIDE POLYGON"} (${geofenceEval.distanceToBoundaryMeters}m to boundary)`);
+console.log(`  • Geofence Result:         ${geofenceEval.isInside ? "INSIDE CAMPUS POLYGON" : "OUTSIDE POLYGON"} (${geofenceEval.distanceToBoundaryMeters}m to boundary)`);
 console.log(`  • GPS Factor Decision:     ${geofenceEval.isInside && stability.isStable && bestReading.accuracy <= 20 ? "AUTHORIZED" : "BLOCKED"}\n`);
 
 assert(
@@ -115,7 +115,7 @@ assert(
 
 assert(
   geofenceEval.isInside === true,
-  "Containment check inside authoritative 5-point polygon",
+  "Containment check inside authoritative campus polygon",
   `PIP Result: INSIDE (Distance to boundary: ${geofenceEval.distanceToBoundaryMeters}m)`,
 );
 
@@ -146,7 +146,7 @@ const scenarioMatrix = [
   {
     name: "3. Outside Polygon + Good Accuracy (North Highway)",
     lat: 11.685000,
-    lng: 78.121800,
+    lng: 78.125300,
     accuracy: 5.0,
     stable: true,
     expectedGpsAllowed: false,

@@ -6,23 +6,24 @@ import {
 } from "../src/lib/geofence/geofence-service.ts";
 
 console.log("===============================================================================");
-console.log("       CAMPUSATTEND 5-POINT GPS GEOFENCE AUDIT & TEST REPORT                   ");
+console.log("       CAMPUSATTEND AUTHORITATIVE GPS GEOFENCE AUDIT & TEST REPORT             ");
 console.log("===============================================================================\n");
 
 // 1. Polygon Coordinates Verification
-console.log("1. AUTHORITATIVE 5-POINT GEOFENCE POLYGON VERTICES (C1 → C2 → C3 → C4 → C5 → C1):");
+console.log("1. AUTHORITATIVE GEOFENCE POLYGON VERTICES (C1 → C2 → ... → C19 → C1):");
 AUTHORIZED_GEOFENCE_POLYGON.forEach((pt, idx) => {
   console.log(`   C${idx + 1}: Lat: ${pt.lat.toFixed(6)}, Lng: ${pt.lng.toFixed(6)}`);
 });
 
-// Check if polygon has 5 vertices
-const has5Points = AUTHORIZED_GEOFENCE_POLYGON.length === 5;
-console.log(`\n   • Total Vertices: ${AUTHORIZED_GEOFENCE_POLYGON.length} (${has5Points ? "✓ 5 Vertices Present" : "✗ MISMATCH"})`);
+// Check if polygon has 19 vertices
+const hasExpectedVertices = AUTHORIZED_GEOFENCE_POLYGON.length === 19;
+console.log(`\n   • Total Vertices: ${AUTHORIZED_GEOFENCE_POLYGON.length} (${hasExpectedVertices ? "✓ 19 Vertices Present" : "✗ MISMATCH"})`);
 
-// Closure check: C5 connects back to C1
+// Closure check: C19 connects back to C1
 const c1 = AUTHORIZED_GEOFENCE_POLYGON[0];
-const c5 = AUTHORIZED_GEOFENCE_POLYGON[4];
-console.log(`   • Polygon Closure: C1 (${c1.lat}, ${c1.lng}) ← C5 (${c5.lat}, ${c5.lng}) closed via ray-casting edge`);
+const c19 = AUTHORIZED_GEOFENCE_POLYGON[AUTHORIZED_GEOFENCE_POLYGON.length - 1];
+const isClosed = c1.lat === c19.lat && c1.lng === c19.lng;
+console.log(`   • Polygon Closure: C1 (${c1.lat}, ${c1.lng}) ← C19 (${c19.lat}, ${c19.lng}) [${isClosed ? "✓ Exact Loop Closed" : "✗ Not Closed"}]`);
 
 const centroid = getPolygonCentroid();
 console.log(`   • Computed Polygon Centroid: Lat ${centroid.lat.toFixed(8)}° N, Lng ${centroid.lng.toFixed(8)}° E`);
@@ -38,45 +39,45 @@ const testPoints = [
     expectedInside: true,
   },
   {
-    name: "Inside Point A (Center Core)",
-    lat: 11.680300,
-    lng: 78.121800,
+    name: "Inside Point A (Campus Core)",
+    lat: 11.677100,
+    lng: 78.125300,
     expectedInside: true,
   },
   {
-    name: "Inside Point B (Near C1/C5)",
-    lat: 11.680150,
-    lng: 78.121820,
+    name: "Inside Point B (North Quad)",
+    lat: 11.678500,
+    lng: 78.125500,
     expectedInside: true,
   },
   {
-    name: "Inside Point C (Near C3/C4)",
-    lat: 11.680500,
-    lng: 78.121700,
+    name: "Inside Point C (South Quad)",
+    lat: 11.675600,
+    lng: 78.125000,
     expectedInside: true,
   },
   {
-    name: "Outside North (Highway)",
-    lat: 11.685000,
-    lng: 78.121800,
+    name: "Outside North",
+    lat: 11.682000,
+    lng: 78.125300,
     expectedInside: false,
   },
   {
     name: "Outside South",
-    lat: 11.675000,
-    lng: 78.121800,
+    lat: 11.672000,
+    lng: 78.125300,
     expectedInside: false,
   },
   {
     name: "Outside East",
-    lat: 11.680300,
+    lat: 11.677100,
     lng: 78.130000,
     expectedInside: false,
   },
   {
     name: "Outside West",
-    lat: 11.680300,
-    lng: 78.110000,
+    lat: 11.677100,
+    lng: 78.120000,
     expectedInside: false,
   },
   {
@@ -87,7 +88,7 @@ const testPoints = [
   },
 ];
 
-let allPassed = has5Points;
+let allPassed = hasExpectedVertices && isClosed;
 
 testPoints.forEach((tp, i) => {
   const result = evaluateGeofence({ lat: tp.lat, lng: tp.lng, accuracy: 5.0 });
@@ -104,12 +105,12 @@ testPoints.forEach((tp, i) => {
 });
 
 console.log("\n===============================================================================");
-console.log("       3-FACTOR PRESENCE VERIFICATION (WIFI + 5-PT GPS + BIOMETRIC FACE)       ");
+console.log("       3-FACTOR PRESENCE VERIFICATION (WIFI + GPS + BIOMETRIC FACE)            ");
 console.log("===============================================================================\n");
 
 const multiFactorScenarios = [
   {
-    case: "Wi-Fi OK + GPS Inside 5-Pt + Authorized Face (PERSON_001)",
+    case: "Wi-Fi OK + GPS Inside Campus + Authorized Face (PERSON_001)",
     wifiOk: true,
     gpsInside: true,
     faceMatch: true,
@@ -118,7 +119,7 @@ const multiFactorScenarios = [
     expectedAttendance: "ALLOWED",
   },
   {
-    case: "Wi-Fi OK + GPS Inside 5-Pt + Authorized Face (PERSON_002)",
+    case: "Wi-Fi OK + GPS Inside Campus + Authorized Face (PERSON_002)",
     wifiOk: true,
     gpsInside: true,
     faceMatch: true,
@@ -127,7 +128,7 @@ const multiFactorScenarios = [
     expectedAttendance: "ALLOWED",
   },
   {
-    case: "Wi-Fi OK + GPS Outside 5-Pt + Authorized Face (PERSON_001)",
+    case: "Wi-Fi OK + GPS Outside Campus + Authorized Face (PERSON_001)",
     wifiOk: true,
     gpsInside: false,
     faceMatch: true,
@@ -136,7 +137,7 @@ const multiFactorScenarios = [
     expectedAttendance: "REJECTED",
   },
   {
-    case: "Wi-Fi Fail + GPS Inside 5-Pt + Authorized Face (PERSON_001)",
+    case: "Wi-Fi Fail + GPS Inside Campus + Authorized Face (PERSON_001)",
     wifiOk: false,
     gpsInside: true,
     faceMatch: true,
@@ -145,7 +146,7 @@ const multiFactorScenarios = [
     expectedAttendance: "REJECTED",
   },
   {
-    case: "Wi-Fi OK + GPS Inside 5-Pt + Unknown Face",
+    case: "Wi-Fi OK + GPS Inside Campus + Unknown Face",
     wifiOk: true,
     gpsInside: true,
     faceMatch: false,
@@ -172,14 +173,14 @@ multiFactorScenarios.forEach((sc, i) => {
 
   console.log(`   [Scenario #${i + 1}] ${sc.case}:`);
   console.log(`     - Wi-Fi Factor:     ${sc.wifiOk ? "AUTHORIZED (PASS)" : "UNAUTHORIZED (FAIL)"}`);
-  console.log(`     - GPS 5-Pt Factor:  ${sc.gpsInside ? "INSIDE (PASS)" : "OUTSIDE (FAIL)"}`);
+  console.log(`     - GPS Factor:       ${sc.gpsInside ? "INSIDE (PASS)" : "OUTSIDE (FAIL)"}`);
   console.log(`     - Face Factor:      ${sc.faceMatch ? `AUTHORIZED (${sc.faceId}, dist: ${sc.faceDistance.toFixed(3)})` : "UNKNOWN (FAIL)"}`);
   console.log(`     - Final Attendance: ${decision} (Expected: ${sc.expectedAttendance})`);
   console.log(`     - Status:           ${passed ? "✓ PASS" : "✗ FAIL"}\n`);
 });
 
 console.log("===============================================================================");
-console.log(`   ALL 5-POINT GEOFENCE & 3-FACTOR TESTS: ${allPassed ? "PASSED (100%)" : "FAILED"}`);
+console.log(`   ALL GEOFENCE & 3-FACTOR TESTS: ${allPassed ? "PASSED (100%)" : "FAILED"}`);
 console.log("===============================================================================\n");
 
 process.exitCode = allPassed ? 0 : 1;

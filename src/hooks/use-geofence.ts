@@ -237,7 +237,7 @@ export function useGeofence(
 
   const evaluateAndFinalize = useCallback(
     (reading: GpsReading, stability: StabilityEvaluation) => {
-      // Evaluate against 5-point polygon using the Kalman-filtered position
+      // Evaluate against authoritative campus polygon using the Kalman-filtered position
       const evalResult = evaluateGeofence(
         { lat: reading.filteredLat, lng: reading.filteredLng, accuracy: reading.accuracy },
         AUTHORIZED_GEOFENCE_POLYGON,
@@ -635,7 +635,7 @@ export function useGeofence(
     (isStable || consecutiveGoodCount >= 1);
 
   const isInsidePolygonRaw = evaluation ? evaluation.isInside : null;
-  // Inside decision requires point inside 5-point polygon AND passed accuracy gate
+  // Inside decision requires point inside authoritative polygon AND passed accuracy gate
   const isInsideAuthorized =
     isInsidePolygonRaw === true &&
     (status === "inside" || isAcceptableAccuracy);

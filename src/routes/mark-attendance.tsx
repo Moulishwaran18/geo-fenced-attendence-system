@@ -63,7 +63,7 @@ export const Route = createFileRoute("/mark-attendance")({
       {
         name: "description",
         content:
-          "Authoritative 3-Factor Presence Verification: Wi-Fi, 5-Point GPS Polygon Geofence, and Biometric Identity Verification.",
+          "Authoritative 3-Factor Presence Verification: Wi-Fi, Campus Geofence Polygon, and Biometric Identity Verification.",
       },
       { property: "og:title", content: "Mark Attendance — CampusAttend" },
       { property: "og:description", content: "3-Factor Presence Authorization (Wi-Fi + GPS + ArcFace)." },
@@ -81,7 +81,7 @@ const icons = {
 
 const titles = {
   wifi: "1. Wi-Fi Authorization",
-  location: "2. GPS 5-Pt Polygon",
+  location: "2. GPS Polygon Geofence",
   identity: "3. ArcFace Biometrics",
   decision: "Attendance Decision",
 } as const;
@@ -155,7 +155,7 @@ function MarkAttendancePage() {
       return {
         label: "ALLOWED",
         tone: "success" as const,
-        detail: "All 3 Security Factors (Wi-Fi, 5-Point GPS Polygon, Face Recognition) Passed",
+        detail: "All 3 Security Factors (Wi-Fi, Campus Geofence Polygon, Face Recognition) Passed",
       };
     }
     if (!wifiAuthorized) {
@@ -186,9 +186,9 @@ function MarkAttendancePage() {
     }
     if (!gpsInsideGeofence) {
       return {
-        label: "REJECTED (Outside 5-Point Polygon)",
+        label: "REJECTED (Outside Campus Polygon)",
         tone: "error" as const,
-        detail: "Device GPS coordinates are outside the authoritative 5-point campus polygon",
+        detail: "Device GPS coordinates are outside the authoritative campus polygon boundary",
       };
     }
     if (faceResult && !faceAuthenticated) {
@@ -246,7 +246,7 @@ function MarkAttendancePage() {
     if (geofence.isInside === true || (geofence.accuracy !== null && geofence.accuracy <= 20 && geofence.isInsidePolygon === true)) {
       return {
         key: "location",
-        value: "Inside 5-Point Polygon",
+        value: "Inside Campus Polygon",
         detail: `High Accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "0.0"}m · ${geofence.distanceToBoundary}m from boundary`,
         state: "verified",
       };
@@ -255,7 +255,7 @@ function MarkAttendancePage() {
     if (geofence.accuracy !== null && geofence.accuracy <= 20 && geofence.isInsidePolygon === false) {
       return {
         key: "location",
-        value: "Outside 5-Point Polygon",
+        value: "Outside Campus Polygon",
         detail: `${geofence.distanceToBoundary}m from authorized perimeter (±${Math.round(geofence.accuracy || 0)}m)`,
         state: "error",
       };
@@ -504,15 +504,15 @@ function MarkAttendancePage() {
             <AlertBanner
               tone="error"
               icon={ShieldAlert}
-              title="Attendance Blocked — Outside 5-Point Geofence Polygon"
-              description="Your device GPS coordinates are outside the authoritative 5-point campus polygon boundary. You must be physically inside the designated perimeter."
+              title="Attendance Blocked — Outside Geofence Polygon"
+              description="Your device GPS coordinates are outside the authoritative campus polygon boundary. You must be physically inside the designated perimeter."
             />
           ) : !faceAuthenticated ? (
             <AlertBanner
               tone="info"
               icon={ShieldCheck}
               title="Wi-Fi &amp; GPS Verified — Face Recognition Required"
-              description="Wi-Fi and 5-point GPS polygon checks passed. Complete live face scan to satisfy Factor 3 and record attendance."
+              description="Wi-Fi and campus GPS polygon checks passed. Complete live face scan to satisfy Factor 3 and record attendance."
             />
           ) : (
             <AlertBanner
@@ -555,12 +555,12 @@ function MarkAttendancePage() {
           <div className="grid gap-6 xl:grid-cols-3">
             <Section
               className="xl:col-span-2"
-              title="Authoritative 5-Point Geofence Boundary"
+              title="Authoritative Campus Geofence Boundary"
               description={
                 geofence.isInside === true
-                  ? "Real GPS fix: Inside authoritative 5-point campus polygon (C1 → C5 → C1)"
+                  ? "Real GPS fix: Inside authoritative campus polygon (C1 → C19 → C1)"
                   : geofence.isInside === false
-                    ? "Real GPS fix: Outside authoritative 5-point campus polygon"
+                    ? "Real GPS fix: Outside authoritative campus polygon"
                     : geofence.status === "acquiring"
                       ? "Acquiring live GPS coordinates…"
                       : "GPS fix pending or insufficient accuracy"
@@ -706,10 +706,10 @@ function MarkAttendancePage() {
                         }
                       >
                         {gpsInsideGeofence
-                          ? "INSIDE 5-POINT POLYGON"
+                          ? "INSIDE CAMPUS POLYGON"
                           : geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
                             ? "BLOCKED (ACCURACY INSUFFICIENT)"
-                            : "OUTSIDE 5-POINT POLYGON"}
+                            : "OUTSIDE CAMPUS POLYGON"}
                       </Badge>
                     </dd>
                   </div>
@@ -868,7 +868,7 @@ function MarkAttendancePage() {
                         description:
                           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
                             ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤20m precision.`
-                            : "Your GPS coordinates must be inside the authoritative 5-point campus polygon.",
+                            : "Your GPS coordinates must be inside the authoritative campus polygon.",
                       });
                       return;
                     }
@@ -892,7 +892,7 @@ function MarkAttendancePage() {
                       <AlertTriangle className="mr-2 size-5" />
                       {geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
                         ? "GPS Accuracy Insufficient — Blocked"
-                        : "Outside 5-Point Polygon — Blocked"}
+                        : "Outside Campus Polygon — Blocked"}
                     </>
                   ) : !faceAuthenticated ? (
                     <>
@@ -912,7 +912,7 @@ function MarkAttendancePage() {
                       : !gpsInsideGeofence
                         ? geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
                           ? "GPS accuracy ≤20m is required to authorize attendance."
-                          : "Device must be inside the authoritative 5-point GPS polygon."
+                          : "Device must be inside the authoritative campus GPS polygon."
                         : "Face recognition is required to confirm your identity."}
                   </p>
                 )}

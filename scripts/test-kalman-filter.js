@@ -38,12 +38,12 @@ console.log("1. TESTING LOCAL TANGENT-PLANE COORDINATE CONVERSION PRECISION:");
 
 const testPoints = [
   DEFAULT_GEOFENCE_ORIGIN,
-  { lat: 11.680071, lng: 78.121811 }, // C1
-  { lat: 11.680239, lng: 78.121575 }, // C2
-  { lat: 11.680607, lng: 78.121628 }, // C3
-  { lat: 11.680439, lng: 78.122047 }, // C4
-  { lat: 11.680176, lng: 78.122057 }, // C5
-  { lat: 11.685000, lng: 78.121800 }, // North Highway
+  AUTHORIZED_GEOFENCE_POLYGON[0], // C1
+  AUTHORIZED_GEOFENCE_POLYGON[1], // C2
+  AUTHORIZED_GEOFENCE_POLYGON[4], // C5
+  AUTHORIZED_GEOFENCE_POLYGON[11], // C12
+  AUTHORIZED_GEOFENCE_POLYGON[17], // C18
+  { lat: 11.685000, lng: 78.125300 }, // North Highway
 ];
 
 testPoints.forEach((pt, i) => {
@@ -97,11 +97,11 @@ console.log("\n3. TESTING SMALL GPS JITTER SMOOTHING (NOISE REDUCTION):");
 const filter3 = new GpsKalmanFilter(DEFAULT_GEOFENCE_ORIGIN);
 // True position is centroid. Measurements oscillate with ±2m noise
 const jitterSamples = [
-  { lat: 11.680306, lng: 78.121824, accuracy: 8.0, timestamp: 1000 },
-  { lat: 11.680324, lng: 78.121835, accuracy: 8.0, timestamp: 2000 }, // +2m North, +1m East
-  { lat: 11.680288, lng: 78.121810, accuracy: 8.0, timestamp: 3000 }, // -2m South, -1m East
-  { lat: 11.680315, lng: 78.121830, accuracy: 8.0, timestamp: 4000 },
-  { lat: 11.680295, lng: 78.121818, accuracy: 8.0, timestamp: 5000 },
+  { lat: centroid.lat, lng: centroid.lng, accuracy: 8.0, timestamp: 1000 },
+  { lat: centroid.lat + 0.000018, lng: centroid.lng + 0.000011, accuracy: 8.0, timestamp: 2000 }, // +2m North, +1m East
+  { lat: centroid.lat - 0.000018, lng: centroid.lng - 0.000014, accuracy: 8.0, timestamp: 3000 }, // -2m South, -1m East
+  { lat: centroid.lat + 0.000009, lng: centroid.lng + 0.000006, accuracy: 8.0, timestamp: 4000 },
+  { lat: centroid.lat - 0.000011, lng: centroid.lng - 0.000006, accuracy: 8.0, timestamp: 5000 },
 ];
 
 const rawOffsets = [];
@@ -184,7 +184,7 @@ assert(
 console.log("\n6. TESTING OUTSIDE GEOFENCE POINTS (NO ARTIFICIAL MIGRATION INSIDE):");
 
 const filter6 = new GpsKalmanFilter(DEFAULT_GEOFENCE_ORIGIN);
-const outsideHighway = { lat: 11.685000, lng: 78.121800 }; // North Highway (~520m outside)
+const outsideHighway = { lat: 11.685000, lng: 78.125300 }; // North Highway (~650m outside)
 
 const outsideSamples = [
   { lat: outsideHighway.lat, lng: outsideHighway.lng, accuracy: 8.0, timestamp: 1000 },
@@ -205,7 +205,7 @@ const evalOutside = evaluateGeofence({
 
 assert(
   evalOutside.isInside === false && evalOutside.distanceToBoundaryMeters > 450,
-  "Outside measurements strictly remain OUTSIDE the 5-point polygon after filtering",
+  "Outside measurements strictly remain OUTSIDE the campus polygon after filtering",
   `PIP: ${evalOutside.isInside ? "INSIDE" : "OUTSIDE"} | Dist to perimeter: ${evalOutside.distanceToBoundaryMeters}m`,
 );
 
@@ -216,9 +216,9 @@ console.log("\n7. TESTING INSIDE GEOFENCE POINTS:");
 
 const filter7 = new GpsKalmanFilter(DEFAULT_GEOFENCE_ORIGIN);
 const insideSamples = [
-  { lat: 11.680300, lng: 78.121800, accuracy: 6.0, timestamp: 1000 },
-  { lat: 11.680305, lng: 78.121805, accuracy: 6.2, timestamp: 2000 },
-  { lat: 11.680302, lng: 78.121802, accuracy: 5.8, timestamp: 3000 },
+  { lat: 11.677100, lng: 78.125300, accuracy: 6.0, timestamp: 1000 },
+  { lat: 11.677105, lng: 78.125305, accuracy: 6.2, timestamp: 2000 },
+  { lat: 11.677102, lng: 78.125302, accuracy: 5.8, timestamp: 3000 },
 ];
 
 let inResult = null;
@@ -234,7 +234,7 @@ const evalInside = evaluateGeofence({
 
 assert(
   evalInside.isInside === true && evalInside.distanceToBoundaryMeters > 15,
-  "Inside measurements strictly settle INSIDE the 5-point polygon",
+  "Inside measurements strictly settle INSIDE the campus polygon",
   `PIP: ${evalInside.isInside ? "INSIDE" : "OUTSIDE"} | Dist to perimeter: ${evalInside.distanceToBoundaryMeters}m`,
 );
 

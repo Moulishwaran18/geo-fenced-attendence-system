@@ -26,21 +26,35 @@ function assert(condition, testName, details = "") {
 }
 
 // -----------------------------------------------------------------------------
-// TEST 1: Exact 5-Point Polygon Integrity (C1 -> C2 -> C3 -> C4 -> C5 -> C1)
+// TEST 1: Authoritative 19-Point Polygon Integrity (C1 -> ... -> C19 -> C1)
 // -----------------------------------------------------------------------------
-console.log("1. TESTING AUTHORITATIVE 5-POINT POLYGON INTEGRITY:");
+console.log("1. TESTING AUTHORITATIVE POLYGON INTEGRITY:");
 assert(
-  AUTHORIZED_GEOFENCE_POLYGON.length === 5,
-  "Polygon contains exactly 5 vertices",
+  AUTHORIZED_GEOFENCE_POLYGON.length === 19,
+  "Polygon contains exactly 19 vertices (C1 through C19)",
   `Found ${AUTHORIZED_GEOFENCE_POLYGON.length} vertices`,
 );
 
 const expectedCoords = [
-  { lat: 11.680071, lng: 78.121811 },
-  { lat: 11.680239, lng: 78.121575 },
-  { lat: 11.680607, lng: 78.121628 },
-  { lat: 11.680439, lng: 78.122047 },
-  { lat: 11.680176, lng: 78.122057 },
+  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C1
+  { lat: 11.679160653348573, lng: 78.1251229550977 }, // C2
+  { lat: 11.679072439799588, lng: 78.12580219547301 }, // C3
+  { lat: 11.678915085838511, lng: 78.12659829439393 }, // C4
+  { lat: 11.67857653610425, lng: 78.12706572862274 }, // C5
+  { lat: 11.677855225878366, lng: 78.1268821218973 }, // C6
+  { lat: 11.677005135877979, lng: 78.12680385127157 }, // C7
+  { lat: 11.676963779359658, lng: 78.12619810348153 }, // C8
+  { lat: 11.675808384169112, lng: 78.12611721999878 }, // C9
+  { lat: 11.67548101155477, lng: 78.12632747328921 }, // C10
+  { lat: 11.675225395251344, lng: 78.12546783441684 }, // C11
+  { lat: 11.674880184146973, lng: 78.12470095781757 }, // C12
+  { lat: 11.67506203954446, lng: 78.12467072803454 }, // C13
+  { lat: 11.675345395390822, lng: 78.12439973963578 }, // C14
+  { lat: 11.675557255409673, lng: 78.1241730162712 }, // C15
+  { lat: 11.676220110497038, lng: 78.12411693452746 }, // C16
+  { lat: 11.677404862894116, lng: 78.12403601056346 }, // C17
+  { lat: 11.678027388807743, lng: 78.12399041301013 }, // C18
+  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C19
 ];
 
 expectedCoords.forEach((exp, idx) => {
@@ -54,8 +68,8 @@ expectedCoords.forEach((exp, idx) => {
 
 const centroid = getPolygonCentroid();
 assert(
-  centroid.lat > 11.679 && centroid.lat < 11.681 && centroid.lng > 78.121 && centroid.lng < 78.123,
-  "Polygon centroid is within Sona College campus bounds",
+  centroid.lat > 11.675 && centroid.lat < 11.680 && centroid.lng > 78.123 && centroid.lng < 78.127,
+  "Polygon centroid is within campus bounds",
   `Centroid: ${centroid.lat.toFixed(6)}° N, ${centroid.lng.toFixed(6)}° E`,
 );
 
@@ -95,13 +109,13 @@ console.log("\n3. TESTING POINT-IN-POLYGON (PIP) CONTAINMENT:");
 
 const locations = [
   { name: "Centroid Interior", lat: centroid.lat, lng: centroid.lng, expectedInside: true },
-  { name: "Inside Center Core", lat: 11.680300, lng: 78.121800, expectedInside: true },
-  { name: "Inside Near C1/C5", lat: 11.680150, lng: 78.121820, expectedInside: true },
-  { name: "Inside Near C3/C4", lat: 11.680500, lng: 78.121700, expectedInside: true },
-  { name: "Outside North (Highway)", lat: 11.685000, lng: 78.121800, expectedInside: false },
-  { name: "Outside South", lat: 11.675000, lng: 78.121800, expectedInside: false },
-  { name: "Outside East", lat: 11.680300, lng: 78.130000, expectedInside: false },
-  { name: "Outside West", lat: 11.680300, lng: 78.110000, expectedInside: false },
+  { name: "Inside Center Core", lat: 11.677100, lng: 78.125300, expectedInside: true },
+  { name: "Inside North Quad", lat: 11.678500, lng: 78.125500, expectedInside: true },
+  { name: "Inside South Quad", lat: 11.675600, lng: 78.125000, expectedInside: true },
+  { name: "Outside North", lat: 11.682000, lng: 78.125300, expectedInside: false },
+  { name: "Outside South", lat: 11.672000, lng: 78.125300, expectedInside: false },
+  { name: "Outside East", lat: 11.677100, lng: 78.130000, expectedInside: false },
+  { name: "Outside West", lat: 11.677100, lng: 78.120000, expectedInside: false },
 ];
 
 locations.forEach((loc) => {
@@ -121,9 +135,9 @@ console.log("\n4. TESTING TEMPORAL STABILITY & CONSECUTIVE READING JITTER:");
 
 // Case A: Stable consecutive readings within ~3 meters of each other (<=20m accuracy)
 const stableReadings = [
-  { lat: 11.680300, lng: 78.121800, accuracy: 8.0, timestamp: 1000 },
-  { lat: 11.680305, lng: 78.121803, accuracy: 7.2, timestamp: 2000 },
-  { lat: 11.680302, lng: 78.121801, accuracy: 6.8, timestamp: 3000 },
+  { lat: 11.677100, lng: 78.125300, accuracy: 8.0, timestamp: 1000 },
+  { lat: 11.677105, lng: 78.125303, accuracy: 7.2, timestamp: 2000 },
+  { lat: 11.677102, lng: 78.125301, accuracy: 6.8, timestamp: 3000 },
 ];
 const stabilityA = checkTemporalStability(stableReadings, 15);
 assert(
@@ -134,9 +148,9 @@ assert(
 
 // Case B: Erratic jumping readings (jumping > 40 meters due to cell tower switches)
 const jumpingReadings = [
-  { lat: 11.680300, lng: 78.121800, accuracy: 18.0, timestamp: 1000 },
-  { lat: 11.681200, lng: 78.122800, accuracy: 19.0, timestamp: 2000 },
-  { lat: 11.679100, lng: 78.120500, accuracy: 18.0, timestamp: 3000 },
+  { lat: 11.677100, lng: 78.125300, accuracy: 18.0, timestamp: 1000 },
+  { lat: 11.678000, lng: 78.126300, accuracy: 19.0, timestamp: 2000 },
+  { lat: 11.675900, lng: 78.124000, accuracy: 18.0, timestamp: 3000 },
 ];
 const stabilityB = checkTemporalStability(jumpingReadings, 15);
 assert(
@@ -147,7 +161,7 @@ assert(
 
 // Case C: Single reading (cannot establish temporal stability on 1 reading)
 const singleReading = [
-  { lat: 11.680300, lng: 78.121800, accuracy: 5.0, timestamp: 1000 },
+  { lat: 11.677100, lng: 78.125300, accuracy: 5.0, timestamp: 1000 },
 ];
 const stabilityC = checkTemporalStability(singleReading, 15);
 assert(
@@ -163,20 +177,20 @@ console.log("\n5. TESTING GPS AUTHORIZATION ACCEPTANCE MATRIX (Quality Gate: <=2
 
 const gpsSimCases = [
   {
-    desc: "Excellent GPS (≤10m) + Stable + Inside Campus 5-Pt Polygon",
+    desc: "Excellent GPS (≤10m) + Stable + Inside Campus Polygon",
     readings: [
-      { lat: 11.680300, lng: 78.121800, accuracy: 8.5, timestamp: 1000 },
-      { lat: 11.680302, lng: 78.121801, accuracy: 7.0, timestamp: 2000 },
-      { lat: 11.680301, lng: 78.121800, accuracy: 6.2, timestamp: 3000 },
+      { lat: 11.677100, lng: 78.125300, accuracy: 8.5, timestamp: 1000 },
+      { lat: 11.677102, lng: 78.125301, accuracy: 7.0, timestamp: 2000 },
+      { lat: 11.677101, lng: 78.125300, accuracy: 6.2, timestamp: 3000 },
     ],
     expectedAllowed: true,
     expectedReason: "Inside polygon & High Accuracy (≤10m) & Stable",
   },
   {
-    desc: "Good GPS (≤20m) + Stable + Inside Campus 5-Pt Polygon",
+    desc: "Good GPS (≤20m) + Stable + Inside Campus Polygon",
     readings: [
-      { lat: 11.680300, lng: 78.121800, accuracy: 16.5, timestamp: 1000 },
-      { lat: 11.680302, lng: 78.121801, accuracy: 15.0, timestamp: 2000 },
+      { lat: 11.677100, lng: 78.125300, accuracy: 16.5, timestamp: 1000 },
+      { lat: 11.677102, lng: 78.125301, accuracy: 15.0, timestamp: 2000 },
     ],
     expectedAllowed: true,
     expectedReason: "Inside polygon & Good Accuracy (≤20m) & Stable",
@@ -184,20 +198,20 @@ const gpsSimCases = [
   {
     desc: "Poor GPS (±115m) + Inside Centroid",
     readings: [
-      { lat: 11.680306, lng: 78.121823, accuracy: 115.0, timestamp: 1000 },
-      { lat: 11.680306, lng: 78.121823, accuracy: 115.0, timestamp: 2000 },
+      { lat: centroid.lat, lng: centroid.lng, accuracy: 115.0, timestamp: 1000 },
+      { lat: centroid.lat, lng: centroid.lng, accuracy: 115.0, timestamp: 2000 },
     ],
     expectedAllowed: false,
     expectedReason: "Rejected: Accuracy ±115m exceeds 20m limit",
   },
   {
-    desc: "Good GPS (≤10m) + Outside 5-Pt Geofence",
+    desc: "Good GPS (≤10m) + Outside Geofence",
     readings: [
-      { lat: 11.685000, lng: 78.121800, accuracy: 5.0, timestamp: 1000 },
-      { lat: 11.685002, lng: 78.121801, accuracy: 4.8, timestamp: 2000 },
+      { lat: 11.682000, lng: 78.125300, accuracy: 5.0, timestamp: 1000 },
+      { lat: 11.682002, lng: 78.125301, accuracy: 4.8, timestamp: 2000 },
     ],
     expectedAllowed: false,
-    expectedReason: "Rejected: Point is outside 5-point polygon perimeter",
+    expectedReason: "Rejected: Point is outside polygon perimeter",
   },
 ];
 
