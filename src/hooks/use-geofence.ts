@@ -675,6 +675,8 @@ export function useGeofence(
     refreshLocation,
     checkLocation,
     openLocationSettings,
+    // Expose RMS deviation from the latest reading (if available)
+    rmsPositionDeviation: readingsHistory.length > 0 ? readingsHistory[readingsHistory.length - 1].rmsPositionDeviation : null,
     polygon: AUTHORIZED_GEOFENCE_POLYGON,
   };
 }

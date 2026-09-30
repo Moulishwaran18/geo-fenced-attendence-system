@@ -59,6 +59,65 @@ object GeofenceManager {
     }
 
     /**
+     * Calculates distance from a coordinate point to the polygon boundary in meters.
+     */
+    fun distanceToBoundaryMeters(point: LatLng, polygon: List<LatLng> = AUTHORIZED_POLYGON): Double {
+        val earthRadius = 6371000.0
+        val latFactor = (Math.PI / 180.0) * earthRadius
+        val lngFactor = (Math.PI / 180.0) * earthRadius * kotlin.math.cos(point.lat * Math.PI / 180.0)
+        var minDistance = Double.MAX_VALUE
+        val n = polygon.size
+        var j = n - 1
+        for (i in 0 until n) {
+            val v = polygon[j]
+            val w = polygon[i]
+            val px = (point.lng - v.lng) * lngFactor
+            val py = (point.lat - v.lat) * latFactor
+            val wx = (w.lng - v.lng) * lngFactor
+            val wy = (w.lat - v.lat) * latFactor
+            val l2 = wx * wx + wy * wy
+            val d = if (l2 == 0.0) {
+                kotlin.math.sqrt(px * px + py * py)
+            } else {
+                val t = ((px * wx + py * wy) / l2).coerceIn(0.0, 1.0)
+                val dx = px - t * wx
+                val dy = py - t * wy
+                kotlin.math.sqrt(dx * dx + dy * dy)
+            }
+            if (d < minDistance) {
+                minDistance = d
+            }
+            j = i
+        }
+        return minDistance
+    }
+
+    enum class GeofenceContainmentStatus {
+        INSIDE,
+        OUTSIDE,
+        UNCERTAIN
+    }
+
+    /**
+     * Evaluates containment considering GPS horizontal accuracy uncertainty circle.
+     * If point is inside but distance to edge is less than raw accuracy, uncertainty overlaps boundary.
+     */
+    fun evaluateContainment(
+        point: LatLng,
+        rawAccuracyMeters: Float,
+        polygon: List<LatLng> = AUTHORIZED_POLYGON
+    ): Pair<GeofenceContainmentStatus, Double> {
+        val inside = isPointInPolygon(point, polygon)
+        val dist = distanceToBoundaryMeters(point, polygon)
+        val status = when {
+            !inside -> GeofenceContainmentStatus.OUTSIDE
+            dist < rawAccuracyMeters -> GeofenceContainmentStatus.UNCERTAIN
+            else -> GeofenceContainmentStatus.INSIDE
+        }
+        return Pair(status, dist)
+    }
+
+    /**
      * Quality Policy:
      * <= 10m: EXCELLENT
      * <= 20m: GOOD
@@ -76,16 +135,17 @@ object GeofenceManager {
 
     /**
      * Strict 3-Factor Authorization Rule:
-     * wifiAuthorized AND gpsAuthorized (inside AND accuracy <= 20m) AND faceAuthenticated -> ALLOWED
+     * wifiAuthorized AND gpsAuthorized (inside AND accuracy <= 20m AND not boundary-uncertain) AND faceAuthenticated -> ALLOWED
      */
     fun isAttendanceAllowed(
         wifiAuthorized: Boolean,
         gpsInsideGeofence: Boolean,
         rawAccuracyMeters: Float,
         isGpsStable: Boolean,
-        faceAuthenticated: Boolean
+        faceAuthenticated: Boolean,
+        isBoundaryUncertain: Boolean = false
     ): Boolean {
-        val gpsValid = gpsInsideGeofence && rawAccuracyMeters <= 20f && isGpsStable
+        val gpsValid = gpsInsideGeofence && !isBoundaryUncertain && rawAccuracyMeters <= 20f && isGpsStable
         return wifiAuthorized && gpsValid && faceAuthenticated
     }
 }

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as GroundTruthRouteImport } from './routes/ground-truth'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as MarkAttendanceRouteImport } from './routes/mark-attendance'
 import { Route as ProfileRouteImport } from './routes/profile'
@@ -29,6 +30,11 @@ const IndexRoute = IndexRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GroundTruthRoute = GroundTruthRouteImport.update({
+  id: '/ground-truth',
+  path: '/ground-truth',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HistoryRoute = HistoryRouteImport.update({
@@ -80,6 +86,7 @@ const AdminStaffRoute = AdminStaffRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
   '/profile': typeof ProfileRoute
@@ -93,6 +100,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
   '/profile': typeof ProfileRoute
@@ -107,6 +115,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
   '/profile': typeof ProfileRoute
@@ -122,6 +131,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/dashboard'
+    | '/ground-truth'
     | '/history'
     | '/mark-attendance'
     | '/profile'
@@ -135,6 +145,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/dashboard'
+    | '/ground-truth'
     | '/history'
     | '/mark-attendance'
     | '/profile'
@@ -148,6 +159,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/dashboard'
+    | '/ground-truth'
     | '/history'
     | '/mark-attendance'
     | '/profile'
@@ -162,6 +174,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
+  GroundTruthRoute: typeof GroundTruthRoute
   HistoryRoute: typeof HistoryRoute
   MarkAttendanceRoute: typeof MarkAttendanceRoute
   ProfileRoute: typeof ProfileRoute
@@ -187,6 +200,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ground-truth': {
+      id: '/ground-truth'
+      path: '/ground-truth'
+      fullPath: '/ground-truth'
+      preLoaderRoute: typeof GroundTruthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/history': {
@@ -258,6 +278,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
+  GroundTruthRoute: GroundTruthRoute,
   HistoryRoute: HistoryRoute,
   MarkAttendanceRoute: MarkAttendanceRoute,
   ProfileRoute: ProfileRoute,

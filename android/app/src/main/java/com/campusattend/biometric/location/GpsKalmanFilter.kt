@@ -67,7 +67,10 @@ class GpsKalmanFilter(
         val filteredLng: Double,
         val estimatedSpeedMps: Double,
         val sampleCount: Int,
-        val status: String
+        val status: String,
+        val kalmanEstimatedAccuracy: Float = rawAccuracy,
+        val mahalanobisDistance: Double = 0.0,
+        val isOutlierGated: Boolean = false
     )
 
     fun update(rawLat: Double, rawLng: Double, rawAccuracy: Float, timestamp: Long): FilteredResult {
@@ -87,7 +90,17 @@ class GpsKalmanFilter(
             lastTimestamp = timestamp
             sampleCount = 1
             return FilteredResult(
-                rawLat, rawLng, rawAccuracy, rawLat, rawLng, 0.0, 1, "INITIALIZING"
+                rawLat = rawLat,
+                rawLng = rawLng,
+                rawAccuracy = rawAccuracy,
+                filteredLat = rawLat,
+                filteredLng = rawLng,
+                estimatedSpeedMps = 0.0,
+                sampleCount = 1,
+                status = "INITIALIZING",
+                kalmanEstimatedAccuracy = rawAccuracy,
+                mahalanobisDistance = 0.0,
+                isOutlierGated = false
             )
         }
 
@@ -124,7 +137,7 @@ class GpsKalmanFilter(
         val pPred22 = p22 + q22
         val pPred33 = p33 + q33
 
-        // Measurement noise
+        // Measurement noise covariance
         val sigma = rawAccuracy.toDouble().coerceAtLeast(1.0)
         val varMeas = sigma * sigma
 
@@ -152,11 +165,20 @@ class GpsKalmanFilter(
         val y0 = measX - xPred
         val y1 = measY - yPred
 
-        // State update
-        x = xPred + (k00 * y0 + k01 * y1)
-        y = yPred + (k10 * y0 + k11 * y1)
-        vx = vxPred + (k20 * y0 + k21 * y1)
-        vy = vyPred + (k30 * y0 + k31 * y1)
+        // Chi-Square Innovation Gating (Mahalanobis Distance d^2 for 2-DOF)
+        val d2 = y0 * (invS00 * y0 + invS01 * y1) + y1 * (invS10 * y0 + invS11 * y1)
+        val isOutlier = (d2 > 9.21) && (sampleCount >= 3) // Chi-Square threshold at alpha=0.01
+
+        // Robust M-estimator dampening on outlier residual spikes
+        val scaleFactor = if (isOutlier) (9.21 / d2).coerceIn(0.1, 1.0) else 1.0
+        val effY0 = y0 * scaleFactor
+        val effY1 = y1 * scaleFactor
+
+        // State update with gated innovation
+        x = xPred + (k00 * effY0 + k01 * effY1)
+        y = yPred + (k10 * effY0 + k11 * effY1)
+        vx = vxPred + (k20 * effY0 + k21 * effY1)
+        vy = vyPred + (k30 * effY0 + k31 * effY1)
 
         // Covariance update
         p00 = (1.0 - k00) * pPred00 - k01 * pPred10
@@ -167,6 +189,7 @@ class GpsKalmanFilter(
         val filteredLat = originLat + y / latFactor
         val filteredLng = originLng + x / lngFactor
         val speed = sqrt(vx * vx + vy * vy)
+        val estAcc = sqrt(((p00 + p11) / 2.0).coerceAtLeast(0.0)).toFloat()
         val status = if (sampleCount < 2) "INITIALIZING" else if (sampleCount >= 4) "SETTLED" else "ACTIVE"
 
         return FilteredResult(
@@ -177,7 +200,10 @@ class GpsKalmanFilter(
             filteredLng = filteredLng,
             estimatedSpeedMps = speed,
             sampleCount = sampleCount,
-            status = status
+            status = status,
+            kalmanEstimatedAccuracy = estAcc,
+            mahalanobisDistance = d2,
+            isOutlierGated = isOutlier
         )
     }
 }
