@@ -46,7 +46,7 @@ function GroundTruthPage() {
       setErrorMeters(null);
       return;
     }
-    const distance = haversineDistance(lat, lon, filteredCoords.latitude, filteredCoords.longitude);
+    const distance = haversineDistance(lat, lon, filteredCoords.lat, filteredCoords.lng);
     setErrorMeters(distance);
   };
 
@@ -81,7 +81,7 @@ function GroundTruthPage() {
         <p>Status Message: {statusMessage}</p>
         {filteredCoords && (
           <p>
-            Filtered Coords: {filteredCoords.latitude.toFixed(6)}, {filteredCoords.longitude.toFixed(6)}
+            Filtered Coords: {filteredCoords.lat.toFixed(6)}, {filteredCoords.lng.toFixed(6)}
           </p>
         )}
         <p>Raw Accuracy: {rawAccuracy ? `${Math.round(rawAccuracy)} m` : "—"}</p>

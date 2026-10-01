@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { CalendarDays, CheckCircle2, Search, TrendingUp, XCircle } from "lucide-react";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
@@ -14,7 +14,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { recentAttendance } from "@/mocks/data";
+import { recentAttendance, type AttendanceRecord, type AttendanceStatus } from "@/mocks/data";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/history")({
   head: () => ({
@@ -36,17 +37,49 @@ function HistoryPage() {
   const [status, setStatus] = useState("all");
   const [query, setQuery] = useState("");
   const [date, setDate] = useState("");
+  const [liveRecords, setLiveRecords] = useState<AttendanceRecord[]>([]);
+
+  useEffect(() => {
+    async function loadLiveAttendance() {
+      try {
+        const { data, error } = await supabase
+          .from("attendance_records")
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (data && data.length > 0) {
+          const mapped: AttendanceRecord[] = data.map((r: any) => ({
+            id: r.id ? `ATT-${r.id.slice(0, 8).toUpperCase()}` : "ATT-LIVE",
+            date: r.date || new Date(r.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+            day: r.day || "Today",
+            time: r.time || "09:00 AM",
+            status: (r.status as AttendanceStatus) || "Present",
+            location: r.location || "Main Campus",
+            verification: (r.verification as any) || "Verified",
+          }));
+          setLiveRecords(mapped);
+        }
+      } catch (err) {
+        console.warn("Failed to query live attendance from Supabase:", err);
+      }
+    }
+    loadLiveAttendance();
+  }, []);
+
+  const combinedRecords = useMemo(() => {
+    return [...liveRecords, ...recentAttendance];
+  }, [liveRecords]);
 
   const records = useMemo(
     () =>
-      recentAttendance.filter(
+      combinedRecords.filter(
         (r) =>
           (status === "all" || r.status.toLowerCase() === status) &&
           (query === "" ||
             `${r.date} ${r.location} ${r.status}`.toLowerCase().includes(query.toLowerCase())) &&
           (date === "" || r.date.startsWith(date.split("-")[2] ?? "")),
       ),
-    [status, query, date],
+    [combinedRecords, status, query, date],
   );
 
   return (

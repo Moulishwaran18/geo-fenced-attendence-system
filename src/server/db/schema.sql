@@ -42,3 +42,21 @@ CREATE INDEX IF NOT EXISTS idx_face_embeddings_staff_id ON face_embeddings(staff
 -- 5. pgvector index for fast Approximate Nearest Neighbor (ANN) L2 search
 -- (Recommended for >1000 embeddings using IVFFlat or HNSW)
 -- CREATE INDEX IF NOT EXISTS idx_face_embeddings_vector_l2 ON face_embeddings USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);
+
+-- 6. Face Detection / Authentication Audit Logs Table
+CREATE TABLE IF NOT EXISTS face_detection_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id VARCHAR(64) NOT NULL REFERENCES staff(staff_code) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  detected_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  server_date DATE DEFAULT CURRENT_DATE NOT NULL,
+  server_time TIME DEFAULT CURRENT_TIME NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+-- Indexes for fast audit queries (user_id, detected_at, email)
+CREATE INDEX IF NOT EXISTS idx_face_detection_logs_user_id ON face_detection_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_face_detection_logs_detected_at ON face_detection_logs(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_face_detection_logs_email ON face_detection_logs(email);
+

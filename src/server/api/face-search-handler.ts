@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { searchFaceEmbeddings } from "../db/client.ts";
 import { runOfflineArcFaceOn112Image, cosineDistance } from "../biometrics/offline-arcface.ts";
+import { recordFaceDetectionLog } from "../db/audit-log.ts";
 
 const MATCH_THRESHOLD = 0.45;
 const MIN_MATCH_MARGIN = 0.08;
@@ -341,6 +342,26 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
     }
 
     // 10. Authorized Staff Confirmed
+    // Server-side audit log creation (non-blocking with duplicate protection)
+    let auditLogInfo: { logged: boolean; duplicateSuppressed: boolean; logId?: string } = {
+      logged: false,
+      duplicateSuppressed: false,
+    };
+
+    try {
+      const logRes = await recordFaceDetectionLog({
+        userId: bestPerson.staffCode,
+        name: bestPerson.name,
+      });
+      auditLogInfo = {
+        logged: logRes.logged,
+        duplicateSuppressed: logRes.duplicateSuppressed,
+        logId: logRes.record.id,
+      };
+    } catch (logErr) {
+      console.error("[FaceVerifyApi] Non-blocking audit log notice:", logErr);
+    }
+
     return jsonResponse({
       matched: true,
       authenticated: true,
@@ -352,6 +373,7 @@ export async function handleFaceVerifyApi(request: Request): Promise<Response> {
         staffCode: bestPerson.staffCode,
         name: bestPerson.name,
       },
+      auditLog: auditLogInfo,
       ...diagnosticPayload,
       reqTimestamp,
       verifiedAt: new Date().toISOString(),

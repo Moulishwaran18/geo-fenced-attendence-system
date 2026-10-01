@@ -39,7 +39,8 @@ async function runMigration() {
       console.log("✓ PostgreSQL migration completed successfully!");
       console.log("  - Table 'staff' verified/created.");
       console.log("  - Table 'face_embeddings' verified/created.");
-      console.log("  - Foreign keys and vector indexes applied.");
+      console.log("  - Table 'face_detection_logs' verified/created.");
+      console.log("  - Foreign keys and audit indexes applied.");
     } catch (err) {
       console.error("PostgreSQL migration error:", err);
       process.exit(1);
@@ -55,7 +56,7 @@ async function runMigration() {
     }
     const dbFile = path.join(dataDir, "staff-db.json");
     if (!fs.existsSync(dbFile)) {
-      fs.writeFileSync(dbFile, JSON.stringify({ staff: [], face_embeddings: [] }, null, 2), "utf-8");
+      fs.writeFileSync(dbFile, JSON.stringify({ staff: [], face_embeddings: [], face_detection_logs: [] }, null, 2), "utf-8");
       console.log("✓ Initialized data/staff-db.json");
     } else {
       console.log("✓ Local store data/staff-db.json already present.");

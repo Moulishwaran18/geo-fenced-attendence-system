@@ -47,6 +47,7 @@ export interface GpsReading extends GpsCoordinates {
   displacementFromPrev?: number | undefined;
   sampleIndex: number;
   kalmanStatus: KalmanStatus;
+  rmsPositionDeviation?: number | null | undefined;
 }
 
 export interface StabilityEvaluation {
@@ -91,6 +92,7 @@ export interface UseGeofenceResult {
   refreshLocation: () => Promise<GeofenceEvaluation | null>;
   checkLocation: (fresh?: boolean) => Promise<GeofenceEvaluation | null>;
   openLocationSettings?: () => void;
+  rmsPositionDeviation: number | null;
   polygon: LatLng[];
 }
 
@@ -285,6 +287,7 @@ export function useGeofence(
         speed?: number | null | undefined;
       };
       timestamp: number;
+      rmsPositionDeviation?: number | null | undefined;
     }) => {
       const { latitude, longitude, accuracy, altitude, altitudeAccuracy, heading, speed } = pos.coords;
       const rawQuality = getGpsQuality(accuracy);
@@ -309,6 +312,23 @@ export function useGeofence(
         );
       }
 
+      // Compute RMS position deviation across recorded displacements or from native payload
+      let rmsPositionDeviation: number | null = null;
+      if (typeof pos.rmsPositionDeviation === "number") {
+        rmsPositionDeviation = pos.rmsPositionDeviation;
+      } else {
+        const displacements = history
+          .map((r) => r.displacementFromPrev)
+          .filter((v): v is number => typeof v === "number");
+        if (displacementFromPrev !== undefined) {
+          displacements.push(displacementFromPrev);
+        }
+        if (displacements.length > 0) {
+          const sumSq = displacements.reduce((sum, v) => sum + v * v, 0);
+          rmsPositionDeviation = parseFloat(Math.sqrt(sumSq / displacements.length).toFixed(2));
+        }
+      }
+
       const reading: GpsReading = {
         lat: latitude,
         lng: longitude,
@@ -326,6 +346,7 @@ export function useGeofence(
         displacementFromPrev,
         sampleIndex: history.length + 1,
         kalmanStatus: kalmanResult.status,
+        rmsPositionDeviation,
       };
 
       // Update state without modifying reported accuracy
@@ -541,6 +562,7 @@ export function useGeofence(
                 speed: payload.speed ?? null,
               },
               timestamp: payload.timestamp || Date.now(),
+              rmsPositionDeviation: typeof payload.rmsPositionDeviation === "number" ? payload.rmsPositionDeviation : null,
             });
           }
         };
@@ -676,7 +698,7 @@ export function useGeofence(
     checkLocation,
     openLocationSettings,
     // Expose RMS deviation from the latest reading (if available)
-    rmsPositionDeviation: readingsHistory.length > 0 ? readingsHistory[readingsHistory.length - 1].rmsPositionDeviation : null,
+    rmsPositionDeviation: readingsHistory.length > 0 ? (readingsHistory[readingsHistory.length - 1]?.rmsPositionDeviation ?? null) : null,
     polygon: AUTHORIZED_GEOFENCE_POLYGON,
   };
 }

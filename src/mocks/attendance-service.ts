@@ -1,4 +1,5 @@
 import { formatIndiaDate, formatIndiaTime, indiaDateKey } from "@/lib/india-time";
+import { supabase } from "@/lib/supabase";
 /**
  * Mock attendance/verification service.
  * Swap these implementations for real GPS / Wi-Fi / BLE / face APIs later.
@@ -190,17 +191,61 @@ export interface AttendanceReceipt {
   date: string;
 }
 
-export function markAttendance(): Promise<AttendanceReceipt> {
-  return new Promise((resolve) =>
-    setTimeout(() => {
-      const now = new Date();
-      resolve({
-        attendanceId: `ATT-${indiaDateKey(now)}-${String(Math.floor(Math.random() * 900) + 100)}`,
-        time: formatIndiaTime(now),
-        date: formatIndiaDate(now, false),
-      });
-    }, 2200),
-  );
+export interface MarkAttendanceParams {
+  staffCode?: string | undefined;
+  staffName?: string | undefined;
+  department?: string | undefined;
+  location?: string | undefined;
+  latitude?: number | null | undefined;
+  longitude?: number | null | undefined;
+  verification?: "Verified" | "Failed" | "Manual" | undefined;
+}
+
+export async function markAttendance(params?: MarkAttendanceParams): Promise<AttendanceReceipt> {
+  const now = new Date();
+  const timeStr = formatIndiaTime(now);
+  const dateStr = formatIndiaDate(now, false);
+  const dayStr = now.toLocaleDateString("en-US", { weekday: "long" });
+
+  const staffCode = params?.staffCode || "SCT-2417";
+  const staffName = params?.staffName || "Dr. Priya Ramanathan";
+  const department = params?.department || "Computer Science & Engineering";
+
+  let attendanceId = `ATT-${indiaDateKey(now)}-${String(Math.floor(Math.random() * 900) + 100)}`;
+
+  try {
+    const { data, error } = await supabase
+      .from("attendance_records")
+      .insert({
+        staff_code: staffCode,
+        staff_name: staffName,
+        department: department,
+        day: dayStr,
+        time: timeStr,
+        status: "Present",
+        location: params?.location || "Main Campus, Sona College",
+        verification: params?.verification || "Verified",
+        latitude: params?.latitude,
+        longitude: params?.longitude,
+      })
+      .select("id")
+      .single();
+
+    if (data?.id) {
+      attendanceId = `ATT-${data.id.slice(0, 8).toUpperCase()}`;
+    }
+    if (error) {
+      console.warn("[Supabase] attendance_records insert warning:", error.message);
+    }
+  } catch (err) {
+    console.warn("[Supabase] attendance_records network exception:", err);
+  }
+
+  return {
+    attendanceId,
+    time: timeStr,
+    date: dateStr,
+  };
 }
 
 export const scenarioLabels: Record<VerificationScenario, string> = {

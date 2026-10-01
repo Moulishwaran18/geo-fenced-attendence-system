@@ -18,6 +18,7 @@ import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
+import { Route as AdminAuditLogsRouteImport } from './routes/admin.audit-logs'
 import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
 import { Route as AdminFaceEnrollmentRouteImport } from './routes/admin.face-enrollment'
 import { Route as AdminStaffRouteImport } from './routes/admin.staff'
@@ -67,6 +68,11 @@ const AdminAttendanceRoute = AdminAttendanceRouteImport.update({
   path: '/admin/attendance',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminAuditLogsRoute = AdminAuditLogsRouteImport.update({
+  id: '/admin/audit-logs',
+  path: '/admin/audit-logs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminCampusMapRoute = AdminCampusMapRouteImport.update({
   id: '/admin/campus-map',
   path: '/admin/campus-map',
@@ -92,6 +98,7 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -121,6 +129,7 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -137,6 +146,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/face-enrollment'
     | '/admin/staff'
@@ -151,6 +161,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/face-enrollment'
     | '/admin/staff'
@@ -165,6 +176,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/face-enrollment'
     | '/admin/staff'
@@ -180,6 +192,7 @@ export interface RootRouteChildren {
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
   AdminAttendanceRoute: typeof AdminAttendanceRoute
+  AdminAuditLogsRoute: typeof AdminAuditLogsRoute
   AdminCampusMapRoute: typeof AdminCampusMapRoute
   AdminFaceEnrollmentRoute: typeof AdminFaceEnrollmentRoute
   AdminStaffRoute: typeof AdminStaffRoute
@@ -251,6 +264,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAttendanceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/audit-logs': {
+      id: '/admin/audit-logs'
+      path: '/admin/audit-logs'
+      fullPath: '/admin/audit-logs'
+      preLoaderRoute: typeof AdminAuditLogsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/campus-map': {
       id: '/admin/campus-map'
       path: '/admin/campus-map'
@@ -284,6 +304,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
   AdminAttendanceRoute: AdminAttendanceRoute,
+  AdminAuditLogsRoute: AdminAuditLogsRoute,
   AdminCampusMapRoute: AdminCampusMapRoute,
   AdminFaceEnrollmentRoute: AdminFaceEnrollmentRoute,
   AdminStaffRoute: AdminStaffRoute,

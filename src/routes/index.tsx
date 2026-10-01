@@ -4,10 +4,10 @@ import {
   Bluetooth,
   Eye,
   EyeOff,
-  Fingerprint,
   GraduationCap,
   Loader2,
   MapPin,
+  ScanFace,
   ShieldCheck,
   Wifi,
 } from "lucide-react";
@@ -85,7 +85,7 @@ function LoginPage() {
               { icon: MapPin, label: "Campus geofence" },
               { icon: Wifi, label: "Institutional Wi-Fi" },
               { icon: Bluetooth, label: "Beacon proximity" },
-              { icon: Fingerprint, label: "Identity match" },
+              { icon: ScanFace, label: "Face verification" },
             ].map((f) => (
               <li key={f.label} className="flex items-center gap-2 text-primary-foreground/85">
                 <f.icon className="size-4" aria-hidden />

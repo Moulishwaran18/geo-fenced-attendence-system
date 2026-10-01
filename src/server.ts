@@ -5,6 +5,7 @@ import { renderErrorPage } from "./lib/error-page";
 import { getWifiStatus } from "./lib/wifi-detection";
 import { handleStaffApi } from "./server/api/staff-handler";
 import { handleFaceVerifyApi } from "./server/api/face-search-handler";
+import { handleFaceDetectionLogApi } from "./server/api/audit-log-handler";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -53,6 +54,10 @@ export default {
       const url = new URL(request.url);
 
       // REST API Routes
+      if (url.pathname === "/api/face-detection-log" || url.pathname === "/api/admin/face-detection-logs") {
+        return await handleFaceDetectionLogApi(request, url.pathname);
+      }
+
       if (url.pathname.startsWith("/api/admin/")) {
         return await handleStaffApi(request, url.pathname);
       }

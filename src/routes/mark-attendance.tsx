@@ -10,7 +10,6 @@ import {
   Compass,
   Database,
   Eye,
-  Fingerprint,
   Loader2,
   MapPin,
   RefreshCw,
@@ -76,7 +75,7 @@ const icons = {
   wifi: Wifi,
   location: MapPin,
   identity: ScanFace,
-  decision: Fingerprint,
+  decision: ShieldCheck,
 } as const;
 
 const titles = {
@@ -362,7 +361,15 @@ function MarkAttendancePage() {
     }
 
     setStatus("verifying");
-    const result = await markAttendance();
+    const result = await markAttendance({
+      staffCode: faceResult?.staffId || "SCT-2417",
+      staffName: faceResult?.staffName || "Dr. Priya Ramanathan",
+      department: "Computer Science & Engineering",
+      location: "Main Campus, Sona College",
+      latitude: geofence.coords?.lat ?? undefined,
+      longitude: geofence.coords?.lng ?? undefined,
+      verification: "Verified",
+    });
     setReceipt(result);
     setStatus("success");
     toast.success("Attendance Recorded Successfully!", {
@@ -393,7 +400,15 @@ function MarkAttendancePage() {
           // If Wi-Fi and GPS are both authorized, automatically mark attendance
           if (wifiAuthorized && gpsInsideGeofence) {
             setStatus("verifying");
-            const attendanceReceipt = await markAttendance();
+            const attendanceReceipt = await markAttendance({
+              staffCode: result.staffId || "SCT-2417",
+              staffName: result.staffName || "Dr. Priya Ramanathan",
+              department: "Computer Science & Engineering",
+              location: "Main Campus, Sona College",
+              latitude: geofence.coords?.lat ?? undefined,
+              longitude: geofence.coords?.lng ?? undefined,
+              verification: "Verified",
+            });
             setReceipt(attendanceReceipt);
             setStatus("success");
             toast.success(`Attendance Marked Successfully!`, {
@@ -768,7 +783,7 @@ function MarkAttendancePage() {
                   {/* 11. FINAL ATTENDANCE STATUS */}
                   <div className="flex items-center justify-between gap-2 pt-1">
                     <dt className="flex items-center gap-1.5 font-bold text-foreground uppercase tracking-wider text-[11px]">
-                      <Fingerprint className="size-3.5 text-primary" /> Final Decision
+                      <ShieldCheck className="size-3.5 text-primary" /> Final Decision
                     </dt>
                     <dd className="text-right">
                       <Badge
@@ -900,7 +915,7 @@ function MarkAttendancePage() {
                     </>
                   ) : (
                     <>
-                      <Fingerprint className="mr-2 size-5" /> Verify &amp; Mark Attendance
+                      <CheckCircle2 className="mr-2 size-5" /> Confirm &amp; Mark Attendance
                     </>
                   )}
                 </Button>

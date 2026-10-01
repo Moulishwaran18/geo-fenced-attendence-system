@@ -130,12 +130,6 @@ export function SettingsSections() {
             defaultChecked
           />
           <ToggleRow
-            id="biometric"
-            label="Biometric unlock"
-            description="Use device biometrics before marking attendance."
-            defaultChecked
-          />
-          <ToggleRow
             id="session"
             label="Auto sign-out"
             description="Sign out automatically after 30 minutes of inactivity."
