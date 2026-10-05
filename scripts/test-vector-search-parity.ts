@@ -33,8 +33,8 @@ async function testParity() {
   let allSelfTestsPass = true;
 
   for (const code of testCodes) {
-    const staff = jsonDb.staff.find(s => s.staff_code === code);
-    const emb = jsonDb.face_embeddings.find(e => e.staff_id === staff.id);
+    const staff = jsonDb.staff.find((s: any) => s.staff_code === code);
+    const emb = jsonDb.face_embeddings.find((e: any) => e.staff_id === staff.id);
 
     // Run search on pgvector
     const results = await searchFaceEmbeddings(emb.embedding, 5);
@@ -60,7 +60,7 @@ async function testParity() {
   // 3. API Verification Simulation
   console.log("\n3. POST /api/face/verify Integration Test:");
   
-  const p1Emb = jsonDb.face_embeddings.find(e => e.staff_id === "staff-person_001");
+  const p1Emb = jsonDb.face_embeddings.find((e: any) => e.staff_id === "staff-person_001");
   const fakeReq = new Request("http://localhost:5173/api/face/verify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

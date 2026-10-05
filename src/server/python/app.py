@@ -238,25 +238,29 @@ async def startup_db():
             max_size=10,
             command_timeout=5
         )
-        async with db_pool.acquire() as conn:
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_embeddings (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id VARCHAR(64) NOT NULL,
-                    name VARCHAR(128) NOT NULL,
-                    embedding vector(512) NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                );
-            """)
+        if db_pool is not None:
+            async with db_pool.acquire() as conn:
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS user_embeddings (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        user_id VARCHAR(64) NOT NULL,
+                        name VARCHAR(128) NOT NULL,
+                        embedding vector(512) NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    );
+                """)
         print("[OK] Connected to PostgreSQL with pgvector extension.")
     except Exception as e:
         print(f"[WARN] PostgreSQL not available ({e}). Initializing local JSON fallback store.")
         db_path = os.path.abspath("data/staff-db.json")
         if os.path.exists(db_path):
             with open(db_path, "r", encoding="utf-8") as f:
-                local_staff_db = json.load(f)
-            print(f"[OK] Loaded {len(local_staff_db.get('staff', []))} staff records from {db_path}.")
+                data = json.load(f)
+                if isinstance(data, dict):
+                    local_staff_db = data
+            if local_staff_db is not None:
+                print(f"[OK] Loaded {len(local_staff_db.get('staff', []))} staff records from {db_path}.")
 
 @app.get("/")
 def root():
@@ -327,6 +331,11 @@ async def recognize_face(
         )
 
     # ── 2. MediaPipe Face Mesh Detection ──
+    if face_mesh_detector is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="MediaPipe Face Mesh detector is not initialized"
+        )
     results = face_mesh_detector.process(image_np)
     if not results.multi_face_landmarks or len(results.multi_face_landmarks) != 1:
         face_count = len(results.multi_face_landmarks) if results.multi_face_landmarks else 0

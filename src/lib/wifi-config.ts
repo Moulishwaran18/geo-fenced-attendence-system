@@ -134,9 +134,9 @@ export interface WifiVerificationResult {
   gateway: string;
   dns: string;
   timestamp: string;
-  band?: string;
-  signal?: string;
-  auth?: string;
+  band?: string | undefined;
+  signal?: string | undefined;
+  auth?: string | undefined;
 }
 
 export interface WifiStatus {

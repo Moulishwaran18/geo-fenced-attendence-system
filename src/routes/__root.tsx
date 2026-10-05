@@ -6,6 +6,7 @@ import {
   useRouter,
   HeadContent,
   Scripts,
+  type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
@@ -33,9 +34,10 @@ function NotFoundComponent() {
   );
 }
 
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function ErrorComponent({ error, reset }: ErrorComponentProps) {
   console.error("Root ErrorComponent caught:", error);
   const router = useRouter();
+  const err = error instanceof Error ? error : (error ? new Error(String(error)) : null);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
@@ -47,14 +49,14 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
           Something went wrong on our end. You can try refreshing or head back home.
         </p>
 
-        {error && (
+        {err && (
           <div className="mt-4 text-left rounded-lg border border-destructive/40 bg-destructive/10 p-4 font-mono text-xs shadow-sm">
             <div className="font-bold text-destructive break-words">
-              {error.name || "Error"}: {error.message || String(error)}
+              {err.name || "Error"}: {err.message || String(err)}
             </div>
-            {error.stack && (
+            {err.stack && (
               <pre className="mt-2 max-h-48 overflow-auto rounded bg-zinc-950 p-2 text-[11px] text-zinc-200">
-                {error.stack}
+                {err.stack}
               </pre>
             )}
           </div>
