@@ -1,6 +1,6 @@
 import os from "node:os";
 import { execSync } from "node:child_process";
-import { verifyCampusWifi, type WifiVerificationResult } from "./wifi-config";
+import { verifyCampusWifi, type WifiVerificationResult } from "./wifi-config.ts";
 
 export interface WifiStatus {
   isSonaWifi: boolean;
