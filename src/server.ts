@@ -101,6 +101,12 @@ export default {
           bssidStatusMessage: verification.bssidStatusMessage,
           networkSummary: verification.networkSummary,
           timestamp: verification.timestamp,
+          signal: body.signal || (body.rssi ? `${body.rssi} dBm` : verification.signal || ""),
+          band: body.band || (body.frequency ? (body.frequency >= 4900 ? "5 GHz" : "2.4 GHz") : verification.band) || "",
+          auth: body.auth || body.security || verification.auth || "",
+          frequency: body.frequency,
+          linkSpeed: body.linkSpeed,
+          rssi: body.rssi,
         };
 
         return new Response(JSON.stringify(responsePayload), {

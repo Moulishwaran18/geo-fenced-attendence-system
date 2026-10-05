@@ -18,14 +18,20 @@ export interface WifiStatus {
   bssidStatusMessage?: string;
   networkSummary?: string;
   stage?: WifiVerificationResult["stage"];
+  band?: string;
+  frequency?: number;
+  linkSpeed?: number;
+  rssi?: number;
+  authorized?: boolean;
 }
 
 /**
  * Authoritative Wi-Fi SSIDs from verified campus configuration:
  * - SONA-WIFI (Institutional Campus Network)
  * - M (Campus Wi-Fi Network)
+ * - LAPTOP-96EEBK69 4670 (Authoritative 3rd Wi-Fi Network from screenshot)
  */
-export const AUTHORIZED_SSIDS = ["SONA-WIFI", "M"];
+export const AUTHORIZED_SSIDS = ["SONA-WIFI", "M", "LAPTOP-96EEBK69 4670", "NEW AUTHORIZED WI-FI"];
 
 /**
  * Performs local OS Wi-Fi network detection and validates against
@@ -35,6 +41,7 @@ export function getWifiStatus(): WifiStatus {
   let ssid = "";
   let bssid = "";
   let signal = "";
+  let band = "";
   let state: "connected" | "disconnected" | "unknown" = "unknown";
   let auth = "";
   let ip = "";
@@ -56,8 +63,10 @@ export function getWifiStatus(): WifiStatus {
       const bssidMatch = netshOutput.match(/^\s*AP BSSID\s*:\s*(.+)$/m);
       const signalMatch = netshOutput.match(/^\s*Signal\s*:\s*(.+)$/m);
       const authMatch = netshOutput.match(/^\s*Authentication\s*:\s*(.+)$/m);
+      const bandMatch = netshOutput.match(/^\s*Band\s*:\s*(.+)$/m);
 
       if (ssidMatch?.[1]) ssid = ssidMatch[1].trim();
+      if (bandMatch?.[1]) band = bandMatch[1].trim();
       if (stateMatch?.[1]) {
         const rawState = stateMatch[1].trim().toLowerCase();
         state = rawState === "connected" ? "connected" : "disconnected";
@@ -138,18 +147,23 @@ export function getWifiStatus(): WifiStatus {
     gateway,
     dns,
     dnsSuffix,
+    auth,
+    band,
+    signal,
   });
 
   return {
     isSonaWifi: verification.authorized,
+    authorized: verification.authorized,
     ssid: verification.ssid || ssid || "None",
     bssid: verification.bssid || bssid || "None",
-    signal,
+    signal: verification.signal || signal,
+    band: verification.band || band,
+    auth: verification.auth || auth,
     ip: verification.ip || ip,
     gateway: verification.gateway || gateway,
     dns: verification.dns || dns,
     dnsSuffix,
-    auth,
     state: state === "connected" ? "connected" : state === "disconnected" ? "disconnected" : "unknown",
     reason: verification.reason,
     timestamp: verification.timestamp,

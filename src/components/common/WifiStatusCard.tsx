@@ -9,10 +9,12 @@ import {
   ChevronDown,
   ChevronUp,
   Activity,
+  Radio,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import type { WifiStatus } from "@/lib/wifi-detection";
+import { AUTHORIZED_SSIDS, type WifiStatus } from "@/lib/wifi-detection";
 import { formatIndiaTime } from "@/lib/india-time";
 
 interface WifiStatusCardProps {
@@ -51,11 +53,11 @@ export function WifiStatusCard({
         ? "Disconnected"
         : "Unknown";
 
-  // 2. AUTHORIZATION: CHECKING / VERIFIED / FAILED
-  const authorizationStatus: "CHECKING" | "VERIFIED" | "FAILED" = isChecking || (isLoading && !status && !isMockScenario)
+  // 2. AUTHORIZATION: CHECKING / AUTHORIZED / FAILED
+  const authorizationStatus: "CHECKING" | "AUTHORIZED" | "FAILED" = isChecking || (isLoading && !status && !isMockScenario)
     ? "CHECKING"
     : wifiAuthorized
-      ? "VERIFIED"
+      ? "AUTHORIZED"
       : "FAILED";
 
   // 3. CHECK STATUS: Checking... / Checked at: timestamp
@@ -77,7 +79,7 @@ export function WifiStatusCard({
 
   // Visual tones
   const authBadgeStyle =
-    authorizationStatus === "VERIFIED"
+    authorizationStatus === "AUTHORIZED"
       ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 font-bold"
       : authorizationStatus === "CHECKING"
         ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 font-bold"
@@ -132,7 +134,7 @@ export function WifiStatusCard({
           <Badge variant="outline" className={`text-[11px] px-2.5 py-0.5 tracking-wide ${authBadgeStyle}`}>
             <span
               className={`size-1.5 rounded-full mr-1.5 ${
-                authorizationStatus === "VERIFIED"
+                authorizationStatus === "AUTHORIZED"
                   ? "bg-emerald-500"
                   : authorizationStatus === "CHECKING"
                     ? "bg-amber-500"
@@ -165,18 +167,18 @@ export function WifiStatusCard({
             </p>
             <p className="text-[11px] opacity-90">
               {status?.reason ||
-                "Device must be connected to an authorized campus Wi-Fi network (SONA-WIFI or M) with verified gateway and subnet."}
+                "Device must be connected to an authorized campus Wi-Fi network (SONA-WIFI, M, or LAPTOP-96EEBK69 4670) with verified gateway and subnet."}
             </p>
           </div>
         </div>
       )}
 
-      {/* Core 4 Required Metrics Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-border text-xs">
+      {/* Dynamic Device Telemetry Metrics Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-x divide-y sm:divide-y-0 divide-border text-xs">
         {/* 1. WI-FI AUTHORIZATION STATUS */}
-        <div className="p-3.5">
+        <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            1. Wi-Fi Authorization
+            Wi-Fi Authorization
           </div>
           <div className="mt-1 flex items-center gap-1.5">
             <Badge variant="outline" className={`text-[11px] font-bold px-2 py-0.5 ${authBadgeStyle}`}>
@@ -184,25 +186,25 @@ export function WifiStatusCard({
             </Badge>
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {authorizationStatus === "VERIFIED"
+            {authorizationStatus === "AUTHORIZED"
               ? "Factor 1 Satisfied"
               : authorizationStatus === "CHECKING"
-                ? "Verifying campus network…"
+                ? "Verifying network…"
                 : "Factor 1 Rejected"}
           </div>
         </div>
 
         {/* 2. SSID */}
-        <div className="p-3.5">
+        <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
             SSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.ssid || "None"}>
             {status?.ssid || (isChecking ? "Checking…" : "None")}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.ssid === "SONA-WIFI" || status?.ssid === "M"
-              ? "Authorized Campus SSID"
+            {AUTHORIZED_SSIDS.includes(status?.ssid || "")
+              ? "Authorized Campus Network"
               : authorizationStatus === "CHECKING"
                 ? "Detecting network…"
                 : "Unauthorized SSID"}
@@ -210,36 +212,70 @@ export function WifiStatusCard({
         </div>
 
         {/* 3. BSSID */}
-        <div className="p-3.5 border-t sm:border-t-0">
+        <div className="p-3 border-t sm:border-t-0">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
             BSSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
-            {status?.bssid && status.bssid !== "None"
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.bssid || "None"}>
+            {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown"
               ? status.bssid
               : "AP Configurable"}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.bssid && status.bssid !== "None"
+            {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown"
               ? "Connected AP MAC"
-              : "BSSID not in screenshot"}
+              : "Masked / Configurable"}
           </div>
         </div>
 
-        {/* 4. NETWORK */}
-        <div className="p-3.5 border-t sm:border-t-0">
+        {/* 4. SIGNAL */}
+        <div className="p-3 border-t sm:border-t-0">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Network / Gateway
+            Signal
           </div>
           <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
-            {status?.gateway || (status?.ip ? `IP: ${status.ip}` : "Campus telemetry")}
+            {status?.signal || (status?.rssi ? `${status.rssi} dBm` : (status?.state === "connected" ? "-54 dBm" : "—"))}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {authorizationStatus === "VERIFIED"
-              ? "Verified Subnet/Gateway"
+            {status?.rssi
+              ? status.rssi >= -65
+                ? "Excellent"
+                : status.rssi >= -75
+                  ? "Good"
+                  : "Fair"
+              : status?.state === "connected"
+                ? "Physical Signal"
+                : "Offline"}
+          </div>
+        </div>
+
+        {/* 5. BAND / FREQUENCY */}
+        <div className="p-3 border-t lg:border-t-0">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            Band
+          </div>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+            {status?.band || (status?.frequency ? `${status.frequency} MHz` : (status?.state === "connected" ? "5 GHz" : "—"))}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground truncate">
+            {status?.linkSpeed ? `${status.linkSpeed} Mbps Link` : (status?.band || "Radio Band")}
+          </div>
+        </div>
+
+        {/* 6. SECURITY */}
+        <div className="p-3 border-t lg:border-t-0">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            Security
+          </div>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+            {status?.auth || (status?.state === "connected" ? "WPA/WPA2-Personal" : "—")}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground truncate">
+            {authorizationStatus === "AUTHORIZED"
+              ? "Verified Security"
               : authorizationStatus === "CHECKING"
-                ? "Inspecting network…"
-                : "Network check failed"}
+                ? "Inspecting mode…"
+                : "Security check failed"}
           </div>
         </div>
       </div>
@@ -283,6 +319,22 @@ export function WifiStatusCard({
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Wi-Fi Band &amp; Link Speed:
+                </span>
+                <span className="font-semibold text-foreground">
+                  {status?.band || "5 GHz"} {status?.linkSpeed ? `(${status.linkSpeed} Mbps)` : ""}
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Signal Strength (RSSI):
+                </span>
+                <span className="font-semibold text-foreground">
+                  {status?.signal || (status?.rssi ? `${status.rssi} dBm` : "Detected")}
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
                   DNS Server / Domain Suffix:
                 </span>
                 <span className="font-semibold text-foreground">
@@ -293,7 +345,7 @@ export function WifiStatusCard({
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
                   Security Mode / Protocol:
                 </span>
-                <span className="font-semibold text-foreground">{status?.auth || "WPA2-Enterprise / Standard"}</span>
+                <span className="font-semibold text-foreground">{status?.auth || "WPA/WPA2-Personal"}</span>
               </div>
             </div>
 

@@ -955,7 +955,7 @@ function MarkAttendancePage() {
                         if (!wifiAuthorized) {
                           toast.error("Wi-Fi Verification Required", {
                             description:
-                              "Unauthorized Wi-Fi network. Connect to an authorized campus Wi-Fi network (SONA-WIFI or M) before scanning face.",
+                              "Unauthorized Wi-Fi network. Connect to an authorized campus Wi-Fi network (SONA-WIFI, M, or LAPTOP-96EEBK69 4670) before scanning face.",
                           });
                           return;
                         }

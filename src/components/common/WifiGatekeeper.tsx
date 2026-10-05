@@ -102,8 +102,8 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               </p>
               <p className="mt-2.5 max-w-md text-sm text-muted-foreground leading-relaxed">
                 CampusAttend is protected by institutional network security. This system can only be
-                accessed when your device is connected to the authorized campus Wi-Fi (
-                <strong className="text-foreground">SONA-WIFI</strong> or authorized network).
+                accessed when your device is connected to an authorized campus Wi-Fi (
+                <strong className="text-foreground">SONA-WIFI, M, or LAPTOP-96EEBK69 4670</strong>).
               </p>
             </div>
 
@@ -125,7 +125,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Authorized Wi-Fi:</span>
-                  <span className="font-semibold text-primary">SONA-WIFI / Authorized Network</span>
+                  <span className="font-semibold text-primary">SONA-WIFI / M / LAPTOP-96EEBK69 4670</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Security Mode:</span>
@@ -162,7 +162,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside pl-1">
                 <li>Open your device Wi-Fi settings.</li>
                 <li>
-                  Connect to <strong className="text-foreground">SONA-WIFI</strong> or an authorized network.
+                  Connect to <strong className="text-foreground">SONA-WIFI, M, or LAPTOP-96EEBK69 4670</strong>.
                 </li>
                 <li>
                   Once connected, this page will <strong className="text-foreground">automatically unlock</strong>, or click below to re-check.
