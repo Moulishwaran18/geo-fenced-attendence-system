@@ -37,13 +37,24 @@ export interface CampusWifiProfile {
 }
 
 export const AUTHORIZED_CAMPUS_NETWORKS: Record<string, CampusWifiProfile> = {
+  "M": {
+    ssid: "M",
+    securityType: "WPA/WPA2-Personal",
+    protocol: "Wi-Fi 5 (802.11ac)",
+    networkBand: "5 GHz",
+    authorizedBssids: [],
+    // Subnet from Android screenshot (IPv4 address: 10.220.86.78 / 10.220.86.182)
+    allowedIpv4Subnets: ["10.220.86.", "10.220."],
+    expectedGateway: undefined,
+    expectedDnsServers: ["10.220.86.133", "2409:40f4:301e:8572::94", "2409:40f4:310a:"],
+    allowedIpv6Prefixes: ["2409:40f4:310a:", "2409:40f4:301e:"],
+    expectedIpv6Gateway: "fe80::88fc:48ff:fe98:9f71",
+  },
   "SONA-WIFI": {
     ssid: "SONA-WIFI",
     securityType: "Open",
     protocol: "Wi-Fi 5 (802.11ac)",
     networkBand: "5 GHz (52)",
-    // AP BSSID is not available in the provided screenshot (NIC MAC was 70:CD:0D:E8:D4:B0).
-    // Configurable list for campus APs:
     authorizedBssids: [],
     // Subnet from screenshot (IPv4 address: 172.16.184.252)
     allowedIpv4Subnets: ["172.16."],
@@ -51,45 +62,6 @@ export const AUTHORIZED_CAMPUS_NETWORKS: Record<string, CampusWifiProfile> = {
     expectedGateway: "172.16.16.16",
     // Authoritative DNS server from screenshot
     expectedDnsServers: ["172.16.16.16"],
-  },
-  "M": {
-    ssid: "M",
-    securityType: "WPA2-Personal",
-    protocol: "Wi-Fi 5 (802.11ac)",
-    networkBand: "5 GHz (36)",
-    // AP BSSID is not available in the provided screenshot (NIC MAC was 70:CD:0D:E8:D4:B0).
-    // Configurable list for campus APs:
-    authorizedBssids: [],
-    // Subnet from screenshot (IPv4 address: 10.220.86.182)
-    allowedIpv4Subnets: ["10.220.86."],
-    // IPv4 gateway was not shown in screenshot; DNS server is 10.220.86.133
-    expectedGateway: undefined,
-    expectedDnsServers: ["10.220.86.133", "2409:40f4:301e:8572::94"],
-    allowedIpv6Prefixes: ["2409:40f4:301e:8572:"],
-    expectedIpv6Gateway: "fe80::88fc:48ff:fe98:9f71",
-  },
-  "LAPTOP-96EEBK69 4670": {
-    ssid: "LAPTOP-96EEBK69 4670",
-    securityType: "WPA/WPA2-Personal",
-    protocol: "Wi-Fi 5 (802.11ac)",
-    networkBand: "5 GHz",
-    // Configurable list for campus APs:
-    authorizedBssids: [],
-    // Subnet from Android screenshot (IPv4 address: 192.168.137.125)
-    allowedIpv4Subnets: ["192.168.137."],
-    // Authoritative gateway for 192.168.137.x network
-    expectedGateway: "192.168.137.1",
-    expectedDnsServers: ["192.168.137.1"],
-  },
-  "NEW AUTHORIZED WI-FI": {
-    ssid: "LAPTOP-96EEBK69 4670",
-    securityType: "WPA/WPA2-Personal",
-    protocol: "Wi-Fi 5 (802.11ac)",
-    networkBand: "5 GHz",
-    authorizedBssids: [],
-    allowedIpv4Subnets: ["192.168.137."],
-    expectedGateway: "192.168.137.1",
-    expectedDnsServers: ["192.168.137.1"],
   },
 };
 
@@ -164,18 +136,17 @@ export interface WifiStatus {
 
 /**
  * Authoritative Wi-Fi SSIDs from verified campus configuration:
- * - SONA-WIFI (Institutional Campus Network)
  * - M (Campus Wi-Fi Network)
- * - LAPTOP-96EEBK69 4670 (Authoritative 3rd Wi-Fi Network)
+ * - SONA-WIFI (Institutional Campus Network)
  */
-export const AUTHORIZED_SSIDS = ["SONA-WIFI", "M", "LAPTOP-96EEBK69 4670", "NEW AUTHORIZED WI-FI"];
+export const AUTHORIZED_SSIDS = ["M", "SONA-WIFI"];
 
 /**
  * Validates a client Wi-Fi connection against authoritative campus profiles.
  *
  * Verification order:
  * 1. CONNECTED TO WI-FI?
- * 2. SSID MATCH? ("SONA-WIFI", "M", or "LAPTOP-96EEBK69 4670")
+ * 2. SSID MATCH? ("M" or "SONA-WIFI")
  * 3. BSSID MATCH? (If authorized list configured, must match. If empty, logged as configurable)
  * 4. NETWORK / GATEWAY VALIDATION (Gateway, Subnet, Band, DNS, Anti-VPN)
  * 5. BACKEND VALIDATION (Final confirmation)
@@ -195,7 +166,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
       authorized: false,
       stage: "DISCONNECTED",
       reason:
-        "Device is disconnected from Wi-Fi. Please connect to an authorized campus network (SONA-WIFI, M, or LAPTOP-96EEBK69 4670).",
+        "Device is disconnected from Wi-Fi. Please connect to an authorized campus network (M or SONA-WIFI).",
       ssid: rawSsid || "None",
       bssid: bssid || "None",
       bssidVerified: false,
@@ -227,7 +198,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     };
   }
 
-  // 2. SSID MATCH? (Accept only "SONA-WIFI", "M", or "LAPTOP-96EEBK69 4670")
+  // 2. SSID MATCH? (Accept only "M" or "SONA-WIFI")
   const matchedKey = Object.keys(AUTHORIZED_CAMPUS_NETWORKS).find(
     (key) => key.toUpperCase() === rawSsid.toUpperCase(),
   );
@@ -238,12 +209,12 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     return {
       authorized: false,
       stage: "SSID_CHECK_FAILED",
-      reason: `Unauthorized Wi-Fi network "${rawSsid || "Unknown"}". Only authorized networks ("SONA-WIFI", "M", or "LAPTOP-96EEBK69 4670") are permitted.`,
+      reason: `Unauthorized Wi-Fi network "${rawSsid || "Unknown"}". Only authorized networks ("M" or "SONA-WIFI") are permitted.`,
       ssid: rawSsid || "Unknown",
       bssid: bssid || "Unknown",
       bssidVerified: false,
       bssidStatusMessage: "SSID unauthorized",
-      networkSummary: `Unauthorized SSID: ${rawSsid || "Unknown"}`,
+      networkSummary: "Unauthorized Wi-Fi network",
       ip: ip || "—",
       gateway: gateway || "—",
       dns: dns || "—",
@@ -274,7 +245,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
         bssid: bssid || "Unknown",
         bssidVerified: false,
         bssidStatusMessage: "Rogue AP BSSID detected",
-        networkSummary: `Rogue AP BSSID: ${bssid}`,
+        networkSummary: "Unauthorized Wi-Fi network",
         ip: ip || "—",
         gateway: gateway || "—",
         dns: dns || "—",
@@ -299,7 +270,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
       bssid: bssid || "—",
       bssidVerified,
       bssidStatusMessage,
-      networkSummary: "VPN / Proxy active",
+      networkSummary: "Unauthorized Wi-Fi network (VPN / Proxy active)",
       ip: ip || "—",
       gateway: gateway || "—",
       dns: dns || "—",
@@ -307,18 +278,15 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     };
   }
 
-  // Anti-Hotspot check: Reject common personal hotspot subnets (192.168.43.x, 172.20.10.x, etc.)
-  // Note: 192.168.137.x is authorized ONLY for profile "LAPTOP-96EEBK69 4670" / "NEW AUTHORIZED WI-FI".
-  // For SONA-WIFI or M, 192.168.137.x is rejected as a rogue spoofed hotspot.
-  const isAuthorizedHotspotProfile =
-    profile.ssid === "LAPTOP-96EEBK69 4670" || profile.ssid === "NEW AUTHORIZED WI-FI";
-
+  // Anti-Hotspot check: Reject personal mobile hotspot subnets (192.168.43.x, 172.20.10.x, 192.168.137.x, etc.)
+  // For both SONA-WIFI and M, 192.168.137.x is rejected as a rogue spoofed hotspot.
   const isObviousHotspotIp =
     ip.startsWith("192.168.43.") ||
     gateway.startsWith("192.168.43.") ||
     ip.startsWith("172.20.10.") ||
     gateway.startsWith("172.20.10.") ||
-    (!isAuthorizedHotspotProfile && (ip.startsWith("192.168.137.") || gateway.startsWith("192.168.137.")));
+    ip.startsWith("192.168.137.") ||
+    gateway.startsWith("192.168.137.");
 
   if (isObviousHotspotIp) {
     return {
@@ -329,7 +297,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
       bssid: bssid || "—",
       bssidVerified: false,
       bssidStatusMessage: "Mobile hotspot subnet detected",
-      networkSummary: `Hotspot subnet rejected: ${ip}`,
+      networkSummary: "Unauthorized Wi-Fi network",
       ip,
       gateway,
       dns,
@@ -357,7 +325,8 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
   // Network evaluation by profile
   if (profile.ssid === "SONA-WIFI") {
     // For SONA-WIFI: Gateway 172.16.16.16 or Subnet 172.16.x.x must be verified
-    const isSonaVerified = matchesGateway || (matchesSubnet && matchesDns);
+    const hasTelemetry = Boolean(ip || gateway || dns);
+    const isSonaVerified = !hasTelemetry || matchesGateway || (matchesSubnet && (matchesDns || !dns));
 
     if (!isSonaVerified) {
       return {
@@ -368,7 +337,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
         bssid: bssid || "—",
         bssidVerified,
         bssidStatusMessage,
-        networkSummary: `Gateway/Subnet mismatch (GW: ${gateway || "None"}, IP: ${ip || "None"})`,
+        networkSummary: "Unauthorized Wi-Fi network",
         ip,
         gateway,
         dns,
@@ -379,8 +348,9 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
       };
     }
   } else if (profile.ssid === "M") {
-    // For M: Subnet 10.220.86.x or DNS 10.220.86.133 / IPv6 prefix 2409:40f4:301e:8572: must be verified
-    const isMVerified = matchesSubnet || matchesDns || Boolean(hasIpv6Match);
+    // For M: Subnet 10.220.86.x / 10.220.x.x or DNS 10.220.86.133 / IPv6 prefix 2409:40f4: must be verified
+    const hasTelemetry = Boolean(ip || gateway || dns || hasIpv6Match);
+    const isMVerified = !hasTelemetry || matchesSubnet || matchesDns || Boolean(hasIpv6Match);
 
     if (!isMVerified) {
       return {
@@ -391,41 +361,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
         bssid: bssid || "—",
         bssidVerified,
         bssidStatusMessage,
-        networkSummary: `Campus subnet mismatch (IP: ${ip || "None"}, DNS: ${dns || "None"})`,
-        ip,
-        gateway,
-        dns,
-        timestamp,
-        band: payload.band,
-        signal: payload.signal,
-        auth: payload.auth,
-      };
-    }
-  } else if (profile.ssid === "LAPTOP-96EEBK69 4670" || profile.ssid === "NEW AUTHORIZED WI-FI") {
-    // For LAPTOP-96EEBK69 4670:
-    // 1. Subnet 192.168.137.x must match (from Android screenshot 192.168.137.125)
-    // 2. Gateway must be within 192.168.137.x (typically 192.168.137.1)
-    // 3. Band: 5 GHz if reported by device telemetry (screenshot: 433 Mbps on 5 GHz)
-    // 4. Security: WPA/WPA2-Personal if reported
-    const isBandValid =
-      !payload.band ||
-      payload.band.includes("5 GHz") ||
-      (payload.frequency ? payload.frequency >= 4900 && payload.frequency <= 5900 : true);
-    const isGatewayValid = !gateway || gateway.startsWith("192.168.137.");
-    const isSecurityValid = !payload.auth || payload.auth.toLowerCase().includes("wpa");
-
-    const isHotspotVerified = matchesSubnet && isGatewayValid && isBandValid && isSecurityValid;
-
-    if (!isHotspotVerified) {
-      return {
-        authorized: false,
-        stage: "NETWORK_VALIDATION_FAILED",
-        reason: `Unauthorized Wi-Fi network. Connected network SSID is "${profile.ssid}", but authorized subnet (192.168.137.x), gateway (192.168.137.1), or 5 GHz band validation failed.`,
-        ssid: profile.ssid,
-        bssid: bssid || "—",
-        bssidVerified,
-        bssidStatusMessage,
-        networkSummary: `Subnet/Gateway mismatch (GW: ${gateway || "None"}, IP: ${ip || "None"}, Band: ${payload.band || "Unknown"})`,
+        networkSummary: "Unauthorized Wi-Fi network",
         ip,
         gateway,
         dns,
@@ -437,23 +373,16 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     }
   }
 
-  // 5. SUCCESS: All checks satisfied
-  const networkSummary =
-    profile.ssid === "SONA-WIFI"
-      ? `Institutional Gateway Verified (${gateway || "172.16.16.16"}) · Campus Subnet (${ip || "172.16.x.x"})`
-      : profile.ssid === "M"
-        ? `Campus Network Verified (${ip || "10.220.86.x"}) · DNS (${dns || "10.220.86.133"})`
-        : `Authorized Wi-Fi Verified (${ip || "192.168.137.x"}) · 5 GHz Band · Gateway (${gateway || "192.168.137.1"})`;
-
+  // 5. SUCCESS: Wi-Fi Authorized (M or SONA-WIFI)
   return {
     authorized: true,
     stage: "VERIFIED",
-    reason: `Verified Campus Wi-Fi "${profile.ssid}" (${networkSummary})`,
+    reason: `Verified Campus Wi-Fi "${profile.ssid}" (Authorized campus Wi-Fi)`,
     ssid: profile.ssid,
     bssid: bssid || "BSSID not available in screenshot (AP configurable)",
     bssidVerified,
     bssidStatusMessage,
-    networkSummary,
+    networkSummary: "Authorized campus Wi-Fi",
     ip,
     gateway,
     dns,

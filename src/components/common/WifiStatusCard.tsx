@@ -167,7 +167,7 @@ export function WifiStatusCard({
             </p>
             <p className="text-[11px] opacity-90">
               {status?.reason ||
-                "Device must be connected to an authorized campus Wi-Fi network (SONA-WIFI, M, or LAPTOP-96EEBK69 4670) with verified gateway and subnet."}
+                "Device must be connected to an authorized campus Wi-Fi network (M or SONA-WIFI) with verified gateway and subnet."}
             </p>
           </div>
         </div>
@@ -204,10 +204,10 @@ export function WifiStatusCard({
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
             {AUTHORIZED_SSIDS.includes(status?.ssid || "")
-              ? "Authorized Campus Network"
+              ? "Authorized campus Wi-Fi"
               : authorizationStatus === "CHECKING"
                 ? "Detecting network…"
-                : "Unauthorized SSID"}
+                : "Unauthorized Wi-Fi network"}
           </div>
         </div>
 

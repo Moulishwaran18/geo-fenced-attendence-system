@@ -63,9 +63,39 @@ class AndroidWifiBridge(
                 rawSsid = ""
             }
 
+            // Fallback 1: Query ConnectivityManager networkInfo extraInfo if SSID is masked
+            if (rawSsid.isEmpty() || rawSsid == "<unknown ssid>") {
+                @Suppress("DEPRECATION")
+                val netInfo = connectivityManager?.getNetworkInfo(ConnectivityManager.TYPE_WIFI)
+                val extraInfo = netInfo?.extraInfo
+                if (!extraInfo.isNullOrBlank() && extraInfo != "<unknown ssid>") {
+                    var cleanExtra = extraInfo
+                    if (cleanExtra.startsWith("\"") && cleanExtra.endsWith("\"") && cleanExtra.length >= 2) {
+                        cleanExtra = cleanExtra.substring(1, cleanExtra.length - 1)
+                    }
+                    if (cleanExtra.isNotBlank() && cleanExtra != "<unknown ssid>") {
+                        rawSsid = cleanExtra
+                    }
+                }
+            }
+
             var bssid = connectionInfo?.bssid ?: ""
             if (bssid == "02:00:00:00:00:00") {
                 bssid = "" // Android mask when location permission is restricted
+            }
+
+            // Fallback 2: Match SSID from active scan results by BSSID if SSID was masked
+            if ((rawSsid.isEmpty() || rawSsid == "<unknown ssid>") && bssid.isNotEmpty()) {
+                try {
+                    @Suppress("DEPRECATION")
+                    val scanList = wifiManager?.scanResults
+                    val match = scanList?.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
+                    if (match != null && !match.SSID.isNullOrBlank() && match.SSID != "<unknown ssid>") {
+                        rawSsid = match.SSID
+                    }
+                } catch (_: Exception) {
+                    // ignore scan list restriction
+                }
             }
 
             val frequency = connectionInfo?.frequency ?: 0

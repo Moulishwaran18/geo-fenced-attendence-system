@@ -112,7 +112,7 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         scenario,
         canMark: false,
         headline: "Campus network not detected",
-        message: "Connect to SONA-WIFI or authorized network to continue verification.",
+        message: "Connect to M or SONA-WIFI to continue verification.",
         tone: "warning",
         accuracy: "11 m",
         signals: [

@@ -19,20 +19,37 @@ function assert(condition, message) {
 }
 
 // -------------------------------------------------------------
-// Test 1: Verify Configuration Contains All 3 Authorized Networks
+// Test 1: Verify Configuration Contains Exactly 2 Authorized Networks (M and SONA-WIFI)
 // -------------------------------------------------------------
-console.log("1. Verifying Authorized Networks Configuration:");
-assert(AUTHORIZED_CAMPUS_NETWORKS["SONA-WIFI"] !== undefined, "Network 1 'SONA-WIFI' is configured");
-assert(AUTHORIZED_CAMPUS_NETWORKS["M"] !== undefined, "Network 2 'M' is configured");
-assert(AUTHORIZED_CAMPUS_NETWORKS["LAPTOP-96EEBK69 4670"] !== undefined, "Network 3 'LAPTOP-96EEBK69 4670' is configured");
-assert(AUTHORIZED_SSIDS.includes("SONA-WIFI"), "AUTHORIZED_SSIDS includes 'SONA-WIFI'");
+console.log("1. Verifying Authorized Networks Configuration (M & SONA-WIFI):");
+assert(AUTHORIZED_CAMPUS_NETWORKS["M"] !== undefined, "Network 'M' is configured");
+assert(AUTHORIZED_CAMPUS_NETWORKS["SONA-WIFI"] !== undefined, "Network 'SONA-WIFI' is configured");
 assert(AUTHORIZED_SSIDS.includes("M"), "AUTHORIZED_SSIDS includes 'M'");
-assert(AUTHORIZED_SSIDS.includes("LAPTOP-96EEBK69 4670"), "AUTHORIZED_SSIDS includes 'LAPTOP-96EEBK69 4670'");
+assert(AUTHORIZED_SSIDS.includes("SONA-WIFI"), "AUTHORIZED_SSIDS includes 'SONA-WIFI'");
+assert(AUTHORIZED_SSIDS.length === 2, "AUTHORIZED_SSIDS contains exactly 2 networks (M OR SONA-WIFI)");
 
 // -------------------------------------------------------------
-// Test 2: Network 1 (SONA-WIFI) - Institutional Campus Open Wi-Fi
+// Test 2: Network 1 (M) - Campus Wi-Fi Network
 // -------------------------------------------------------------
-console.log("\n2. Testing Network 1: SONA-WIFI (Institutional Gateway & Subnet):");
+console.log("\n2. Testing Network 1: M (Campus 10.220.86.x Subnet & DNS):");
+const mResult = verifyCampusWifi({
+  ssid: "M",
+  state: "connected",
+  ip: "10.220.86.78",
+  gateway: "",
+  dns: "10.220.86.133, 2409:40f4:301e:8572::94",
+  auth: "WPA/WPA2-Personal",
+  band: "5 GHz",
+});
+assert(mResult.authorized === true, "M authorized = true");
+assert(mResult.stage === "VERIFIED", `M stage = VERIFIED (got: ${mResult.stage})`);
+assert(mResult.networkSummary === "Authorized campus Wi-Fi", `Network summary = 'Authorized campus Wi-Fi'`);
+console.log(`     Summary: ${mResult.networkSummary}`);
+
+// -------------------------------------------------------------
+// Test 3: Network 2 (SONA-WIFI) - Institutional Campus Open Wi-Fi
+// -------------------------------------------------------------
+console.log("\n3. Testing Network 2: SONA-WIFI (Institutional Gateway & Subnet):");
 const sonaResult = verifyCampusWifi({
   ssid: "SONA-WIFI",
   state: "connected",
@@ -40,49 +57,26 @@ const sonaResult = verifyCampusWifi({
   gateway: "172.16.16.16",
   dns: "172.16.16.16",
   auth: "Open",
-  band: "5 GHz",
+  band: "5 GHz (52)",
 });
 assert(sonaResult.authorized === true, "SONA-WIFI authorized = true");
 assert(sonaResult.stage === "VERIFIED", `SONA-WIFI stage = VERIFIED (got: ${sonaResult.stage})`);
+assert(sonaResult.networkSummary === "Authorized campus Wi-Fi", `Network summary = 'Authorized campus Wi-Fi'`);
 console.log(`     Summary: ${sonaResult.networkSummary}`);
 
 // -------------------------------------------------------------
-// Test 3: Network 2 (M) - Campus WPA2-Personal Wi-Fi
+// Test 4: Other Networks Are Strictly Rejected (Only M and SONA-WIFI permitted)
 // -------------------------------------------------------------
-console.log("\n3. Testing Network 2: M (Campus 10.220.86.x Subnet & DNS):");
-const mResult = verifyCampusWifi({
-  ssid: "M",
-  state: "connected",
-  ip: "10.220.86.182",
-  gateway: "",
-  dns: "10.220.86.133, 2409:40f4:301e:8572::94",
-  auth: "WPA2-Personal",
-  band: "5 GHz",
-});
-assert(mResult.authorized === true, "M authorized = true");
-assert(mResult.stage === "VERIFIED", `M stage = VERIFIED (got: ${mResult.stage})`);
-console.log(`     Summary: ${mResult.networkSummary}`);
-
-// -------------------------------------------------------------
-// Test 4: Network 3 (LAPTOP-96EEBK69 4670) - From Android Screenshot
-// Details: 192.168.137.125, 433 Mbps on 5 GHz, WPA/WPA2-Personal, -54 dBm
-// -------------------------------------------------------------
-console.log("\n4. Testing Network 3: LAPTOP-96EEBK69 4670 (From Android Screenshot):");
-const thirdResult = verifyCampusWifi({
+console.log("\n4. Testing Other Network Rejection:");
+const nonAuthResult = verifyCampusWifi({
   ssid: "LAPTOP-96EEBK69 4670",
   state: "connected",
   ip: "192.168.137.125",
   gateway: "192.168.137.1",
-  dns: "192.168.137.1",
-  auth: "WPA/WPA2-Personal",
-  band: "5 GHz",
-  frequency: 5180,
-  signal: "-54 dBm",
 });
-assert(thirdResult.authorized === true, "LAPTOP-96EEBK69 4670 authorized = true");
-assert(thirdResult.stage === "VERIFIED", `LAPTOP-96EEBK69 4670 stage = VERIFIED (got: ${thirdResult.stage})`);
-assert(thirdResult.band === "5 GHz", `Band recorded dynamically: ${thirdResult.band}`);
-console.log(`     Summary: ${thirdResult.networkSummary}`);
+assert(nonAuthResult.authorized === false, "LAPTOP-96EEBK69 4670 is now rejected (authorized = false)");
+assert(nonAuthResult.stage === "SSID_CHECK_FAILED", `Stage = SSID_CHECK_FAILED (got: ${nonAuthResult.stage})`);
+assert(nonAuthResult.networkSummary === "Unauthorized Wi-Fi network", `Network summary = 'Unauthorized Wi-Fi network'`);
 
 // -------------------------------------------------------------
 // Test 5: Security - Spoofed SSID Rogue Hotspot Detection
@@ -148,10 +142,10 @@ assert(withheldIdentity.stage === "UNABLE_TO_VERIFY", `Correct stage UNABLE_TO_V
 // -------------------------------------------------------------
 console.log("\n8. Testing Security: Active VPN / Tunnel Detection:");
 const vpnAttempt = verifyCampusWifi({
-  ssid: "LAPTOP-96EEBK69 4670",
+  ssid: "M",
   state: "connected",
-  ip: "192.168.137.125",
-  gateway: "192.168.137.1",
+  ip: "10.220.86.78",
+  gateway: "10.220.86.1",
   capabilities: { notVpn: false, hasWifi: true },
 });
 assert(vpnAttempt.authorized === false, "Active VPN connection rejected");
@@ -164,9 +158,8 @@ console.log("\n9. Testing Full 5-Stage Verification Enforcement:");
 console.log("   WI-FI AUTH -> GPS VERIFY -> GEOFENCE POLYGON -> FACE + LIVENESS -> ATTENDANCE");
 
 const flowCases = [
-  { name: "All Factors Passed (SONA-WIFI)", wifi: true, gps: true, geofence: true, face: true, allowed: true },
   { name: "All Factors Passed (M)", wifi: true, gps: true, geofence: true, face: true, allowed: true },
-  { name: "All Factors Passed (LAPTOP-96EEBK69 4670)", wifi: true, gps: true, geofence: true, face: true, allowed: true },
+  { name: "All Factors Passed (SONA-WIFI)", wifi: true, gps: true, geofence: true, face: true, allowed: true },
   { name: "Wi-Fi Failed -> Attendance BLOCKED", wifi: false, gps: true, geofence: true, face: true, allowed: false },
   { name: "Wi-Fi OK, GPS Outside Polygon -> BLOCKED", wifi: true, gps: true, geofence: false, face: true, allowed: false },
   { name: "Wi-Fi OK, GPS OK, Face Unmatched -> BLOCKED", wifi: true, gps: true, geofence: true, face: false, allowed: false },

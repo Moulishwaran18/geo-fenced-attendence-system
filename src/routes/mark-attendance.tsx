@@ -324,7 +324,13 @@ function MarkAttendancePage() {
           </div>
           <div className="truncate">
             <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">Network:</span>{" "}
-            <span>{wifiCardStatus === "FAILED" ? "Unauthorized Wi-Fi network" : wifiNetworkDisplay}</span>
+            <span>
+              {wifiCardStatus === "VERIFIED"
+                ? "Authorized campus Wi-Fi"
+                : wifiCardStatus === "FAILED"
+                  ? "Unauthorized Wi-Fi network"
+                  : wifiNetworkDisplay}
+            </span>
           </div>
         </div>
       ),
@@ -955,7 +961,7 @@ function MarkAttendancePage() {
                         if (!wifiAuthorized) {
                           toast.error("Wi-Fi Verification Required", {
                             description:
-                              "Unauthorized Wi-Fi network. Connect to an authorized campus Wi-Fi network (SONA-WIFI, M, or LAPTOP-96EEBK69 4670) before scanning face.",
+                              "Unauthorized Wi-Fi network. Connect to an authorized campus Wi-Fi network (M or SONA-WIFI) before scanning face.",
                           });
                           return;
                         }
