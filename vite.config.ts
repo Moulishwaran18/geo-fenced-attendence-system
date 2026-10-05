@@ -8,6 +8,7 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 import type { Plugin } from "vite";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import { getWifiStatus } from "./src/lib/wifi-detection.ts";
+import { verifyCampusWifi } from "./src/lib/wifi-config.ts";
 import { handleFaceVerifyApi } from "./src/server/api/face-search-handler.ts";
 import { handleFaceDetectionLogApi } from "./src/server/api/audit-log-handler.ts";
 
@@ -16,6 +17,77 @@ function apiMiddlewarePlugin(): Plugin {
     name: "api-middleware",
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
+        if (
+          req.url &&
+          (req.url.startsWith("/api/wifi/verify") ||
+            (req.url.startsWith("/api/wifi-status") && req.method === "POST"))
+        ) {
+          const handleVerify = (bodyStr: string) => {
+            let body: any = {};
+            try {
+              body = bodyStr ? JSON.parse(bodyStr) : {};
+            } catch {
+              body = {};
+            }
+            const clientIp =
+              (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+              (req.headers["x-real-ip"] as string) ||
+              (req.headers["cf-connecting-ip"] as string) ||
+              body.ip ||
+              "";
+
+            const verification = verifyCampusWifi({
+              ...body,
+              clientIp,
+            });
+
+            const responsePayload = {
+              isSonaWifi: verification.authorized,
+              authorized: verification.authorized,
+              ssid: verification.ssid,
+              bssid: verification.bssid,
+              ip: verification.ip,
+              gateway: verification.gateway,
+              dns: verification.dns,
+              state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
+              reason: verification.reason,
+              stage: verification.stage,
+              bssidStatusMessage: verification.bssidStatusMessage,
+              networkSummary: verification.networkSummary,
+              timestamp: verification.timestamp,
+            };
+
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+            res.end(JSON.stringify(responsePayload));
+          };
+
+          if ((req as any).body) {
+            const bodyStr =
+              typeof (req as any).body === "string"
+                ? (req as any).body
+                : JSON.stringify((req as any).body);
+            handleVerify(bodyStr);
+            return;
+          }
+
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          });
+          req.on("end", () => {
+            const bodyStr = Buffer.concat(chunks).toString("utf-8");
+            handleVerify(bodyStr);
+          });
+          req.on("error", (err) => {
+            console.error("[apiMiddlewarePlugin] Stream error in wifi verify:", err);
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Stream error" }));
+          });
+          return;
+        }
+
         if (req.url && req.url.startsWith("/api/wifi-status")) {
           const status = getWifiStatus();
           res.setHeader("Content-Type", "application/json");

@@ -3,6 +3,7 @@ import "./lib/error-capture";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { getWifiStatus } from "./lib/wifi-detection";
+import { verifyCampusWifi } from "./lib/wifi-config";
 import { handleStaffApi } from "./server/api/staff-handler";
 import { handleFaceVerifyApi } from "./server/api/face-search-handler";
 import { handleFaceDetectionLogApi } from "./server/api/audit-log-handler";
@@ -64,6 +65,51 @@ export default {
 
       if (url.pathname === "/api/face/verify") {
         return await handleFaceVerifyApi(request);
+      }
+
+      if (url.pathname === "/api/wifi/verify" || (url.pathname === "/api/wifi-status" && request.method === "POST")) {
+        let body: any = {};
+        try {
+          body = await request.json();
+        } catch {
+          body = {};
+        }
+
+        const clientIp =
+          request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+          request.headers.get("x-real-ip") ||
+          request.headers.get("cf-connecting-ip") ||
+          body.ip ||
+          "";
+
+        const verification = verifyCampusWifi({
+          ...body,
+          clientIp,
+        });
+
+        const responsePayload = {
+          isSonaWifi: verification.authorized,
+          authorized: verification.authorized,
+          ssid: verification.ssid,
+          bssid: verification.bssid,
+          ip: verification.ip,
+          gateway: verification.gateway,
+          dns: verification.dns,
+          state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
+          reason: verification.reason,
+          stage: verification.stage,
+          bssidStatusMessage: verification.bssidStatusMessage,
+          networkSummary: verification.networkSummary,
+          timestamp: verification.timestamp,
+        };
+
+        return new Response(JSON.stringify(responsePayload), {
+          status: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store, no-cache, must-revalidate",
+          },
+        });
       }
 
       if (url.pathname === "/api/wifi-status") {

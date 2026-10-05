@@ -40,7 +40,7 @@ export function VerificationCard({
 }: {
   title: string;
   value: string;
-  detail: string;
+  detail: React.ReactNode;
   state: VerificationState;
   icon: LucideIcon;
 }) {
@@ -65,7 +65,7 @@ export function VerificationCard({
       </div>
       <p className="mt-3 text-xs font-medium tracking-wide text-muted-foreground uppercase">{title}</p>
       <p className="mt-0.5 text-sm font-semibold text-card-foreground">{value}</p>
-      <p className="text-xs text-muted-foreground">{detail}</p>
+      <div className="text-xs text-muted-foreground mt-1">{detail}</div>
     </div>
   );
 }

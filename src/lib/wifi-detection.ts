@@ -1,5 +1,6 @@
 import os from "node:os";
 import { execSync } from "node:child_process";
+import { verifyCampusWifi, type WifiVerificationResult } from "./wifi-config";
 
 export interface WifiStatus {
   isSonaWifi: boolean;
@@ -14,19 +15,21 @@ export interface WifiStatus {
   state: "connected" | "disconnected" | "unknown";
   reason: string;
   timestamp: string;
+  bssidStatusMessage?: string;
+  networkSummary?: string;
+  stage?: WifiVerificationResult["stage"];
 }
 
 /**
- * List of recognized authorized Wi-Fi networks:
+ * Authoritative Wi-Fi SSIDs from verified campus configuration:
  * - SONA-WIFI (Institutional Campus Network)
- * - M (Currently connected active Wi-Fi network)
+ * - M (Campus Wi-Fi Network)
  */
-const AUTHORIZED_SSIDS = ["SONA-WIFI", "M"];
+export const AUTHORIZED_SSIDS = ["SONA-WIFI", "M"];
 
 /**
- * Verifies whether the device is connected to an authorized network:
- * - SONA-WIFI (genuine institutional campus network)
- * - Currently connected active Wi-Fi network ("M" or active connection)
+ * Performs local OS Wi-Fi network detection and validates against
+ * authoritative campus profiles using multi-factor network evidence.
  */
 export function getWifiStatus(): WifiStatus {
   let ssid = "";
@@ -126,53 +129,32 @@ export function getWifiStatus(): WifiStatus {
     }
   }
 
-  // 2. Multi-Network Verification:
-  // Authorizes genuine SONA-WIFI as well as the active connected Wi-Fi (e.g. "M")
-  const normalizedSsid = (ssid || "").trim().toUpperCase();
-  const isSonaSsid = normalizedSsid === "SONA-WIFI";
-  const isSonaIpRange = ip.startsWith("172.16.");
-  const isSonaGateway = gateway.includes("172.16.16.16");
-  const isSonaDns = dns.includes("172.16.16.16") || dns.startsWith("172.16.");
-  const isSonaSuffix = dnsSuffix.toUpperCase().includes("DCLAB.COM");
-
-  const isGenuineSonaCampus =
-    isSonaSsid || isSonaIpRange || isSonaGateway || isSonaDns || isSonaSuffix;
-
-  const isExplicitlyAuthorizedSsid = AUTHORIZED_SSIDS.map((s) => s.toUpperCase()).includes(
-    normalizedSsid,
-  );
-
-  const isConnectedWithIp = (state === "connected" || (state as string) === "unknown") && Boolean(ip);
-
-  let isSonaWifi = false;
-  let reason = "";
-
-  if (state === "disconnected" && !ip) {
-    isSonaWifi = false;
-    reason = "Wi-Fi is disconnected. Please connect to SONA-WIFI or authorized Wi-Fi.";
-  } else if (isGenuineSonaCampus) {
-    isSonaWifi = true;
-    reason = `Verified Genuine SONA-WIFI Campus Network (Gateway: ${gateway || "172.16.16.16"} · IP: ${ip || "Campus Subnet"})`;
-  } else if (isExplicitlyAuthorizedSsid || isConnectedWithIp) {
-    isSonaWifi = true;
-    reason = `Verified Authorized Network "${ssid || "Active Wi-Fi"}" (IP: ${ip || "Assigned"} · Gateway: ${gateway || "Local"})`;
-  } else {
-    isSonaWifi = false;
-    reason = `Unauthorized network SSID "${ssid || "Unknown"}". Please connect to SONA-WIFI or authorized network.`;
-  }
-
-  return {
-    isSonaWifi,
-    ssid: ssid || (isGenuineSonaCampus ? "SONA-WIFI" : "M"),
+  // 2. Multi-Factor Wi-Fi Authentication against Authoritative Profiles
+  const verification = verifyCampusWifi({
+    ssid,
     bssid,
-    signal,
+    state,
     ip,
     gateway,
     dns,
     dnsSuffix,
+  });
+
+  return {
+    isSonaWifi: verification.authorized,
+    ssid: verification.ssid || ssid || "None",
+    bssid: verification.bssid || bssid || "None",
+    signal,
+    ip: verification.ip || ip,
+    gateway: verification.gateway || gateway,
+    dns: verification.dns || dns,
+    dnsSuffix,
     auth,
-    state: isConnectedWithIp ? "connected" : state,
-    reason,
-    timestamp: new Date().toISOString(),
+    state: state === "connected" ? "connected" : state === "disconnected" ? "disconnected" : "unknown",
+    reason: verification.reason,
+    timestamp: verification.timestamp,
+    bssidStatusMessage: verification.bssidStatusMessage,
+    networkSummary: verification.networkSummary,
+    stage: verification.stage,
   };
 }

@@ -61,6 +61,11 @@ class AndroidLocationBridge(
     }
 
     @JavascriptInterface
+    fun getWifiDetails(): String {
+        return com.campusattend.biometric.wifi.AndroidWifiBridge(context, webView).getWifiDetails()
+    }
+
+    @JavascriptInterface
     fun startLocationUpdates(maxSamples: Int) {
         val targetSamples = if (maxSamples <= 0) NativeLocationService.MAX_SAMPLES else maxSamples
         locationService.startLocationStream(targetSamples) { state ->

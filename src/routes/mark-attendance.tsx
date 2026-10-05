@@ -79,10 +79,10 @@ const icons = {
 } as const;
 
 const titles = {
-  wifi: "1. Wi-Fi Authorization",
-  location: "2. GPS Polygon Geofence",
-  identity: "3. ArcFace Biometrics",
-  decision: "Attendance Decision",
+  wifi: "1. WI-FI AUTHORIZATION",
+  location: "2. GPS POLYGON GEOFENCE",
+  identity: "3. FACE RECOGNITION",
+  decision: "4. ATTENDANCE DECISION",
 } as const;
 
 function MarkAttendancePage() {
@@ -94,9 +94,6 @@ function MarkAttendancePage() {
   const [scanOpen, setScanOpen] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const now = useIndiaTime();
-
-  // High-accuracy live GPS 5-point polygon geofence tracker
-  const geofence = useGeofence(true);
 
   // Live Wi-Fi Status tracker
   const {
@@ -112,15 +109,19 @@ function MarkAttendancePage() {
   const mockSnapshot = getSnapshot(scenario);
 
   // ---------------------------------------------------------------------------
-  // 3 MANDATORY SECURITY FACTORS:
-  // 1. Wi-Fi Authorized
-  // 2. GPS Inside 5-Point Polygon (requires valid fresh fix & acceptable accuracy)
-  // 3. Face Authenticated (PERSON_001 / PERSON_002 matched via PostgreSQL pgvector)
+  // 4 MANDATORY ATTENDANCE VERIFICATION STAGES:
+  // 1. Wi-Fi Authentication (FIRST - gates GPS)
+  // 2. GPS / Location Verification (LOCKED until Wi-Fi verification succeeds)
+  // 3. Face Recognition + Liveness (LOCKED until Wi-Fi + GPS succeed)
+  // 4. Attendance Registration (LOCKED until all required verification succeeds)
   // ---------------------------------------------------------------------------
 
   const wifiAuthorized = isUsingMockScenario
     ? mockSnapshot.signals.find((s) => s.key === "wifi")?.state === "verified"
-    : Boolean(wifiStatus?.isSonaWifi || (wifiStatus?.state === "connected" && wifiStatus?.ssid));
+    : Boolean(wifiStatus?.isSonaWifi);
+
+  // High-accuracy live GPS geofence tracker: strictly NOT started until Wi-Fi succeeds
+  const geofence = useGeofence(wifiAuthorized);
 
   const gpsInsideGeofence = isUsingMockScenario
     ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
@@ -278,29 +279,113 @@ function MarkAttendancePage() {
   }, [isUsingMockScenario, mockSnapshot, geofence]);
 
   // 4 Primary Verification Overview Cards
+  const wifiCardStatus: "CHECKING" | "VERIFIED" | "FAILED" =
+    isWifiChecking || (isWifiLoading && !wifiStatus && !isUsingMockScenario)
+      ? "CHECKING"
+      : wifiAuthorized
+        ? "VERIFIED"
+        : "FAILED";
+
   const signals = useMemo((): Array<{
     key: "wifi" | "location" | "identity" | "decision";
     value: string;
-    detail: string;
+    detail: React.ReactNode;
     state: "verified" | "warning" | "error" | "pending";
   }> => {
-    return [
-      {
-        key: "wifi",
-        value: wifiAuthorized
-          ? "AUTHORIZED"
+    // 1. WI-FI AUTHORIZATION
+    const wifiBssidDisplay =
+      wifiStatus?.bssid && wifiStatus.bssid !== "None"
+        ? wifiStatus.bssid
+        : "AP Configurable (BSSID not in screenshot)";
+
+    const wifiNetworkDisplay =
+      wifiStatus?.gateway
+        ? `GW: ${wifiStatus.gateway}${wifiStatus.ip ? ` · IP: ${wifiStatus.ip}` : ""}`
+        : wifiStatus?.ip
+          ? `IP: ${wifiStatus.ip}`
           : wifiStatus?.state === "disconnected"
-            ? "UNAVAILABLE"
-            : "UNAUTHORIZED",
-        detail: wifiAuthorized
-          ? (wifiStatus?.ssid ? `SSID: ${wifiStatus.ssid}` : "Institutional Gateway Verified")
-          : wifiStatus?.state === "disconnected"
-            ? "Wi-Fi Disconnected / Offline"
-            : "Unauthorized Campus Network",
-        state: wifiAuthorized ? "verified" : wifiStatus?.state === "disconnected" ? "warning" : "error",
-      },
-      liveLocationSignal as any,
-      {
+            ? "Disconnected / Offline"
+            : "Campus telemetry";
+
+    const wifiSignal = {
+      key: "wifi" as const,
+      value: `Status: ${wifiCardStatus}`,
+      detail: (
+        <div className="mt-1 space-y-0.5 font-mono text-[11px] text-muted-foreground">
+          <div>
+            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">SSID:</span>{" "}
+            <span className="font-semibold text-foreground">
+              {wifiStatus?.ssid || (wifiCardStatus === "CHECKING" ? "Checking…" : "None")}
+            </span>
+          </div>
+          <div className="truncate">
+            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">BSSID:</span>{" "}
+            <span>{wifiBssidDisplay}</span>
+          </div>
+          <div className="truncate">
+            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">Network:</span>{" "}
+            <span>{wifiCardStatus === "FAILED" ? "Unauthorized Wi-Fi network" : wifiNetworkDisplay}</span>
+          </div>
+        </div>
+      ),
+      state: (wifiCardStatus === "VERIFIED" ? "verified" : wifiCardStatus === "CHECKING" ? "warning" : "error") as "verified" | "warning" | "error",
+    };
+
+    // 2. GPS POLYGON GEOFENCE
+    let locationSignal: {
+      key: "location";
+      value: string;
+      detail: React.ReactNode;
+      state: "verified" | "warning" | "error" | "pending";
+    };
+
+    if (wifiCardStatus === "FAILED") {
+      locationSignal = {
+        key: "location",
+        value: "NOT STARTED",
+        detail: "Status: LOCKED until Wi-Fi verification succeeds",
+        state: "error",
+      };
+    } else if (wifiCardStatus === "CHECKING") {
+      locationSignal = {
+        key: "location",
+        value: "LOCKED",
+        detail: "Status: LOCKED until Wi-Fi verification succeeds",
+        state: "pending",
+      };
+    } else {
+      locationSignal = {
+        key: "location",
+        value: liveLocationSignal.value,
+        detail: liveLocationSignal.detail,
+        state: liveLocationSignal.state,
+      };
+    }
+
+    // 3. FACE RECOGNITION
+    let identitySignal: {
+      key: "identity";
+      value: string;
+      detail: React.ReactNode;
+      state: "verified" | "warning" | "error" | "pending";
+    };
+
+    if (wifiCardStatus === "FAILED") {
+      identitySignal = {
+        key: "identity",
+        value: "NOT STARTED",
+        detail: "Status: LOCKED until Wi-Fi + GPS succeed",
+        state: "error",
+      };
+    } else if (wifiCardStatus === "CHECKING" || !gpsInsideGeofence) {
+      identitySignal = {
+        key: "identity",
+        value: "LOCKED",
+        detail: "Status: LOCKED until Wi-Fi + GPS succeed",
+        state: "pending",
+      };
+    } else {
+      identitySignal = {
         key: "identity",
         value: faceAuthenticated
           ? `Verified · ${faceResult?.staffName || faceResult?.staffCode || "Staff"}`
@@ -314,25 +399,55 @@ function MarkAttendancePage() {
               ? "Biometric match rejected"
               : "ArcFace Biometrics Required",
         state: faceAuthenticated ? "verified" : faceResult ? "error" : "pending",
-      },
-      {
+      };
+    }
+
+    // 4. ATTENDANCE DECISION
+    let decisionSignal: {
+      key: "decision";
+      value: string;
+      detail: React.ReactNode;
+      state: "verified" | "warning" | "error" | "pending";
+    };
+
+    if (wifiCardStatus === "FAILED") {
+      decisionSignal = {
         key: "decision",
-        value: canMarkAttendance
-          ? "ALLOWED"
-          : status === "success"
-            ? "RECORDED"
-            : "REJECTED",
+        value: "REJECTED",
+        detail: "Factor 1 (Wi-Fi) Failed: Unauthorized Wi-Fi network",
+        state: "error",
+      };
+    } else if (wifiCardStatus === "CHECKING" || !gpsInsideGeofence || !faceAuthenticated) {
+      decisionSignal = {
+        key: "decision",
+        value: canMarkAttendance ? "ALLOWED" : status === "success" ? "RECORDED" : "LOCKED",
         detail: canMarkAttendance
           ? "All 3 Security Factors Passed"
-          : !wifiAuthorized
-            ? "Factor 1 (Wi-Fi) Failed"
-            : !gpsInsideGeofence
-              ? "Factor 2 (GPS) Failed"
-              : "Factor 3 (Face) Pending",
+          : "Status: LOCKED until all required verification succeeds",
+        state: canMarkAttendance || status === "success" ? "verified" : "pending",
+      };
+    } else {
+      decisionSignal = {
+        key: "decision",
+        value: canMarkAttendance ? "ALLOWED" : status === "success" ? "RECORDED" : "REJECTED",
+        detail: canMarkAttendance
+          ? "All 3 Security Factors Passed"
+          : "Verification incomplete",
         state: canMarkAttendance || status === "success" ? "verified" : "error",
-      },
-    ];
-  }, [liveLocationSignal, wifiAuthorized, wifiStatus, faceAuthenticated, faceResult, canMarkAttendance, status]);
+      };
+    }
+
+    return [wifiSignal, locationSignal, identitySignal, decisionSignal];
+  }, [
+    wifiCardStatus,
+    wifiStatus,
+    liveLocationSignal,
+    gpsInsideGeofence,
+    faceAuthenticated,
+    faceResult,
+    canMarkAttendance,
+    status,
+  ]);
 
   const run = async () => {
     if (!wifiAuthorized) {
@@ -832,7 +947,28 @@ function MarkAttendancePage() {
                             : "Camera only — InsightFace ArcFace"}
                       </p>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => setScanOpen(true)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!wifiAuthorized || !gpsInsideGeofence}
+                      onClick={() => {
+                        if (!wifiAuthorized) {
+                          toast.error("Wi-Fi Verification Required", {
+                            description:
+                              "Unauthorized Wi-Fi network. Connect to an authorized campus Wi-Fi network (SONA-WIFI or M) before scanning face.",
+                          });
+                          return;
+                        }
+                        if (!gpsInsideGeofence) {
+                          toast.error("GPS Verification Required", {
+                            description:
+                              "Campus GPS geofence verification must succeed before scanning face.",
+                          });
+                          return;
+                        }
+                        setScanOpen(true);
+                      }}
+                    >
                       {face ? "Rescan" : "Scan"}
                     </Button>
                   </div>

@@ -241,6 +241,18 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
     console.warn("[Supabase] attendance_records network exception:", err);
   }
 
+  if (typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(
+        new CustomEvent("campusattend:attendance-marked", {
+          detail: { attendanceId, time: timeStr, date: dateStr },
+        }),
+      );
+    } catch {
+      // ignore
+    }
+  }
+
   return {
     attendanceId,
     time: timeStr,

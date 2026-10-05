@@ -51,12 +51,12 @@ export function WifiStatusCard({
         ? "Disconnected"
         : "Unknown";
 
-  // 2. AUTHORIZATION: AUTHORIZED / UNAUTHORIZED / UNAVAILABLE
-  const authorizationStatus: "AUTHORIZED" | "UNAUTHORIZED" | "UNAVAILABLE" = wifiAuthorized
-    ? "AUTHORIZED"
-    : status?.state === "disconnected" || (!wifiAuthorized && !status?.ip)
-      ? "UNAVAILABLE"
-      : "UNAUTHORIZED";
+  // 2. AUTHORIZATION: CHECKING / VERIFIED / FAILED
+  const authorizationStatus: "CHECKING" | "VERIFIED" | "FAILED" = isChecking || (isLoading && !status && !isMockScenario)
+    ? "CHECKING"
+    : wifiAuthorized
+      ? "VERIFIED"
+      : "FAILED";
 
   // 3. CHECK STATUS: Checking... / Checked at: timestamp
   const checkStatusDisplay =
@@ -71,15 +71,15 @@ export function WifiStatusCard({
   // 4. NETWORK EVIDENCE: VERIFIED / NOT VERIFIED / UNAVAILABLE
   const networkEvidenceText: "VERIFIED" | "NOT VERIFIED" | "UNAVAILABLE" = wifiAuthorized
     ? "VERIFIED"
-    : status?.state === "disconnected" || authorizationStatus === "UNAVAILABLE"
+    : status?.state === "disconnected"
       ? "UNAVAILABLE"
       : "NOT VERIFIED";
 
   // Visual tones
   const authBadgeStyle =
-    authorizationStatus === "AUTHORIZED"
+    authorizationStatus === "VERIFIED"
       ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 font-bold"
-      : authorizationStatus === "UNAVAILABLE"
+      : authorizationStatus === "CHECKING"
         ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 font-bold"
         : "border-destructive/40 text-destructive bg-destructive/10 font-bold";
 
@@ -132,9 +132,9 @@ export function WifiStatusCard({
           <Badge variant="outline" className={`text-[11px] px-2.5 py-0.5 tracking-wide ${authBadgeStyle}`}>
             <span
               className={`size-1.5 rounded-full mr-1.5 ${
-                authorizationStatus === "AUTHORIZED"
+                authorizationStatus === "VERIFIED"
                   ? "bg-emerald-500"
-                  : authorizationStatus === "UNAVAILABLE"
+                  : authorizationStatus === "CHECKING"
                     ? "bg-amber-500"
                     : "bg-destructive"
               }`}
@@ -156,18 +156,16 @@ export function WifiStatusCard({
       </div>
 
       {/* Unauthorized Warning Banner if Wi-Fi fails */}
-      {!wifiAuthorized && (
+      {!wifiAuthorized && authorizationStatus !== "CHECKING" && (
         <div className="flex items-start gap-2.5 border-b border-destructive/20 bg-danger-soft px-4 py-2.5 text-xs text-destructive">
           <AlertTriangle className="size-4 shrink-0 mt-0.5" />
           <div className="flex-1 space-y-0.5">
             <p className="font-semibold">
-              {authorizationStatus === "UNAVAILABLE"
-                ? "Institutional Wi-Fi Connection Unavailable"
-                : "Connected Network Is Not Authorized"}
+              Unauthorized Wi-Fi network.
             </p>
             <p className="text-[11px] opacity-90">
               {status?.reason ||
-                "Device must be connected to an authorized campus Wi-Fi network (SONA-WIFI / Institutional Gateway) to authorize attendance. Other diagnostics remain accessible."}
+                "Device must be connected to an authorized campus Wi-Fi network (SONA-WIFI or M) with verified gateway and subnet."}
             </p>
           </div>
         </div>
@@ -175,68 +173,73 @@ export function WifiStatusCard({
 
       {/* Core 4 Required Metrics Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-border text-xs">
-        {/* 1. WIFI STATUS */}
+        {/* 1. WI-FI AUTHORIZATION STATUS */}
         <div className="p-3.5">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            1. Wi-Fi Status
+            1. Wi-Fi Authorization
           </div>
           <div className="mt-1 flex items-center gap-1.5">
-            <Badge variant="outline" className={`text-[11px] font-bold px-2 py-0.5 ${wifiBadgeStyle}`}>
-              {wifiStatusText}
-            </Badge>
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground">
-            {wifiStatusText === "Connected"
-              ? "Physical/OS link active"
-              : wifiStatusText === "Disconnected"
-                ? "No network link"
-                : "Awaiting link status"}
-          </div>
-        </div>
-
-        {/* 2. AUTHORIZATION */}
-        <div className="p-3.5">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            2. Authorization
-          </div>
-          <div className="mt-1">
-            <Badge variant="outline" className={`text-[11px] px-2 py-0.5 ${authBadgeStyle}`}>
+            <Badge variant="outline" className={`text-[11px] font-bold px-2 py-0.5 ${authBadgeStyle}`}>
               {authorizationStatus}
             </Badge>
           </div>
-          <div className="mt-1 text-[10px] text-muted-foreground">
-            {authorizationStatus === "AUTHORIZED"
+          <div className="mt-1 text-[10px] text-muted-foreground truncate">
+            {authorizationStatus === "VERIFIED"
               ? "Factor 1 Satisfied"
-              : "Factor 1 Rejected"}
+              : authorizationStatus === "CHECKING"
+                ? "Verifying campus network…"
+                : "Factor 1 Rejected"}
           </div>
         </div>
 
-        {/* 3. CHECK STATUS */}
-        <div className="p-3.5 border-t sm:border-t-0">
+        {/* 2. SSID */}
+        <div className="p-3.5">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            3. Check Status
+            SSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground flex items-center gap-1.5 truncate">
-            <Activity className={`size-3.5 text-primary shrink-0 ${isChecking ? "animate-spin" : ""}`} />
-            <span className="truncate">{checkStatusDisplay}</span>
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground">
-            {isChecking ? "Active evaluation" : "Polled automatically"}
-          </div>
-        </div>
-
-        {/* 4. NETWORK EVIDENCE */}
-        <div className="p-3.5 border-t sm:border-t-0">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            4. Network Evidence
-          </div>
-          <div className="mt-1">
-            <Badge variant="outline" className={`text-[11px] px-2 py-0.5 ${evidenceBadgeStyle}`}>
-              {networkEvidenceText}
-            </Badge>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+            {status?.ssid || (isChecking ? "Checking…" : "None")}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.gateway ? `Gateway: ${status.gateway}` : "Campus telemetry"}
+            {status?.ssid === "SONA-WIFI" || status?.ssid === "M"
+              ? "Authorized Campus SSID"
+              : authorizationStatus === "CHECKING"
+                ? "Detecting network…"
+                : "Unauthorized SSID"}
+          </div>
+        </div>
+
+        {/* 3. BSSID */}
+        <div className="p-3.5 border-t sm:border-t-0">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            BSSID
+          </div>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+            {status?.bssid && status.bssid !== "None"
+              ? status.bssid
+              : "AP Configurable"}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground truncate">
+            {status?.bssid && status.bssid !== "None"
+              ? "Connected AP MAC"
+              : "BSSID not in screenshot"}
+          </div>
+        </div>
+
+        {/* 4. NETWORK */}
+        <div className="p-3.5 border-t sm:border-t-0">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            Network / Gateway
+          </div>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+            {status?.gateway || (status?.ip ? `IP: ${status.ip}` : "Campus telemetry")}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground truncate">
+            {authorizationStatus === "VERIFIED"
+              ? "Verified Subnet/Gateway"
+              : authorizationStatus === "CHECKING"
+                ? "Inspecting network…"
+                : "Network check failed"}
           </div>
         </div>
       </div>

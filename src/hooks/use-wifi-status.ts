@@ -21,10 +21,50 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       setIsChecking(true);
     }
     try {
-      const res = await fetch("/api/wifi-status", {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
+      // 1. Check if running inside Android WebView with Native Wi-Fi Bridge
+      let nativeDetails: any = null;
+      if (typeof window !== "undefined") {
+        const wifiBridge = (window as any).AndroidWifiBridge;
+        const locBridge = (window as any).AndroidLocationBridge;
+
+        if (wifiBridge && typeof wifiBridge.getWifiDetails === "function") {
+          try {
+            const raw = wifiBridge.getWifiDetails();
+            nativeDetails = typeof raw === "string" ? JSON.parse(raw) : raw;
+          } catch (e) {
+            console.warn("Failed to parse AndroidWifiBridge details:", e);
+          }
+        } else if (locBridge && typeof locBridge.getWifiDetails === "function") {
+          try {
+            const raw = locBridge.getWifiDetails();
+            nativeDetails = typeof raw === "string" ? JSON.parse(raw) : raw;
+          } catch (e) {
+            console.warn("Failed to parse AndroidLocationBridge wifi details:", e);
+          }
+        }
+      }
+
+      // 2. Perform Backend Challenge / Verification
+      let res: Response;
+      if (nativeDetails) {
+        // Send Android native Wi-Fi telemetry to backend challenge endpoint
+        res = await fetch("/api/wifi/verify", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify(nativeDetails),
+          cache: "no-store",
+        });
+      } else {
+        // Standard endpoint (inspects server-side / OS Wi-Fi adapter or client IP)
+        res = await fetch("/api/wifi-status", {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+      }
+
       if (res.ok) {
         const data: WifiStatus = await res.json();
         setStatus(data);
