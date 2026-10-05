@@ -1,43 +1,36 @@
 import os from "node:os";
 import { execSync } from "node:child_process";
-import { verifyCampusWifi, type WifiVerificationResult } from "./wifi-config.ts";
+import {
+  verifyCampusWifi,
+  AUTHORIZED_SSIDS,
+  type WifiStatus,
+  type WifiVerificationResult,
+} from "./wifi-config.ts";
 
-export interface WifiStatus {
-  isSonaWifi: boolean;
-  ssid: string;
-  bssid: string;
-  signal: string;
-  ip: string;
-  gateway: string;
-  dns: string;
-  dnsSuffix: string;
-  auth: string;
-  state: "connected" | "disconnected" | "unknown";
-  reason: string;
-  timestamp: string;
-  bssidStatusMessage?: string;
-  networkSummary?: string;
-  stage?: WifiVerificationResult["stage"];
-  band?: string;
-  frequency?: number;
-  linkSpeed?: number;
-  rssi?: number;
-  authorized?: boolean;
-}
-
-/**
- * Authoritative Wi-Fi SSIDs from verified campus configuration:
- * - SONA-WIFI (Institutional Campus Network)
- * - M (Campus Wi-Fi Network)
- * - LAPTOP-96EEBK69 4670 (Authoritative 3rd Wi-Fi Network from screenshot)
- */
-export const AUTHORIZED_SSIDS = ["SONA-WIFI", "M", "LAPTOP-96EEBK69 4670", "NEW AUTHORIZED WI-FI"];
+export { AUTHORIZED_SSIDS, type WifiStatus };
 
 /**
  * Performs local OS Wi-Fi network detection and validates against
  * authoritative campus profiles using multi-factor network evidence.
  */
 export function getWifiStatus(): WifiStatus {
+  if (typeof window !== "undefined") {
+    return {
+      isSonaWifi: false,
+      authorized: false,
+      ssid: "None",
+      bssid: "None",
+      signal: "",
+      ip: "",
+      gateway: "",
+      dns: "",
+      dnsSuffix: "",
+      auth: "",
+      state: "disconnected",
+      reason: "Client environment - network telemetry queried via bridge/API",
+      timestamp: new Date().toISOString(),
+    };
+  }
   let ssid = "";
   let bssid = "";
   let signal = "";

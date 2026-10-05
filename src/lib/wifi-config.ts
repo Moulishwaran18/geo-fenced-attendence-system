@@ -139,6 +139,37 @@ export interface WifiVerificationResult {
   auth?: string;
 }
 
+export interface WifiStatus {
+  isSonaWifi: boolean;
+  ssid: string;
+  bssid: string;
+  signal: string;
+  ip: string;
+  gateway: string;
+  dns: string;
+  dnsSuffix: string;
+  auth: string;
+  state: "connected" | "disconnected" | "unknown";
+  reason: string;
+  timestamp: string;
+  bssidStatusMessage?: string;
+  networkSummary?: string;
+  stage?: WifiVerificationResult["stage"];
+  band?: string;
+  frequency?: number;
+  linkSpeed?: number;
+  rssi?: number;
+  authorized?: boolean;
+}
+
+/**
+ * Authoritative Wi-Fi SSIDs from verified campus configuration:
+ * - SONA-WIFI (Institutional Campus Network)
+ * - M (Campus Wi-Fi Network)
+ * - LAPTOP-96EEBK69 4670 (Authoritative 3rd Wi-Fi Network)
+ */
+export const AUTHORIZED_SSIDS = ["SONA-WIFI", "M", "LAPTOP-96EEBK69 4670", "NEW AUTHORIZED WI-FI"];
+
 /**
  * Validates a client Wi-Fi connection against authoritative campus profiles.
  *

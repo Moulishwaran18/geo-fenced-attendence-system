@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { WifiStatus } from "@/lib/wifi-detection";
+import type { WifiStatus } from "@/lib/wifi-config";
 
 export interface UseWifiStatusReturn {
   status: WifiStatus | null;

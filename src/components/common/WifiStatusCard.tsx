@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { AUTHORIZED_SSIDS, type WifiStatus } from "@/lib/wifi-detection";
+import { AUTHORIZED_SSIDS, type WifiStatus } from "@/lib/wifi-config";
 import { formatIndiaTime } from "@/lib/india-time";
 
 interface WifiStatusCardProps {
