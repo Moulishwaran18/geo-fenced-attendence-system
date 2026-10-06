@@ -90,11 +90,11 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         auth: "",
         state: isOnline ? "unknown" : "disconnected",
         reason: isOnline
-          ? "Wi-Fi SSID is unavailable or unverified. Connect to an authorized campus network (M or SONA-WIFI)."
+          ? "Unauthorized campus network. Verification server unreachable or connection unverified."
           : "Network offline or disconnected. Please connect to M or SONA-WIFI.",
         timestamp: new Date().toISOString(),
-        bssidStatusMessage: "SSID unavailable",
-        networkSummary: isOnline ? "Wi-Fi verification required" : "Offline",
+        bssidStatusMessage: "Public IP unverified",
+        networkSummary: isOnline ? "Unauthorized campus network" : "Offline",
         stage: isOnline ? "UNABLE_TO_VERIFY" : "DISCONNECTED",
       };
       setStatus(errorStatus);

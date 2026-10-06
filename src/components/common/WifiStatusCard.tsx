@@ -174,117 +174,155 @@ export function WifiStatusCard({
       )}
 
       {/* Dynamic Device Telemetry Metrics Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-x divide-y sm:divide-y-0 divide-border text-xs">
-        {/* 1. WI-FI AUTHORIZATION STATUS */}
-        <div className="p-3">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Wi-Fi Authorization
-          </div>
-          <div className="mt-1 flex items-center gap-1.5">
-            <Badge variant="outline" className={`text-[11px] font-bold px-2 py-0.5 ${authBadgeStyle}`}>
-              {authorizationStatus}
-            </Badge>
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {authorizationStatus === "AUTHORIZED"
-              ? "Factor 1 Satisfied"
-              : authorizationStatus === "CHECKING"
-                ? "Verifying network…"
-                : "Factor 1 Rejected"}
-          </div>
-        </div>
+      {(() => {
+        const isMVerified =
+          wifiAuthorized &&
+          (status?.ssid === "M" ||
+            status?.authMethod?.includes("public network") ||
+            status?.authMethod?.includes("IP"));
 
-        {/* 2. SSID */}
-        <div className="p-3">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            SSID
-          </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.ssid || "Unavailable"}>
-            {status?.ssid || (isChecking ? "Checking…" : "Unavailable")}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {wifiAuthorized
-              ? "Authorized campus Wi-Fi"
-              : authorizationStatus === "CHECKING"
-                ? "Detecting network…"
-                : status?.networkSummary || "Unauthorized Wi-Fi network"}
-          </div>
-        </div>
+        const networkLabel = isMVerified ? "Network" : "SSID / Network";
+        const networkValue = isMVerified
+          ? "M"
+          : wifiAuthorized
+            ? (status?.ssid || "SONA-WIFI")
+            : isChecking
+              ? "Checking…"
+              : status?.ssid && status.ssid !== "Unavailable" && status.ssid !== "Unknown"
+                ? status.ssid
+                : "Unauthorized campus network";
 
-        {/* 3. BSSID */}
-        <div className="p-3 border-t sm:border-t-0">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            BSSID
-          </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.bssid || "Not available in browser"}>
-            {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown"
-              ? status.bssid
-              : "Not available in browser"}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown" && status.bssid !== "Not available in browser" && status.bssid !== "Not available"
-              ? "Connected AP MAC"
-              : "Not available in browser"}
-          </div>
-        </div>
+        const networkSubtitle = wifiAuthorized
+          ? status?.networkSummary || "Authorized campus Wi-Fi"
+          : isChecking
+            ? "Detecting network…"
+            : status?.networkSummary || "Unauthorized Wi-Fi network";
 
-        {/* 4. SIGNAL */}
-        <div className="p-3 border-t sm:border-t-0">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Signal
-          </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
-            {status?.signal || (status?.rssi ? `${status.rssi} dBm` : (status?.state === "connected" ? "-54 dBm" : "—"))}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.rssi
-              ? status.rssi >= -65
-                ? "Excellent"
-                : status.rssi >= -75
-                  ? "Good"
-                  : "Fair"
-              : status?.state === "connected"
-                ? "Physical Signal"
-                : "Offline"}
-          </div>
-        </div>
+        const bssidLabel = isMVerified ? "Method" : "BSSID";
+        const bssidValue = isMVerified
+          ? status?.authMethod || "Campus public network verified"
+          : status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown"
+            ? status.bssid
+            : "Not available in browser";
 
-        {/* 5. BAND / FREQUENCY */}
-        <div className="p-3 border-t lg:border-t-0">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Band
-          </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
-            {status?.band || (status?.frequency ? `${status.frequency} MHz` : (status?.state === "connected" ? "5 GHz" : "—"))}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.linkSpeed ? `${status.linkSpeed} Mbps Link` : (status?.band || "Radio Band")}
-          </div>
-        </div>
+        const bssidSubtitle = isMVerified
+          ? status?.publicIp
+            ? `Public IP: ${status.publicIp}`
+            : "Campus network IP verified"
+          : status?.bssid &&
+              status.bssid !== "None" &&
+              status.bssid !== "Unknown" &&
+              status.bssid !== "Not available in browser" &&
+              status.bssid !== "Not available"
+            ? "Connected AP MAC"
+            : "Not available in browser";
 
-        {/* 6. SECURITY */}
-        <div className="p-3 border-t lg:border-t-0">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Security
+        return (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-x divide-y sm:divide-y-0 divide-border text-xs">
+            {/* 1. WI-FI AUTHORIZATION STATUS */}
+            <div className="p-3">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                Wi-Fi Authorization
+              </div>
+              <div className="mt-1 flex items-center gap-1.5">
+                <Badge variant="outline" className={`text-[11px] font-bold px-2 py-0.5 ${authBadgeStyle}`}>
+                  {authorizationStatus}
+                </Badge>
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                {authorizationStatus === "AUTHORIZED"
+                  ? "Factor 1 Satisfied"
+                  : authorizationStatus === "CHECKING"
+                    ? "Verifying network…"
+                    : "Factor 1 Rejected"}
+              </div>
+            </div>
+
+            {/* 2. SSID / NETWORK */}
+            <div className="p-3">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                {networkLabel}
+              </div>
+              <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={networkValue}>
+                {networkValue}
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                {networkSubtitle}
+              </div>
+            </div>
+
+            {/* 3. BSSID / METHOD */}
+            <div className="p-3 border-t sm:border-t-0">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                {bssidLabel}
+              </div>
+              <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={bssidValue}>
+                {bssidValue}
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                {bssidSubtitle}
+              </div>
+            </div>
+
+            {/* 4. SIGNAL */}
+            <div className="p-3 border-t sm:border-t-0">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                Signal
+              </div>
+              <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+                {status?.signal || (status?.rssi ? `${status.rssi} dBm` : status?.state === "connected" ? "-54 dBm" : "—")}
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                {status?.rssi
+                  ? status.rssi >= -65
+                    ? "Excellent"
+                    : status.rssi >= -75
+                      ? "Good"
+                      : "Fair"
+                  : status?.state === "connected"
+                    ? "Physical Signal"
+                    : "Offline"}
+              </div>
+            </div>
+
+            {/* 5. BAND / FREQUENCY */}
+            <div className="p-3 border-t lg:border-t-0">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                Band
+              </div>
+              <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+                {status?.band || (status?.frequency ? `${status.frequency} MHz` : status?.state === "connected" ? "5 GHz" : "—")}
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                {status?.linkSpeed ? `${status.linkSpeed} Mbps Link` : status?.band || "Radio Band"}
+              </div>
+            </div>
+
+            {/* 6. SECURITY */}
+            <div className="p-3 border-t lg:border-t-0">
+              <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                Security
+              </div>
+              <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
+                {status?.auth || (status?.state === "connected" ? "WPA/WPA2-Personal" : "—")}
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                {authorizationStatus === "AUTHORIZED"
+                  ? "Verified Security"
+                  : authorizationStatus === "CHECKING"
+                    ? "Inspecting mode…"
+                    : "Security check failed"}
+              </div>
+            </div>
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
-            {status?.auth || (status?.state === "connected" ? "WPA/WPA2-Personal" : "—")}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {authorizationStatus === "AUTHORIZED"
-              ? "Verified Security"
-              : authorizationStatus === "CHECKING"
-                ? "Inspecting mode…"
-                : "Security check failed"}
-          </div>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Browser Limitation Note */}
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Browser Limitation Notice:</strong> Standard web browsers (including Android Chrome) do not expose client Wi-Fi SSID directly. Network authorization is verified via institutional gateway, IP subnet range, and campus network telemetry.
+          <strong className="text-foreground">Browser Limitation Notice:</strong> Standard web browsers (including Android Chrome) do not expose client Wi-Fi SSID directly. Network authorization is verified via institutional gateway, IP subnet range, or campus public IP telemetry.
         </p>
       </div>
 
@@ -313,6 +351,12 @@ export function WifiStatusCard({
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Client Public Source IP:
+                </span>
+                <span className="font-semibold text-foreground">{status?.publicIp || "—"}</span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
                   Detected Default Gateway:
                 </span>
                 <span className="font-semibold text-foreground">{status?.gateway || "—"}</span>
@@ -323,14 +367,6 @@ export function WifiStatusCard({
                 </span>
                 <span className="font-semibold text-foreground">
                   {status?.band || "5 GHz"} {status?.linkSpeed ? `(${status.linkSpeed} Mbps)` : ""}
-                </span>
-              </div>
-              <div className="rounded border border-border bg-card p-2 text-[11px]">
-                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Signal Strength (RSSI):
-                </span>
-                <span className="font-semibold text-foreground">
-                  {status?.signal || (status?.rssi ? `${status.rssi} dBm` : "Detected")}
                 </span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
@@ -354,6 +390,23 @@ export function WifiStatusCard({
                 Verification Diagnostic Summary:
               </span>
               <span className="text-foreground">{status?.reason || "Awaiting evaluation"}</span>
+            </div>
+
+            <div className="rounded border border-border bg-card p-2 text-[11px] flex items-center justify-between">
+              <div>
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Diagnostic Endpoint:
+                </span>
+                <span className="text-foreground font-mono">/api/network-info</span>
+              </div>
+              <a
+                href="/api/network-info"
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-primary hover:underline font-sans"
+              >
+                Inspect Public IP ↗
+              </a>
             </div>
           </div>
         )}

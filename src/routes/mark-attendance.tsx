@@ -118,7 +118,7 @@ function MarkAttendancePage() {
 
   const wifiAuthorized = isUsingMockScenario
     ? mockSnapshot.signals.find((s) => s.key === "wifi")?.state === "verified"
-    : Boolean(wifiStatus?.isSonaWifi);
+    : Boolean(wifiStatus?.authorized ?? wifiStatus?.isSonaWifi);
 
   // High-accuracy live GPS geofence tracker: strictly NOT started until Wi-Fi succeeds
   const geofence = useGeofence(wifiAuthorized);
@@ -310,28 +310,50 @@ function MarkAttendancePage() {
             ? "Disconnected / Offline"
             : "Campus telemetry";
 
+    const isMVerified =
+      wifiAuthorized &&
+      (wifiStatus?.ssid === "M" ||
+        wifiStatus?.authMethod?.includes("public network") ||
+        wifiStatus?.authMethod?.includes("IP"));
+
     const wifiSignal = {
       key: "wifi" as const,
       value: `Status: ${wifiCardStatus === "VERIFIED" ? "AUTHORIZED" : wifiCardStatus}`,
       detail: (
         <div className="mt-1 space-y-0.5 font-mono text-[11px] text-muted-foreground">
           <div>
-            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">SSID:</span>{" "}
+            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">
+              {isMVerified ? "Network:" : "SSID:"}
+            </span>{" "}
             <span className="font-semibold text-foreground">
-              {wifiStatus?.ssid || (wifiCardStatus === "CHECKING" ? "Checking…" : "Unavailable")}
+              {wifiCardStatus === "VERIFIED"
+                ? isMVerified
+                  ? "M"
+                  : wifiStatus?.ssid || "SONA-WIFI"
+                : wifiCardStatus === "CHECKING"
+                  ? "Checking…"
+                  : wifiStatus?.ssid && wifiStatus.ssid !== "Unavailable" && wifiStatus.ssid !== "Unknown"
+                    ? wifiStatus.ssid
+                    : "Unauthorized campus network"}
             </span>
           </div>
           <div className="truncate">
-            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">BSSID:</span>{" "}
-            <span>{wifiBssidDisplay}</span>
+            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">
+              {isMVerified ? "Method:" : "BSSID:"}
+            </span>{" "}
+            <span>
+              {isMVerified
+                ? wifiStatus?.authMethod || "Campus public network verified"
+                : wifiBssidDisplay}
+            </span>
           </div>
           <div className="truncate">
-            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">Network:</span>{" "}
+            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">Status:</span>{" "}
             <span>
               {wifiCardStatus === "VERIFIED"
-                ? "Authorized campus Wi-Fi"
+                ? wifiStatus?.networkSummary || "Authorized campus Wi-Fi"
                 : wifiCardStatus === "FAILED"
-                  ? "Unauthorized Wi-Fi network"
+                  ? wifiStatus?.networkSummary || "Unauthorized campus network"
                   : wifiNetworkDisplay}
             </span>
           </div>
