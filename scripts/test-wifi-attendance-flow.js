@@ -44,9 +44,9 @@ async function runTests() {
   console.log(`- Status: ${wifiRes.status}`);
   const wifiJson = JSON.parse(wifiRes.data);
   console.log(`- Detected State: ${wifiJson.state}`);
-  console.log(`- Is Sona Wi-Fi: ${wifiJson.isSonaWifi}`);
-  console.log(`- Detected IP: ${wifiJson.ip || "None"}`);
-  console.log(`- Detected Gateway: ${wifiJson.gateway || "None"}`);
+  console.log(`- Detected SSID: ${wifiJson.ssid || "Unavailable"}`);
+  console.log(`- Wi-Fi Authorized: ${wifiJson.authorized}`);
+  console.log(`- Network Summary: ${wifiJson.networkSummary || "Unable to determine Wi-Fi name"}`);
   console.log(`- Reason: ${wifiJson.reason}`);
   console.log("✓ /api/wifi-status returned valid network diagnostics.\n");
 

@@ -34,7 +34,9 @@ export function isNativeWifiBridgeAvailable(): boolean {
   const bridge = (window as any).AndroidWifiBridge;
   return Boolean(
     bridge &&
-      (typeof bridge.getConnectedWifi === "function" ||
+      (typeof bridge.getWifiSsid === "function" ||
+        typeof bridge.getConnectedWifi === "function" ||
+        typeof bridge.isAvailable === "function" ||
         typeof bridge.getWifiDetails === "function")
   );
 }
@@ -136,3 +138,16 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
     reason: "SSID_UNAVAILABLE",
   };
 }
+
+/**
+ * Asynchronous/promise-safe helper to obtain the native SSID.
+ * Follows: window.AndroidWifiBridge.getWifiSsid()
+ */
+export async function getNativeWifiSsid(): Promise<string | null> {
+  if (!isNativeWifiBridgeAvailable()) {
+    return null;
+  }
+  const wifi = getNativeConnectedWifi();
+  return wifi.connected && wifi.transport === "wifi" ? wifi.ssid : null;
+}
+

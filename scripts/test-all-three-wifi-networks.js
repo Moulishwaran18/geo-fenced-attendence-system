@@ -4,8 +4,10 @@ import {
 } from "../src/lib/wifi-config.ts";
 
 console.log("=================================================================");
-console.log("   CAMPUSATTEND SSID & NATIVE BRIDGE WI-FI TEST SUITE             ");
-console.log("   Rule: normalizedSsid === 'm' || normalizedSsid.includes('sona') ");
+console.log("   CAMPUSATTEND PURE SSID NAME-BASED WI-FI TEST SUITE             ");
+console.log("   Rule 1: normalizedSsid === 'm'                                ");
+console.log("   Rule 2: normalizedSsid.includes('sona')                       ");
+console.log("   Source: Android Native Wi-Fi Bridge (AndroidWifiBridge.kt)    ");
 console.log("=================================================================\n");
 
 let passed = 0;
@@ -22,16 +24,22 @@ function assert(condition, message) {
 }
 
 // =================================================================
-// 1. CONDITION 1 — M NETWORK (EXACT MATCH "m" with trimming)
+// 1. RULE 1 — M NETWORK (EXACT MATCH "m", case-insensitive)
 // =================================================================
-console.log("--- 1. CONDITION 1 — M NETWORK TESTS ---");
+console.log("--- 1. RULE 1 — M NETWORK TESTS ---");
 
 const mUpper = verifyCampusWifi({ ssid: "M", state: "connected" });
 assert(mUpper.authorized === true, '"M" → PASS (authorized === true)');
-assert(mUpper.networkSummary === "Authorized campus Wi-Fi", '"M" networkSummary === "Authorized campus Wi-Fi"');
+assert(mUpper.ssid === "M", '"M" ssid === "M"');
+assert(mUpper.networkSummary === "M", '"M" networkSummary === "M"');
 
 const mLower = verifyCampusWifi({ ssid: "m", state: "connected" });
 assert(mLower.authorized === true, '"m" → PASS (authorized === true)');
+assert(mLower.ssid === "m", '"m" ssid === "m"');
+
+const mSpaces = verifyCampusWifi({ ssid: " M ", state: "connected" });
+assert(mSpaces.authorized === true, '" M " → PASS (authorized === true)');
+assert(mSpaces.ssid === "M", '" M " trimmed to "M"');
 
 const mLeadingSpace = verifyCampusWifi({ ssid: " M", state: "connected" });
 assert(mLeadingSpace.authorized === true, '" M" (leading space) → PASS');
@@ -39,8 +47,18 @@ assert(mLeadingSpace.authorized === true, '" M" (leading space) → PASS');
 const mTrailingSpace = verifyCampusWifi({ ssid: "m ", state: "connected" });
 assert(mTrailingSpace.authorized === true, '"m " (trailing space) → PASS');
 
+// Exact match rejections
 const mWifi = verifyCampusWifi({ ssid: "M-WIFI", state: "connected" });
 assert(mWifi.authorized === false, '"M-WIFI" → FAIL (authorized === false)');
+
+const my = verifyCampusWifi({ ssid: "MY", state: "connected" });
+assert(my.authorized === false, '"MY" → FAIL (authorized === false)');
+
+const mm = verifyCampusWifi({ ssid: "MM", state: "connected" });
+assert(mm.authorized === false, '"MM" → FAIL (authorized === false)');
+
+const myM = verifyCampusWifi({ ssid: "MY-M", state: "connected" });
+assert(myM.authorized === false, '"MY-M" → FAIL (authorized === false)');
 
 const myWifi = verifyCampusWifi({ ssid: "MyWiFi", state: "connected" });
 assert(myWifi.authorized === false, '"MyWiFi" → FAIL (authorized === false)');
@@ -48,33 +66,40 @@ assert(myWifi.authorized === false, '"MyWiFi" → FAIL (authorized === false)');
 const campusM = verifyCampusWifi({ ssid: "Campus-M", state: "connected" });
 assert(campusM.authorized === false, '"Campus-M" → FAIL (authorized === false)');
 
-const my = verifyCampusWifi({ ssid: "MY", state: "connected" });
-assert(my.authorized === false, '"MY" → FAIL (authorized === false)');
-
-// Helper function verification for M condition
+// Helper function verification for Rule 1
 assert(isSsidAuthorized("M") === true, 'isSsidAuthorized("M") === true');
 assert(isSsidAuthorized("m") === true, 'isSsidAuthorized("m") === true');
+assert(isSsidAuthorized(" M ") === true, 'isSsidAuthorized(" M ") === true');
 assert(isSsidAuthorized(" M") === true, 'isSsidAuthorized(" M") === true');
 assert(isSsidAuthorized("m ") === true, 'isSsidAuthorized("m ") === true');
 assert(isSsidAuthorized("M-WIFI") === false, 'isSsidAuthorized("M-WIFI") === false');
+assert(isSsidAuthorized("MY") === false, 'isSsidAuthorized("MY") === false');
+assert(isSsidAuthorized("MM") === false, 'isSsidAuthorized("MM") === false');
+assert(isSsidAuthorized("MY-M") === false, 'isSsidAuthorized("MY-M") === false');
 assert(isSsidAuthorized("MyWiFi") === false, 'isSsidAuthorized("MyWiFi") === false');
 assert(isSsidAuthorized("Campus-M") === false, 'isSsidAuthorized("Campus-M") === false');
-assert(isSsidAuthorized("MY") === false, 'isSsidAuthorized("MY") === false');
 
 // =================================================================
-// 2. CONDITION 2 — SONA NETWORK (CONTAINS "sona")
+// 2. RULE 2 — SONA NETWORK (CONTAINS "sona", case-insensitive)
 // =================================================================
-console.log("\n--- 2. CONDITION 2 — SONA NETWORK TESTS ---");
+console.log("\n--- 2. RULE 2 — SONA NETWORK TESTS ---");
 
 const sonaUpper = verifyCampusWifi({ ssid: "SONA", state: "connected" });
 assert(sonaUpper.authorized === true, '"SONA" → PASS');
-assert(sonaUpper.networkSummary === "Authorized campus Wi-Fi", '"SONA" networkSummary === "Authorized campus Wi-Fi"');
+assert(sonaUpper.networkSummary === "SONA", '"SONA" networkSummary === "SONA"');
+
+const sonaLower = verifyCampusWifi({ ssid: "sona", state: "connected" });
+assert(sonaLower.authorized === true, '"sona" → PASS');
 
 const sonaWifiUpper = verifyCampusWifi({ ssid: "SONA-WIFI", state: "connected" });
 assert(sonaWifiUpper.authorized === true, '"SONA-WIFI" → PASS');
+assert(sonaWifiUpper.networkSummary === "SONA-WIFI", '"SONA-WIFI" networkSummary === "SONA-WIFI"');
 
 const sonaWifiMixed = verifyCampusWifi({ ssid: "Sona-Wifi", state: "connected" });
 assert(sonaWifiMixed.authorized === true, '"Sona-Wifi" → PASS');
+
+const sonaWifiSpaced = verifyCampusWifi({ ssid: "sona wifi", state: "connected" });
+assert(sonaWifiSpaced.authorized === true, '"sona wifi" → PASS');
 
 const sonaCampus = verifyCampusWifi({ ssid: "sona campus", state: "connected" });
 assert(sonaCampus.authorized === true, '"sona campus" → PASS');
@@ -82,21 +107,23 @@ assert(sonaCampus.authorized === true, '"sona campus" → PASS');
 const mySonaNet = verifyCampusWifi({ ssid: "MY-SONA-NETWORK", state: "connected" });
 assert(mySonaNet.authorized === true, '"MY-SONA-NETWORK" → PASS');
 
-// Helper function verification for SONA condition
+// Helper function verification for Rule 2
 assert(isSsidAuthorized("SONA") === true, 'isSsidAuthorized("SONA") === true');
+assert(isSsidAuthorized("sona") === true, 'isSsidAuthorized("sona") === true');
 assert(isSsidAuthorized("SONA-WIFI") === true, 'isSsidAuthorized("SONA-WIFI") === true');
 assert(isSsidAuthorized("Sona-Wifi") === true, 'isSsidAuthorized("Sona-Wifi") === true');
+assert(isSsidAuthorized("sona wifi") === true, 'isSsidAuthorized("sona wifi") === true');
 assert(isSsidAuthorized("sona campus") === true, 'isSsidAuthorized("sona campus") === true');
 assert(isSsidAuthorized("MY-SONA-NETWORK") === true, 'isSsidAuthorized("MY-SONA-NETWORK") === true');
 
 // =================================================================
-// 3. UNAUTHORIZED NETWORKS
+// 3. UNAUTHORIZED NETWORKS (ALL FAIL)
 // =================================================================
 console.log("\n--- 3. UNAUTHORIZED NETWORKS TESTS ---");
 
 const oppo = verifyCampusWifi({ ssid: "Oppo K13", state: "connected" });
 assert(oppo.authorized === false, '"Oppo K13" → FAIL');
-assert(oppo.networkSummary === "Unauthorized Wi-Fi network", '"Oppo K13" networkSummary === "Unauthorized Wi-Fi network"');
+assert(oppo.networkSummary === "Oppo K13", '"Oppo K13" networkSummary === "Oppo K13"');
 
 const homeWifi = verifyCampusWifi({ ssid: "Home WiFi", state: "connected" });
 assert(homeWifi.authorized === false, '"Home WiFi" → FAIL');
@@ -117,13 +144,13 @@ assert(isSsidAuthorized("Airtel") === false, 'isSsidAuthorized("Airtel") === fal
 assert(isSsidAuthorized("CampusGuest") === false, 'isSsidAuthorized("CampusGuest") === false');
 
 // =================================================================
-// 4. EMPTY / UNKNOWN / UNAVAILABLE SSID
+// 4. EMPTY / UNKNOWN / UNAVAILABLE SSID (ALL FAIL, NEVER ASSUME M/SONA)
 // =================================================================
 console.log("\n--- 4. EMPTY / UNKNOWN / UNAVAILABLE SSID TESTS ---");
 
 const emptyStr = verifyCampusWifi({ ssid: "", state: "connected" });
 assert(emptyStr.authorized === false, '"" → FAIL');
-assert(emptyStr.networkSummary === "Unauthorized Wi-Fi network", '"" networkSummary === "Unauthorized Wi-Fi network"');
+assert(emptyStr.networkSummary === "Unable to determine Wi-Fi name", '"" networkSummary === "Unable to determine Wi-Fi name"');
 
 const nullSsid = verifyCampusWifi({ ssid: null, state: "connected" });
 assert(nullSsid.authorized === false, 'null → FAIL');
@@ -152,99 +179,40 @@ assert(isSsidAuthorized(undefined) === false, 'isSsidAuthorized(undefined) === f
 assert(isSsidAuthorized("Unknown") === false, 'isSsidAuthorized("Unknown") === false');
 assert(isSsidAuthorized("Unavailable") === false, 'isSsidAuthorized("Unavailable") === false');
 assert(isSsidAuthorized("Hidden") === false, 'isSsidAuthorized("Hidden") === false');
+assert(isSsidAuthorized("<unknown ssid>") === false, 'isSsidAuthorized("<unknown ssid>") === false');
+assert(isSsidAuthorized("SSID_UNAVAILABLE") === false, 'isSsidAuthorized("SSID_UNAVAILABLE") === false');
 
 // =================================================================
-// 5. PUBLIC IP & SERVER-OBSERVABLE VERIFICATION TESTS
+// 5. ANDROID NATIVE BRIDGE BEHAVIOR TESTS
 // =================================================================
-console.log("\n--- 5. PUBLIC IP & SERVER-OBSERVABLE VERIFICATION TESTS ---");
+console.log("\n--- 5. ANDROID NATIVE BRIDGE BEHAVIOR TESTS ---");
 
-const ip1 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "103.21.244.2" });
-assert(ip1.authorized === true, '"M" is AUTHORIZED with Public IP 103.21.244.2 (native bridge)');
-
-const ip2 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "49.36.12.80" });
-assert(ip2.authorized === true, '"M" is AUTHORIZED with Public IP 49.36.12.80 (native bridge)');
-
-const ipInvalid1 = verifyCampusWifi({ ssid: "Oppo K13", state: "connected", clientPublicIp: "203.0.113.195" });
-assert(ipInvalid1.authorized === false, '"Oppo K13" remains UNAUTHORIZED regardless of Public IP 203.0.113.195');
-
-// 5B. Server-Observable Campus Network Verification in Mobile Chrome
-console.log("\n--- 5B. SERVER-OBSERVABLE VERIFICATION IN MOBILE CHROME ---");
-
-// Case 5B-1: Chrome on M network (egress IP matches M)
-const chromeM = verifyCampusWifi({
-  ssid: "Unavailable",
-  state: "connected",
-  clientPublicIp: "203.0.113.195",
-  authorizedMPublicIp: "203.0.113.195",
-});
-assert(chromeM.authorized === true, "Mobile Chrome on M network -> AUTHORIZED via server egress IP");
-assert(chromeM.ssid === "Unavailable in browser", 'SSID is "Unavailable in browser" (never faked)');
-assert(chromeM.networkSummary === "Authorized campus network", 'networkSummary is "Authorized campus network"');
-
-// Case 5B-2: Chrome on SONA-WIFI network (egress IP matches SONA CIDR)
-const chromeSona = verifyCampusWifi({
-  ssid: "Unavailable",
-  state: "connected",
-  clientPublicIp: "115.240.192.50",
-  authorizedSonaPublicIp: "115.240.192.0/22",
-});
-assert(chromeSona.authorized === true, "Mobile Chrome on SONA network -> AUTHORIZED via server egress CIDR");
-assert(chromeSona.ssid === "Unavailable in browser", 'SSID is "Unavailable in browser" (never faked)');
-assert(chromeSona.networkSummary === "Authorized campus network", 'networkSummary is "Authorized campus network"');
-
-// Case 5B-3: Chrome on Oppo K13 / Home Wi-Fi / Mobile Data (unauthorized public IP)
-const chromeUnauthorized = verifyCampusWifi({
-  ssid: "Unavailable",
-  state: "connected",
-  clientPublicIp: "49.36.12.80",
-  authorizedMPublicIp: "203.0.113.195",
-  authorizedSonaPublicIp: "115.240.192.0/22",
-});
-assert(chromeUnauthorized.authorized === false, "Mobile Chrome on unauthorized IP (Oppo K13 / Mobile Data) -> FAILED");
-assert(chromeUnauthorized.ssid === "Unavailable in browser", 'SSID is "Unavailable in browser"');
-assert(chromeUnauthorized.networkSummary === "Unauthorized Wi-Fi network", 'networkSummary is "Unauthorized Wi-Fi network"');
-
-// Case 5B-4: Chrome on general campus egress pool
-const chromeCampus = verifyCampusWifi({
-  ssid: "Unavailable",
-  state: "connected",
-  clientPublicIp: "10.0.0.1",
-  authorizedCampusIp: "10.0.0.0/8",
-});
-assert(chromeCampus.authorized === true, "Mobile Chrome on campus IP pool -> AUTHORIZED");
-assert(chromeCampus.networkSummary === "Authorized campus network", 'networkSummary is "Authorized campus network"');
-
-// =================================================================
-// 6. ANDROID NATIVE BRIDGE BEHAVIOR TESTS (PHASE 13 SPECIFICATION)
-// =================================================================
-console.log("\n--- 6. ANDROID NATIVE BRIDGE BEHAVIOR TESTS ---");
-
-// Helper to simulate native bridge evaluation in React hook
 function processNativeBridgePayload(payload) {
   if (payload.transport === "cellular") {
-    return { authorized: false, ssid: "Mobile Data", reason: "CELLULAR_DATA" };
+    return { authorized: false, ssid: "Mobile Data", networkSummary: "Mobile Data", reason: "CELLULAR_DATA" };
   }
   if (payload.transport === "none" || !payload.connected) {
-    return { authorized: false, ssid: "None", reason: "DISCONNECTED" };
+    return { authorized: false, ssid: "None", networkSummary: "Unable to determine Wi-Fi name", reason: "DISCONNECTED" };
   }
   if (payload.permissionGranted === false) {
-    return { authorized: false, ssid: "Unavailable", reason: "PERMISSION_DENIED" };
+    return { authorized: false, ssid: "Unavailable", networkSummary: "Unable to determine Wi-Fi name", reason: "PERMISSION_DENIED" };
   }
   if (payload.locationEnabled === false) {
-    return { authorized: false, ssid: "Unavailable", reason: "LOCATION_SERVICES_DISABLED" };
+    return { authorized: false, ssid: "Unavailable", networkSummary: "Unable to determine Wi-Fi name", reason: "LOCATION_SERVICES_DISABLED" };
   }
   if (!payload.ssid || payload.ssid === "SSID_UNAVAILABLE" || payload.ssid === "<unknown ssid>") {
-    return { authorized: false, ssid: "Unavailable", reason: "SSID_UNAVAILABLE" };
+    return { authorized: false, ssid: "Unavailable", networkSummary: "Unable to determine Wi-Fi name", reason: "SSID_UNAVAILABLE" };
   }
   const verification = verifyCampusWifi({ ssid: payload.ssid, state: "connected" });
   return {
     authorized: verification.authorized,
     ssid: verification.ssid,
+    networkSummary: verification.networkSummary,
     reason: verification.reason,
   };
 }
 
-// 6A. Android connected to M => real SSID returned as M => AUTHORIZED
+// 5A. Android connected to M => real SSID returned as M => AUTHORIZED
 const bridgeM = processNativeBridgePayload({
   connected: true,
   transport: "wifi",
@@ -252,10 +220,11 @@ const bridgeM = processNativeBridgePayload({
   permissionGranted: true,
   locationEnabled: true,
 });
-assert(bridgeM.authorized === true, "Android connected to M => real SSID returned as M => AUTHORIZED");
+assert(bridgeM.authorized === true, "Android native bridge → M → AUTHORIZED");
 assert(bridgeM.ssid === "M", 'bridgeM SSID is "M"');
+assert(bridgeM.networkSummary === "M", 'bridgeM networkSummary is "M"');
 
-// 6B. Android connected to SONA-WIFI => real SSID returned as SONA-WIFI => AUTHORIZED
+// 5B. Android connected to SONA-WIFI => real SSID returned as SONA-WIFI => AUTHORIZED
 const bridgeSona = processNativeBridgePayload({
   connected: true,
   transport: "wifi",
@@ -263,10 +232,11 @@ const bridgeSona = processNativeBridgePayload({
   permissionGranted: true,
   locationEnabled: true,
 });
-assert(bridgeSona.authorized === true, "Android connected to SONA-WIFI => real SSID returned as SONA-WIFI => AUTHORIZED");
+assert(bridgeSona.authorized === true, "Android native bridge → SONA-WIFI → AUTHORIZED");
 assert(bridgeSona.ssid === "SONA-WIFI", 'bridgeSona SSID is "SONA-WIFI"');
+assert(bridgeSona.networkSummary === "SONA-WIFI", 'bridgeSona networkSummary is "SONA-WIFI"');
 
-// 6C. Android connected to another Wi-Fi ("Oppo K13") => real SSID returned => UNAUTHORIZED
+// 5C. Android connected to another Wi-Fi ("Oppo K13") => real SSID returned => FAILED
 const bridgeOppo = processNativeBridgePayload({
   connected: true,
   transport: "wifi",
@@ -274,43 +244,11 @@ const bridgeOppo = processNativeBridgePayload({
   permissionGranted: true,
   locationEnabled: true,
 });
-assert(bridgeOppo.authorized === false, "Android connected to another Wi-Fi (Oppo K13) => real SSID returned => UNAUTHORIZED");
+assert(bridgeOppo.authorized === false, "Android native bridge → Oppo K13 → FAILED");
 assert(bridgeOppo.ssid === "Oppo K13", 'bridgeOppo SSID is "Oppo K13"');
+assert(bridgeOppo.networkSummary === "Oppo K13", 'bridgeOppo networkSummary is "Oppo K13"');
 
-// 6D. Android on mobile data => UNAUTHORIZED
-const bridgeCellular = processNativeBridgePayload({
-  connected: false,
-  transport: "cellular",
-  ssid: null,
-  permissionGranted: true,
-  locationEnabled: true,
-});
-assert(bridgeCellular.authorized === false, "Android on mobile data => UNAUTHORIZED");
-assert(bridgeCellular.reason === "CELLULAR_DATA", 'bridgeCellular reason is "CELLULAR_DATA"');
-
-// 6E. Android with Wi-Fi permission denied => UNAUTHORIZED
-const bridgePermDenied = processNativeBridgePayload({
-  connected: true,
-  transport: "wifi",
-  ssid: null,
-  permissionGranted: false,
-  locationEnabled: true,
-});
-assert(bridgePermDenied.authorized === false, "Android with Wi-Fi permission denied => UNAUTHORIZED");
-assert(bridgePermDenied.reason === "PERMISSION_DENIED", 'bridgePermDenied reason is "PERMISSION_DENIED"');
-
-// 6F. Android with no Wi-Fi => UNAUTHORIZED
-const bridgeNoWifi = processNativeBridgePayload({
-  connected: false,
-  transport: "none",
-  ssid: null,
-  permissionGranted: true,
-  locationEnabled: true,
-});
-assert(bridgeNoWifi.authorized === false, "Android with no Wi-Fi => UNAUTHORIZED");
-assert(bridgeNoWifi.reason === "DISCONNECTED", 'bridgeNoWifi reason is "DISCONNECTED"');
-
-// 6G. Android SSID unavailable => UNAUTHORIZED
+// 5D. Android native bridge -> unavailable SSID => FAILED
 const bridgeUnavailable = processNativeBridgePayload({
   connected: true,
   transport: "wifi",
@@ -318,13 +256,47 @@ const bridgeUnavailable = processNativeBridgePayload({
   permissionGranted: true,
   locationEnabled: true,
 });
-assert(bridgeUnavailable.authorized === false, "Android SSID unavailable => UNAUTHORIZED");
+assert(bridgeUnavailable.authorized === false, "Android native bridge → unavailable → FAILED");
 assert(bridgeUnavailable.reason === "SSID_UNAVAILABLE", 'bridgeUnavailable reason is "SSID_UNAVAILABLE"');
+assert(bridgeUnavailable.networkSummary === "Unable to determine Wi-Fi name", 'bridgeUnavailable networkSummary is "Unable to determine Wi-Fi name"');
+
+// 5E. Android on mobile data => FAILED
+const bridgeCellular = processNativeBridgePayload({
+  connected: false,
+  transport: "cellular",
+  ssid: null,
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeCellular.authorized === false, "Android native bridge on mobile data → FAILED");
+assert(bridgeCellular.reason === "CELLULAR_DATA", 'bridgeCellular reason is "CELLULAR_DATA"');
+
+// 5F. Android with Wi-Fi permission denied => FAILED
+const bridgePermDenied = processNativeBridgePayload({
+  connected: true,
+  transport: "wifi",
+  ssid: null,
+  permissionGranted: false,
+  locationEnabled: true,
+});
+assert(bridgePermDenied.authorized === false, "Android native bridge with Wi-Fi permission denied → FAILED");
+assert(bridgePermDenied.reason === "PERMISSION_DENIED", 'bridgePermDenied reason is "PERMISSION_DENIED"');
+
+// 5G. Android with no Wi-Fi => FAILED
+const bridgeNoWifi = processNativeBridgePayload({
+  connected: false,
+  transport: "none",
+  ssid: null,
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeNoWifi.authorized === false, "Android native bridge with no Wi-Fi → FAILED");
+assert(bridgeNoWifi.reason === "DISCONNECTED", 'bridgeNoWifi reason is "DISCONNECTED"');
 
 // =================================================================
-// 7. ATTENDANCE REGISTRATION GATING TESTS
+// 6. ATTENDANCE REGISTRATION GATING TESTS
 // =================================================================
-console.log("\n--- 7. ATTENDANCE REGISTRATION GATING TESTS ---");
+console.log("\n--- 6. ATTENDANCE REGISTRATION GATING TESTS ---");
 
 function evaluateAttendanceRegistration(wifiResult, gpsInsideGeofence, faceAuthenticated) {
   const canMarkAttendance = wifiResult.authorized && gpsInsideGeofence && faceAuthenticated;

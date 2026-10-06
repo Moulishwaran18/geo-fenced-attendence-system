@@ -131,18 +131,6 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   <span className="text-muted-foreground">Security Mode:</span>
                   <span className="font-mono text-muted-foreground">{status?.auth || "Standard"}</span>
                 </div>
-                {status?.ip && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Assigned IP:</span>
-                    <span className="font-mono text-muted-foreground">{status.ip}</span>
-                  </div>
-                )}
-                {status?.gateway && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Detected Gateway:</span>
-                    <span className="font-mono text-muted-foreground">{status.gateway}</span>
-                  </div>
-                )}
                 <div className="flex items-center justify-between pt-1 border-t border-border/60">
                   <span className="text-muted-foreground">Diagnostics:</span>
                   <span className="flex items-center gap-1.5 font-medium text-destructive">

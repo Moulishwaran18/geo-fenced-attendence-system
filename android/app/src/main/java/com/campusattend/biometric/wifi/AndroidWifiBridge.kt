@@ -42,7 +42,29 @@ class AndroidWifiBridge(
     fun isAvailable(): Boolean = true
 
     /**
+     * Origin verification to ensure only the trusted Vercel application
+     * or authorized local development hosts can invoke native Wi-Fi methods.
+     */
+    private fun isCallingOriginTrusted(): Boolean {
+        val currentUrl = webView?.url ?: return true
+        val trustedHosts = listOf(
+            "geo-fenced-attendence-system.vercel.app",
+            "localhost",
+            "127.0.0.1",
+            "10.0.2.2"
+        )
+        return try {
+            val uri = android.net.Uri.parse(currentUrl)
+            val host = uri.host?.lowercase() ?: ""
+            trustedHosts.any { host == it || host.endsWith(".$it") }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Checks if the required runtime permissions to obtain the Wi-Fi SSID are granted.
+     * Android requires ACCESS_FINE_LOCATION (or ACCESS_COARSE_LOCATION) to query the connected SSID.
      */
     private fun hasWifiPermissions(): Boolean {
         val fineGranted = ContextCompat.checkSelfPermission(
@@ -55,16 +77,7 @@ class AndroidWifiBridge(
             Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
-        val nearbyGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.NEARBY_WIFI_DEVICES
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-
-        return (fineGranted || coarseGranted) && nearbyGranted
+        return fineGranted || coarseGranted
     }
 
     /**
@@ -90,6 +103,44 @@ class AndroidWifiBridge(
     }
 
     /**
+     * Direct string query method for SSID retrieval.
+     * Concept: window.AndroidWifiBridge.getWifiSsid()
+     *
+     * Returns:
+     * - Actual sanitized connected SSID (e.g. "M", "SONA-WIFI")
+     * - "SSID_UNAVAILABLE" if cellular, disconnected, permissions denied, or undetectable.
+     */
+    @JavascriptInterface
+    fun getWifiSsid(): String {
+        if (!isCallingOriginTrusted()) {
+            return "SSID_UNAVAILABLE"
+        }
+
+        try {
+            val activeNetwork = connectivityManager?.activeNetwork
+            val caps = connectivityManager?.getNetworkCapabilities(activeNetwork)
+            val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+
+            if (!isWifi) {
+                return "SSID_UNAVAILABLE"
+            }
+
+            if (!hasWifiPermissions() || !isLocationServiceEnabled()) {
+                return "SSID_UNAVAILABLE"
+            }
+
+            val rawSsid = extractCurrentSsid(caps)
+            if (rawSsid.isNotBlank() && rawSsid != "<unknown ssid>" && rawSsid != "0x") {
+                return rawSsid
+            }
+        } catch (_: Exception) {
+            // Return unavailable on exception
+        }
+
+        return "SSID_UNAVAILABLE"
+    }
+
+    /**
      * Core method: Returns structured status of the connected network.
      * Response schema:
      * {
@@ -98,12 +149,23 @@ class AndroidWifiBridge(
      *   "ssid": string | null,
      *   "permissionGranted": boolean,
      *   "locationEnabled": boolean,
-     *   "reason": "SUCCESS" | "CELLULAR_DATA" | "DISCONNECTED" | "PERMISSION_DENIED" | "LOCATION_SERVICES_DISABLED" | "SSID_UNAVAILABLE"
+     *   "reason": "SUCCESS" | "CELLULAR_DATA" | "DISCONNECTED" | "PERMISSION_DENIED" | "LOCATION_SERVICES_DISABLED" | "SSID_UNAVAILABLE" | "UNTRUSTED_ORIGIN"
      * }
      */
     @JavascriptInterface
     fun getConnectedWifi(): String {
         val json = JSONObject()
+
+        if (!isCallingOriginTrusted()) {
+            json.put("connected", false)
+            json.put("transport", "unknown")
+            json.put("ssid", JSONObject.NULL)
+            json.put("permissionGranted", false)
+            json.put("locationEnabled", false)
+            json.put("reason", "UNTRUSTED_ORIGIN")
+            return json.toString()
+        }
+
         try {
             val activeNetwork = connectivityManager?.activeNetwork
             val caps = connectivityManager?.getNetworkCapabilities(activeNetwork)

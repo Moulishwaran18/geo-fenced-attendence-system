@@ -35,6 +35,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
 
       // ==============================================================
       // 1. NATIVE ANDROID BRIDGE (App running on real Android device)
+      // Genuine source of connected hardware Wi-Fi SSID.
       // ==============================================================
       if (nativeAvailable) {
         const nativeWifi = getNativeConnectedWifi();
@@ -48,7 +49,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             ssid: "Mobile Data",
             state: "connected",
             reason: "Device is connected to mobile data, not campus Wi-Fi.",
-            networkSummary: "Unauthorized Wi-Fi network",
+            networkSummary: "Mobile Data",
             stage: "SSID_CHECK_FAILED",
             timestamp: now,
             isNativeBridge: true,
@@ -66,7 +67,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             ssid: "None",
             state: "disconnected",
             reason: "Device is disconnected from Wi-Fi. Please connect to M or SONA.",
-            networkSummary: "Offline",
+            networkSummary: "Unable to determine Wi-Fi name",
             stage: "DISCONNECTED",
             timestamp: now,
             isNativeBridge: true,
@@ -84,7 +85,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             ssid: nativeWifi.transport,
             state: "connected",
             reason: "Network transport is not Wi-Fi. Please connect to M or SONA Wi-Fi.",
-            networkSummary: "Unauthorized Wi-Fi network",
+            networkSummary: nativeWifi.transport,
             stage: "SSID_CHECK_FAILED",
             timestamp: now,
             isNativeBridge: true,
@@ -102,7 +103,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             ssid: "Unavailable",
             state: "connected",
             reason: "Wi-Fi permission required to identify the connected campus network.",
-            networkSummary: "Unauthorized Wi-Fi network",
+            networkSummary: "Unable to determine Wi-Fi name",
             stage: "UNABLE_TO_VERIFY",
             timestamp: now,
             permissionDenied: true,
@@ -121,7 +122,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             ssid: "Unavailable",
             state: "connected",
             reason: "Please turn ON device location services to allow Wi-Fi SSID identification.",
-            networkSummary: "Unauthorized Wi-Fi network",
+            networkSummary: "Unable to determine Wi-Fi name",
             stage: "UNABLE_TO_VERIFY",
             timestamp: now,
             locationDisabled: true,
@@ -140,7 +141,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             ssid: "Unavailable",
             state: "connected",
             reason: "Wi-Fi SSID is unavailable. Ensure Wi-Fi is connected and permissions are granted.",
-            networkSummary: "Unauthorized Wi-Fi network",
+            networkSummary: "Unable to determine Wi-Fi name",
             stage: "UNABLE_TO_VERIFY",
             timestamp: now,
             isNativeBridge: true,
@@ -150,15 +151,15 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
           return ssidUnavailStatus;
         }
 
-        // 1G. Real Wi-Fi SSID acquired! Evaluate against authoritative rules
+        // 1G. Real Wi-Fi SSID acquired! Evaluate against pure SSID rules
         const clientVerification = verifyCampusWifi({
           ssid: nativeWifi.ssid,
           state: "connected",
         });
 
-        // Optionally challenge backend /api/wifi/verify for audit synchronization
+        // Optionally challenge backend /api/wifi-status for synchronization
         try {
-          const res = await fetch("/api/wifi/verify", {
+          const res = await fetch("/api/wifi-status", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -167,6 +168,7 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
             body: JSON.stringify({
               ssid: nativeWifi.ssid,
               state: "connected",
+              isNativeBridge: true,
             }),
             cache: "no-store",
           });
@@ -199,12 +201,14 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       }
 
       // ==============================================================
-      // 2. WEB BROWSER FALLBACK (Chrome on Android or Desktop)
-      // Browsers cannot access Wi-Fi SSID directly. Never fabricate!
+      // 2. WEB BROWSER FALLBACK (Mobile Chrome on Android or Desktop)
+      // Normal mobile Chrome cannot access Android Wi-Fi APIs.
+      // SSID = unavailable -> Wi-Fi Authorization = FAILED.
+      // This is intentional and NOT bypassed.
       // ==============================================================
       const isOnline = typeof navigator !== "undefined" && navigator.onLine;
 
-      // Call backend /api/wifi-status
+      // Query /api/wifi-status (e.g. dev server)
       let backendStatus: WifiStatus | null = null;
       try {
         const res = await fetch("/api/wifi-status", {
@@ -218,25 +222,24 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         // backend unreachable
       }
 
-      // In web browser (Mobile Chrome on Android or Desktop):
-      // The backend /api/wifi-status determines authorization based on server-observable network evidence.
-      if (backendStatus) {
+      if (backendStatus && backendStatus.authorized) {
         backendStatus.isNativeBridge = false;
         setStatus(backendStatus);
         setLastChecked(new Date());
         return backendStatus;
       }
 
-      // If backend call failed or network is unreachable:
+      // Standard browser cannot access client Wi-Fi SSID:
+      // Authorization = FAILED, Network = "Unable to determine Wi-Fi name"
       const browserFallback: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
-        ssid: "Unavailable in browser",
+        ssid: "Unavailable",
         state: isOnline ? "connected" : "disconnected",
         reason: isOnline
-          ? "Unable to reach server for campus network verification."
-          : "Device is offline. Connect to an authorized campus Wi-Fi network.",
-        networkSummary: "Unauthorized Wi-Fi network",
+          ? "Browser cannot access Android Wi-Fi SSID directly. Open via the Android attendance app to verify campus Wi-Fi."
+          : "Device is offline. Connect to Wi-Fi using the Android attendance app.",
+        networkSummary: "Unable to determine Wi-Fi name",
         stage: "UNABLE_TO_VERIFY",
         timestamp: new Date().toISOString(),
         isNativeBridge: false,
@@ -249,11 +252,11 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       const errorStatus: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
-        ssid: "Unavailable in browser",
+        ssid: "Unavailable",
         state: "unknown",
-        reason: "Unable to verify campus network with server.",
+        reason: "Browser cannot access Android Wi-Fi SSID directly. Open via the Android attendance app to verify campus Wi-Fi.",
         timestamp: new Date().toISOString(),
-        networkSummary: "Unauthorized Wi-Fi network",
+        networkSummary: "Unable to determine Wi-Fi name",
         stage: "UNABLE_TO_VERIFY",
         isNativeBridge: false,
       };

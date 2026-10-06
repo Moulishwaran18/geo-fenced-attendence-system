@@ -8,20 +8,9 @@ import { handleStaffApi } from "./server/api/staff-handler";
 import { handleFaceVerifyApi } from "./server/api/face-search-handler";
 import { handleFaceDetectionLogApi } from "./server/api/audit-log-handler";
 
-type ServerEntry = {
-  fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
-};
+import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
 
-let serverEntryPromise: Promise<ServerEntry> | undefined;
-
-async function getServerEntry(): Promise<ServerEntry> {
-  if (!serverEntryPromise) {
-    serverEntryPromise = import("@tanstack/react-start/server-entry").then(
-      (m) => (m.default ?? m) as ServerEntry,
-    );
-  }
-  return serverEntryPromise;
-}
+const defaultHandler = createStartHandler(defaultStreamHandler);
 
 // h3 swallows in-handler throws into a normal 500 Response with body
 // {"unhandled":true,"message":"HTTPError"} — try/catch alone never fires for those.
@@ -33,8 +22,9 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   const body = await response.clone().text();
   if (!isH3SwallowedErrorBody(body)) return response;
 
-  console.error(consumeLastCapturedError() ?? new Error(`h3 swallowed SSR error: ${body}`));
-  return new Response(renderErrorPage(), {
+  const capturedError = consumeLastCapturedError() ?? new Error(`h3 swallowed SSR error: ${body}`);
+  console.error(capturedError);
+  return new Response(renderErrorPage(capturedError), {
     status: 500,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
@@ -134,12 +124,11 @@ export default {
         });
       }
 
-      const handler = await getServerEntry();
-      const response = await handler.fetch(request, env, ctx);
+      const response = await defaultHandler(request);
       return await normalizeCatastrophicSsrResponse(response);
     } catch (error) {
-      console.error(error);
-      return new Response(renderErrorPage(), {
+      console.error("Server catch error:", error);
+      return new Response(renderErrorPage(error), {
         status: 500,
         headers: { "content-type": "text/html; charset=utf-8" },
       });

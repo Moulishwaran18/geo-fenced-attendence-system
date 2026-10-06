@@ -20,25 +20,13 @@ function apiMiddlewarePlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         if (req.url && req.url.startsWith("/api/network-info")) {
-          const clientIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "127.0.0.1";
-          const envCampus = (process.env["AUTHORIZED_CAMPUS_IPS"] || "").trim();
-          const envM = (process.env["AUTHORIZED_M_PUBLIC_IP"] || "").trim();
-          const envSona = (process.env["AUTHORIZED_SONA_PUBLIC_IP"] || "").trim();
-
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
           res.end(
             JSON.stringify({
-              publicIp: clientIp,
-              isAuthorized: false,
-              matchedNetwork: null,
-              networkCheck: "Local Vite Dev Server",
-              environmentConfig: {
-                AUTHORIZED_CAMPUS_IPS: envCampus ? "[CONFIGURED]" : "[NOT SET]",
-                AUTHORIZED_M_PUBLIC_IP: envM ? "[CONFIGURED]" : "[NOT SET]",
-                AUTHORIZED_SONA_PUBLIC_IP: envSona ? "[CONFIGURED]" : "[NOT SET]",
-              },
-              instructions: "When running in production on Vercel, this endpoint inspects the real public egress IP of the client.",
+              authModel: "PURE_SSID_NAME_AUTHENTICATION",
+              message:
+                "All IP, CIDR, gateway, DNS, and BSSID-based verification has been removed. Campus authorization uses ONLY SSID name-based verification from the Android native bridge (exact 'M' or containing 'SONA').",
               timestamp: new Date().toISOString(),
             })
           );

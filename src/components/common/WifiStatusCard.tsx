@@ -81,14 +81,18 @@ export function WifiStatusCard({
     ? "Checking…"
     : isSsidKnown
       ? rawSsid
-      : "Unavailable in browser";
+      : "Unavailable";
 
-  // Network Display Value
+  // Network Display Value:
+  // - When native Android provides M: "M"
+  // - When native Android provides SONA-WIFI: "SONA-WIFI"
+  // - When native Android provides another SSID: "<actual SSID>"
+  // - When SSID is unavailable: "Unable to determine Wi-Fi name"
   const displayNetwork = isChecking
     ? "Verifying network…"
-    : wifiAuthorized
-      ? "Authorized campus network"
-      : "Unauthorized Wi-Fi network";
+    : isSsidKnown
+      ? rawSsid
+      : "Unable to determine Wi-Fi name";
 
   return (
     <div
@@ -266,7 +270,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Network Verification:</strong> When accessed in mobile Chrome, campus authorization is verified directly by server-observable network evidence.
+          <strong className="text-foreground">Wi-Fi Requirement:</strong> Attendance requires an actual connection to campus Wi-Fi (SSID &quot;M&quot; or containing &quot;SONA&quot;) verified via the Android attendance app.
         </p>
       </div>
 
