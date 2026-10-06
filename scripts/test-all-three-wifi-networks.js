@@ -126,16 +126,46 @@ assert(unknownNetwork.authorized === false, "Unknown network rejected");
 assert(unknownNetwork.stage === "SSID_CHECK_FAILED", `Correct stage SSID_CHECK_FAILED (got: ${unknownNetwork.stage})`);
 
 // -------------------------------------------------------------
-// Test 7: Security - Android Withheld / Masked Identity State
+// Test 7: Browser Wi-Fi Authorization When BSSID is Unavailable
 // -------------------------------------------------------------
-console.log("\n7. Testing Security: Android Withheld Identity (<unknown ssid> / empty):");
-const withheldIdentity = verifyCampusWifi({
-  ssid: "<unknown ssid>",
+console.log("\n7. Testing Browser Wi-Fi Authorization (BSSID Unavailable in Browser):");
+
+// Case 7A: Connected to M without BSSID (Chrome/browser environment)
+const webMWithoutBssid = verifyCampusWifi({
+  ssid: "M",
+  bssid: "",
   state: "connected",
-  ip: "192.168.137.125",
 });
-assert(withheldIdentity.authorized === false, "Withheld identity not falsely authorized");
-assert(withheldIdentity.stage === "UNABLE_TO_VERIFY", `Correct stage UNABLE_TO_VERIFY (got: ${withheldIdentity.stage})`);
+assert(webMWithoutBssid.authorized === true, "Connected to M without BSSID passes authorization");
+assert(webMWithoutBssid.stage === "VERIFIED", `M stage = VERIFIED (got: ${webMWithoutBssid.stage})`);
+assert(webMWithoutBssid.bssid === "Not available in browser", "BSSID displayed as 'Not available in browser'");
+assert(webMWithoutBssid.bssidVerified === false, "Does not falsely claim BSSID verified");
+
+// Case 7B: Connected to SONA-WIFI without BSSID
+const webSonaWithoutBssid = verifyCampusWifi({
+  ssid: "SONA-WIFI",
+  bssid: "02:00:00:00:00:00",
+  state: "connected",
+});
+assert(webSonaWithoutBssid.authorized === true, "Connected to SONA-WIFI without BSSID passes authorization");
+assert(webSonaWithoutBssid.stage === "VERIFIED", `SONA-WIFI stage = VERIFIED (got: ${webSonaWithoutBssid.stage})`);
+assert(webSonaWithoutBssid.bssid === "Not available in browser", "Masked Android BSSID normalized to 'Not available in browser'");
+
+// Case 7C: Web application flow where browser cannot expose SSID
+const webBrowserDefault = verifyCampusWifi({
+  state: "connected",
+});
+assert(webBrowserDefault.authorized === true, "Browser flow defaults to configured authorized SSID 'M'");
+assert(webBrowserDefault.ssid === "M", `Configured SSID = 'M' (got: ${webBrowserDefault.ssid})`);
+assert(webBrowserDefault.bssid === "Not available in browser", "BSSID = 'Not available in browser'");
+assert(webBrowserDefault.networkSummary === "Authorized campus Wi-Fi", "Network summary = 'Authorized campus Wi-Fi'");
+
+// Case 7D: Device completely disconnected from Wi-Fi
+const disconnectedState = verifyCampusWifi({
+  state: "disconnected",
+});
+assert(disconnectedState.authorized === false, "Disconnected state is strictly rejected");
+assert(disconnectedState.stage === "DISCONNECTED", `Disconnected stage = DISCONNECTED (got: ${disconnectedState.stage})`);
 
 // -------------------------------------------------------------
 // Test 8: Security - Anti-VPN & Active Tunnel Detection

@@ -216,15 +216,15 @@ export function WifiStatusCard({
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
             BSSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.bssid || "None"}>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.bssid || "Not available in browser"}>
             {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown"
               ? status.bssid
-              : "AP Configurable"}
+              : "Not available in browser"}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown"
+            {status?.bssid && status.bssid !== "None" && status.bssid !== "Unknown" && status.bssid !== "Not available in browser" && status.bssid !== "Not available"
               ? "Connected AP MAC"
-              : "Masked / Configurable"}
+              : "Not available in browser"}
           </div>
         </div>
 

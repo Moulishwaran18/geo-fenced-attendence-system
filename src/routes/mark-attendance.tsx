@@ -294,9 +294,12 @@ function MarkAttendancePage() {
   }> => {
     // 1. WI-FI AUTHORIZATION
     const wifiBssidDisplay =
-      wifiStatus?.bssid && wifiStatus.bssid !== "None"
+      wifiStatus?.bssid &&
+      wifiStatus.bssid !== "None" &&
+      wifiStatus.bssid !== "Unknown" &&
+      wifiStatus.bssid !== "02:00:00:00:00:00"
         ? wifiStatus.bssid
-        : "AP Configurable (BSSID not in screenshot)";
+        : "Not available in browser";
 
     const wifiNetworkDisplay =
       wifiStatus?.gateway
@@ -309,7 +312,7 @@ function MarkAttendancePage() {
 
     const wifiSignal = {
       key: "wifi" as const,
-      value: `Status: ${wifiCardStatus}`,
+      value: `Status: ${wifiCardStatus === "VERIFIED" ? "AUTHORIZED" : wifiCardStatus}`,
       detail: (
         <div className="mt-1 space-y-0.5 font-mono text-[11px] text-muted-foreground">
           <div>
