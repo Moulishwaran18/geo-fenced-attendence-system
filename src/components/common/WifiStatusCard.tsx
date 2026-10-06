@@ -140,8 +140,37 @@ export function WifiStatusCard({
         </div>
       </div>
 
+      {/* Wi-Fi Permission Request Banner if permission is missing on native Android */}
+      {status?.permissionDenied && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-800 dark:text-amber-200">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+            <div>
+              <p className="font-semibold">Wi-Fi permission required</p>
+              <p className="text-[11px] opacity-90">
+                Grant Wi-Fi / location permission on your device to identify the connected campus network.
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="default"
+            onClick={async () => {
+              const { requestNativeWifiPermissions } = await import("@/lib/native-wifi-bridge");
+              requestNativeWifiPermissions();
+              setTimeout(() => {
+                void onRecheck();
+              }, 1000);
+            }}
+            className="h-7 text-xs px-2.5"
+          >
+            Grant Wi-Fi Permission
+          </Button>
+        </div>
+      )}
+
       {/* Unauthorized Warning Banner if Wi-Fi fails */}
-      {!wifiAuthorized && authorizationStatus !== "CHECKING" && (
+      {!wifiAuthorized && authorizationStatus !== "CHECKING" && !status?.permissionDenied && (
         <div className="flex items-start gap-2.5 border-b border-destructive/20 bg-danger-soft px-4 py-2.5 text-xs text-destructive">
           <AlertTriangle className="size-4 shrink-0 mt-0.5" />
           <div className="flex-1 space-y-0.5">
@@ -229,7 +258,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Browser Limitation Notice:</strong> Standard web browsers do not expose client Wi-Fi SSID directly. If the Wi-Fi SSID is unavailable to the browser, verification reports <code className="font-mono text-[10px]">SSID_UNAVAILABLE</code> and authorization fails.
+          <strong className="text-foreground">Browser Limitation Notice:</strong> Standard web browsers cannot access the connected Wi-Fi SSID directly. Use the Android attendance app to verify campus Wi-Fi.
         </p>
       </div>
 

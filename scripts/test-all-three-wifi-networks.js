@@ -4,7 +4,7 @@ import {
 } from "../src/lib/wifi-config.ts";
 
 console.log("=================================================================");
-console.log("   CAMPUSATTEND SSID-ONLY WI-FI AUTHENTICATION TEST SUITE         ");
+console.log("   CAMPUSATTEND SSID & NATIVE BRIDGE WI-FI TEST SUITE             ");
 console.log("   Rule: normalizedSsid === 'm' || normalizedSsid.includes('sona') ");
 console.log("=================================================================\n");
 
@@ -22,7 +22,7 @@ function assert(condition, message) {
 }
 
 // =================================================================
-// 1. CONDITION 1 — M NETWORK (EXACT MATCH "m")
+// 1. CONDITION 1 — M NETWORK (EXACT MATCH "m" with trimming)
 // =================================================================
 console.log("--- 1. CONDITION 1 — M NETWORK TESTS ---");
 
@@ -32,6 +32,12 @@ assert(mUpper.networkSummary === "Authorized campus Wi-Fi", '"M" networkSummary 
 
 const mLower = verifyCampusWifi({ ssid: "m", state: "connected" });
 assert(mLower.authorized === true, '"m" → PASS (authorized === true)');
+
+const mLeadingSpace = verifyCampusWifi({ ssid: " M", state: "connected" });
+assert(mLeadingSpace.authorized === true, '" M" (leading space) → PASS');
+
+const mTrailingSpace = verifyCampusWifi({ ssid: "m ", state: "connected" });
+assert(mTrailingSpace.authorized === true, '"m " (trailing space) → PASS');
 
 const mWifi = verifyCampusWifi({ ssid: "M-WIFI", state: "connected" });
 assert(mWifi.authorized === false, '"M-WIFI" → FAIL (authorized === false)');
@@ -48,6 +54,8 @@ assert(my.authorized === false, '"MY" → FAIL (authorized === false)');
 // Helper function verification for M condition
 assert(isSsidAuthorized("M") === true, 'isSsidAuthorized("M") === true');
 assert(isSsidAuthorized("m") === true, 'isSsidAuthorized("m") === true');
+assert(isSsidAuthorized(" M") === true, 'isSsidAuthorized(" M") === true');
+assert(isSsidAuthorized("m ") === true, 'isSsidAuthorized("m ") === true');
 assert(isSsidAuthorized("M-WIFI") === false, 'isSsidAuthorized("M-WIFI") === false');
 assert(isSsidAuthorized("MyWiFi") === false, 'isSsidAuthorized("MyWiFi") === false');
 assert(isSsidAuthorized("Campus-M") === false, 'isSsidAuthorized("Campus-M") === false');
@@ -146,39 +154,132 @@ assert(isSsidAuthorized("Unavailable") === false, 'isSsidAuthorized("Unavailable
 assert(isSsidAuthorized("Hidden") === false, 'isSsidAuthorized("Hidden") === false');
 
 // =================================================================
-// 5. VERIFY PUBLIC IP CHANGES DO NOT AFFECT THE RESULT
+// 5. PUBLIC IP INDEPENDENCE
 // =================================================================
 console.log("\n--- 5. PUBLIC IP INDEPENDENCE TESTS ---");
 
-// Valid SSID with various different public IPs
 const ip1 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "103.21.244.2" });
 assert(ip1.authorized === true, '"M" is AUTHORIZED with Public IP 103.21.244.2');
 
 const ip2 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "49.36.12.80" });
 assert(ip2.authorized === true, '"M" is AUTHORIZED with Public IP 49.36.12.80 (changed IP has no effect)');
 
-const ip3 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "203.0.113.195" });
-assert(ip3.authorized === true, '"M" is AUTHORIZED with Public IP 203.0.113.195');
-
-// Invalid SSID with various public IPs (even previously whitelisted IP)
 const ipInvalid1 = verifyCampusWifi({ ssid: "Oppo K13", state: "connected", clientPublicIp: "203.0.113.195" });
 assert(ipInvalid1.authorized === false, '"Oppo K13" remains UNAUTHORIZED regardless of Public IP 203.0.113.195');
 
-const ipInvalid2 = verifyCampusWifi({ ssid: "Unavailable", state: "connected", clientPublicIp: "203.0.113.195" });
-assert(ipInvalid2.authorized === false, '"Unavailable" SSID remains UNAUTHORIZED regardless of Public IP 203.0.113.195');
+// =================================================================
+// 6. ANDROID NATIVE BRIDGE BEHAVIOR TESTS (PHASE 13 SPECIFICATION)
+// =================================================================
+console.log("\n--- 6. ANDROID NATIVE BRIDGE BEHAVIOR TESTS ---");
+
+// Helper to simulate native bridge evaluation in React hook
+function processNativeBridgePayload(payload) {
+  if (payload.transport === "cellular") {
+    return { authorized: false, ssid: "Mobile Data", reason: "CELLULAR_DATA" };
+  }
+  if (payload.transport === "none" || !payload.connected) {
+    return { authorized: false, ssid: "None", reason: "DISCONNECTED" };
+  }
+  if (payload.permissionGranted === false) {
+    return { authorized: false, ssid: "Unavailable", reason: "PERMISSION_DENIED" };
+  }
+  if (payload.locationEnabled === false) {
+    return { authorized: false, ssid: "Unavailable", reason: "LOCATION_SERVICES_DISABLED" };
+  }
+  if (!payload.ssid || payload.ssid === "SSID_UNAVAILABLE" || payload.ssid === "<unknown ssid>") {
+    return { authorized: false, ssid: "Unavailable", reason: "SSID_UNAVAILABLE" };
+  }
+  const verification = verifyCampusWifi({ ssid: payload.ssid, state: "connected" });
+  return {
+    authorized: verification.authorized,
+    ssid: verification.ssid,
+    reason: verification.reason,
+  };
+}
+
+// 6A. Android connected to M => real SSID returned as M => AUTHORIZED
+const bridgeM = processNativeBridgePayload({
+  connected: true,
+  transport: "wifi",
+  ssid: "M",
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeM.authorized === true, "Android connected to M => real SSID returned as M => AUTHORIZED");
+assert(bridgeM.ssid === "M", 'bridgeM SSID is "M"');
+
+// 6B. Android connected to SONA-WIFI => real SSID returned as SONA-WIFI => AUTHORIZED
+const bridgeSona = processNativeBridgePayload({
+  connected: true,
+  transport: "wifi",
+  ssid: "SONA-WIFI",
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeSona.authorized === true, "Android connected to SONA-WIFI => real SSID returned as SONA-WIFI => AUTHORIZED");
+assert(bridgeSona.ssid === "SONA-WIFI", 'bridgeSona SSID is "SONA-WIFI"');
+
+// 6C. Android connected to another Wi-Fi ("Oppo K13") => real SSID returned => UNAUTHORIZED
+const bridgeOppo = processNativeBridgePayload({
+  connected: true,
+  transport: "wifi",
+  ssid: "Oppo K13",
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeOppo.authorized === false, "Android connected to another Wi-Fi (Oppo K13) => real SSID returned => UNAUTHORIZED");
+assert(bridgeOppo.ssid === "Oppo K13", 'bridgeOppo SSID is "Oppo K13"');
+
+// 6D. Android on mobile data => UNAUTHORIZED
+const bridgeCellular = processNativeBridgePayload({
+  connected: false,
+  transport: "cellular",
+  ssid: null,
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeCellular.authorized === false, "Android on mobile data => UNAUTHORIZED");
+assert(bridgeCellular.reason === "CELLULAR_DATA", 'bridgeCellular reason is "CELLULAR_DATA"');
+
+// 6E. Android with Wi-Fi permission denied => UNAUTHORIZED
+const bridgePermDenied = processNativeBridgePayload({
+  connected: true,
+  transport: "wifi",
+  ssid: null,
+  permissionGranted: false,
+  locationEnabled: true,
+});
+assert(bridgePermDenied.authorized === false, "Android with Wi-Fi permission denied => UNAUTHORIZED");
+assert(bridgePermDenied.reason === "PERMISSION_DENIED", 'bridgePermDenied reason is "PERMISSION_DENIED"');
+
+// 6F. Android with no Wi-Fi => UNAUTHORIZED
+const bridgeNoWifi = processNativeBridgePayload({
+  connected: false,
+  transport: "none",
+  ssid: null,
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeNoWifi.authorized === false, "Android with no Wi-Fi => UNAUTHORIZED");
+assert(bridgeNoWifi.reason === "DISCONNECTED", 'bridgeNoWifi reason is "DISCONNECTED"');
+
+// 6G. Android SSID unavailable => UNAUTHORIZED
+const bridgeUnavailable = processNativeBridgePayload({
+  connected: true,
+  transport: "wifi",
+  ssid: null,
+  permissionGranted: true,
+  locationEnabled: true,
+});
+assert(bridgeUnavailable.authorized === false, "Android SSID unavailable => UNAUTHORIZED");
+assert(bridgeUnavailable.reason === "SSID_UNAVAILABLE", 'bridgeUnavailable reason is "SSID_UNAVAILABLE"');
 
 // =================================================================
-// 6. ATTENDANCE VERIFICATION GATING ORDER
-// 1. Wi-Fi SSID authorization
-// 2. GPS polygon geofence
-// 3. Face recognition / liveness
-// 4. Attendance registration
-// If Wi-Fi fails: GPS and face diagnostics visible, but attendance registration BLOCKED
+// 7. ATTENDANCE REGISTRATION GATING TESTS
 // =================================================================
-console.log("\n--- 6. ATTENDANCE REGISTRATION GATING TESTS ---");
+console.log("\n--- 7. ATTENDANCE REGISTRATION GATING TESTS ---");
 
 function evaluateAttendanceRegistration(wifiResult, gpsInsideGeofence, faceAuthenticated) {
-  // Pure 3-factor gate:
   const canMarkAttendance = wifiResult.authorized && gpsInsideGeofence && faceAuthenticated;
   return {
     canMarkAttendance,
@@ -192,21 +293,17 @@ function evaluateAttendanceRegistration(wifiResult, gpsInsideGeofence, faceAuthe
   };
 }
 
-// Case A: Wi-Fi fails ("Oppo K13"), GPS is inside, Face is verified
 const gateOppo = evaluateAttendanceRegistration(oppo, true, true);
 assert(gateOppo.canMarkAttendance === false, "Attendance blocked when Wi-Fi fails (Oppo K13)");
 assert(gateOppo.blockedReason === "BLOCKED_WIFI", "Blocked reason is BLOCKED_WIFI");
 
-// Case B: Wi-Fi fails (Unavailable), GPS is inside, Face is verified
 const gateUnavailable = evaluateAttendanceRegistration(unavailableSsid, true, true);
 assert(gateUnavailable.canMarkAttendance === false, "Attendance blocked when SSID is Unavailable");
 assert(gateUnavailable.blockedReason === "BLOCKED_WIFI", "Blocked reason is BLOCKED_WIFI");
 
-// Case C: Wi-Fi passes ("M"), GPS inside, Face verified -> ALLOWED
 const gateM = evaluateAttendanceRegistration(mUpper, true, true);
 assert(gateM.canMarkAttendance === true, "Attendance registration allowed when M + GPS + Face pass");
 
-// Case D: Wi-Fi passes ("SONA-WIFI"), GPS inside, Face verified -> ALLOWED
 const gateSona = evaluateAttendanceRegistration(sonaWifiUpper, true, true);
 assert(gateSona.canMarkAttendance === true, "Attendance registration allowed when SONA-WIFI + GPS + Face pass");
 

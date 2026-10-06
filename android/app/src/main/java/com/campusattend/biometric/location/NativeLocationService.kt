@@ -16,6 +16,7 @@ import android.net.Uri
 import android.net.wifi.rtt.WifiRttManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
@@ -97,9 +98,20 @@ data class NativeLocationSessionState(
     val isAttendanceAllowed: Boolean,
     val currentReading: NativeLocationReading?,
     val bestReading: NativeLocationReading? = null,
-    val readingsHistory: List<NativeLocationReading>,
-    val deviceCapabilities: DeviceCapabilityReport,
-    val gnssTelemetry: GnssLiveTelemetry,
+    val readingsHistory: List<NativeLocationReading> = emptyList(),
+    val deviceCapabilities: DeviceCapabilityReport = DeviceCapabilityReport(
+        gnssAvailable = false,
+        rawGnssAvailable = false,
+        dualFrequencyAvailable = false,
+        l1Available = false,
+        l5Available = false,
+        carrierPhaseAvailable = false,
+        adrAvailable = false,
+        wifiRttAvailable = false,
+        accelerometerAvailable = false,
+        gyroscopeAvailable = false
+    ),
+    val gnssTelemetry: GnssLiveTelemetry = GnssLiveTelemetry(),
     val whyAccuracyIsPoor: List<String> = emptyList(),
     val containmentStatus: String = "UNKNOWN",
     val distanceToBoundaryMeters: Double? = null,
@@ -472,7 +484,7 @@ class NativeLocationService(private val context: Context) {
                 }
             }
 
-            locationManager.registerGnssStatusCallback(gnssStatusCallback!!, Looper.getMainLooper())
+            locationManager.registerGnssStatusCallback(gnssStatusCallback!!, Handler(Looper.getMainLooper()))
             Log.i(TAG, "GnssStatus callback registered successfully")
         } catch (e: Exception) {
             Log.w(TAG, "GnssStatus registration warning: ${e.message}")
@@ -537,7 +549,7 @@ class NativeLocationService(private val context: Context) {
                 }
             }
 
-            locationManager.registerGnssMeasurementsCallback(gnssMeasurementsCallback!!, Looper.getMainLooper())
+            locationManager.registerGnssMeasurementsCallback(gnssMeasurementsCallback!!, Handler(Looper.getMainLooper()))
             Log.i(TAG, "GnssMeasurementsEvent callback registered successfully")
         } catch (e: Exception) {
             Log.w(TAG, "GnssMeasurementsEvent registration notice: ${e.message}")

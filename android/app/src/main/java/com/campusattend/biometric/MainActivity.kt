@@ -203,6 +203,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun requestWifiPermissionsFromBridge() {
+        runOnUiThread {
+            val permissions = mutableListOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_WIFI_STATE,
+                Manifest.permission.ACCESS_NETWORK_STATE
+            )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+            val needed = permissions.filter {
+                ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            }
+            if (needed.isNotEmpty()) {
+                requestPermissionLauncher.launch(needed.toTypedArray())
+            } else {
+                Toast.makeText(this, "Wi-Fi permissions granted. Please ensure Location services are turned ON.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun checkAndRequestPermissions() {
         val permissions = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,

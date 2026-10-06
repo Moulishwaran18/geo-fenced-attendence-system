@@ -89,6 +89,9 @@ export interface WifiStatus {
   frequency?: number | undefined;
   linkSpeed?: number | undefined;
   rssi?: number | undefined;
+  permissionDenied?: boolean | undefined;
+  locationDisabled?: boolean | undefined;
+  isNativeBridge?: boolean | undefined;
 }
 
 export const AUTHORIZED_SSIDS = ["M", "SONA-WIFI"];
