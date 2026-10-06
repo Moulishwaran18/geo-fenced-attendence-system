@@ -81,20 +81,12 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         isSonaWifi: false,
         authorized: false,
         ssid: "Unavailable",
-        bssid: "Not available in browser",
-        signal: "",
-        ip: "",
-        gateway: "",
-        dns: "",
-        dnsSuffix: "",
-        auth: "",
         state: isOnline ? "unknown" : "disconnected",
         reason: isOnline
-          ? "Unauthorized campus network. Verification server unreachable or connection unverified."
-          : "Network offline or disconnected. Please connect to M or SONA-WIFI.",
+          ? "Unauthorized Wi-Fi network. Device must be connected to an authorized campus Wi-Fi network (M or SONA)."
+          : "Network offline or disconnected. Please connect to M or SONA.",
         timestamp: new Date().toISOString(),
-        bssidStatusMessage: "Public IP unverified",
-        networkSummary: isOnline ? "Unauthorized campus network" : "Offline",
+        networkSummary: isOnline ? "Unauthorized Wi-Fi network" : "Offline",
         stage: isOnline ? "UNABLE_TO_VERIFY" : "DISCONNECTED",
       };
       setStatus(errorStatus);

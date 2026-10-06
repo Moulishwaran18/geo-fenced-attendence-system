@@ -2,15 +2,18 @@
  * Vercel Serverless Function: GET /api/wifi-status & POST /api/wifi-status
  *
  * Provides campus Wi-Fi verification on deployed Vercel production environment.
+ * Uses ONLY SSID name-based authorization.
+ *
+ * Rule:
+ * normalizedSsid === "m" || normalizedSsid.includes("sona")
+ *
+ * If SSID cannot be provided by browser, returns SSID_UNAVAILABLE and fails.
  */
-import {
-  verifyCampusWifi,
-  extractClientPublicIpFromHeaders,
-} from "../src/lib/wifi-config.ts";
+import { verifyCampusWifi } from "../src/lib/wifi-config.ts";
 
 export default async function handler(req: any, res?: any) {
-  // Support both Web Request and Node IncomingMessage
   let body: any = {};
+
   if (req.method === "POST") {
     try {
       if (typeof req.json === "function") {
@@ -23,44 +26,48 @@ export default async function handler(req: any, res?: any) {
     }
   }
 
-  const clientPublicIp = extractClientPublicIpFromHeaders(req.headers || {});
-  const configuredAuthorizedIp = (
-    (typeof process !== "undefined" && process?.env?.["AUTHORIZED_M_PUBLIC_IP"]
-      ? (process.env["AUTHORIZED_M_PUBLIC_IP"] as string)
-      : "") || ""
-  ).trim();
+  // Extract SSID from POST body or query parameter
+  let querySsid = "";
+  try {
+    if (req.url) {
+      const parsedUrl = new URL(req.url, "http://localhost");
+      querySsid = parsedUrl.searchParams.get("ssid") || "";
+    } else if (req.query?.ssid) {
+      querySsid = String(req.query.ssid);
+    }
+  } catch {
+    querySsid = "";
+  }
+
+  const requestedSsid = body.ssid !== undefined ? body.ssid : querySsid;
+
+  // Browser limitation: if no valid SSID provided, do NOT fabricate an SSID.
+  // Return SSID_UNAVAILABLE and mark Wi-Fi verification as FAILED/UNKNOWN.
+  const ssidToVerify =
+    requestedSsid !== null && requestedSsid !== undefined && String(requestedSsid).trim() !== ""
+      ? String(requestedSsid)
+      : "SSID_UNAVAILABLE";
 
   const verification = verifyCampusWifi({
-    ...body,
-    clientPublicIp: clientPublicIp || body.clientPublicIp || body.clientIp || body.ip,
-    authorizedMPublicIp: configuredAuthorizedIp,
+    ssid: ssidToVerify,
+    state: body.state,
+    signal: body.signal,
+    band: body.band,
+    auth: body.auth,
   });
 
   const responsePayload = {
     isSonaWifi: verification.authorized,
     authorized: verification.authorized,
     ssid: verification.ssid,
-    bssid: verification.bssid,
-    ip: verification.ip || clientPublicIp,
-    publicIp: clientPublicIp,
-    gateway: verification.gateway,
-    dns: verification.dns,
-    state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
-    reason: verification.reason,
-    stage: verification.stage,
-    bssidStatusMessage: verification.bssidStatusMessage,
     networkSummary: verification.networkSummary,
-    authMethod: verification.authMethod,
+    reason: verification.reason,
+    state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
+    stage: verification.stage,
     timestamp: verification.timestamp,
-    signal: body.signal || (body.rssi ? `${body.rssi} dBm` : verification.signal || ""),
-    band: body.band || (body.frequency ? (body.frequency >= 4900 ? "5 GHz" : "2.4 GHz") : verification.band) || "",
-    auth: body.auth || body.security || verification.auth || "",
-    frequency: body.frequency,
-    linkSpeed: body.linkSpeed,
-    rssi: body.rssi,
   };
 
-  // Node.js Serverless runtime
+  // Node.js Serverless runtime (req, res)
   if (res && typeof res.setHeader === "function") {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -78,7 +85,7 @@ export default async function handler(req: any, res?: any) {
     }
   }
 
-  // Web API / Edge runtime
+  // Web API / Edge runtime (Response)
   return new Response(JSON.stringify(responsePayload), {
     status: 200,
     headers: {

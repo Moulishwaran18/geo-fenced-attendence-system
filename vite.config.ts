@@ -10,8 +10,6 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 import { getWifiStatus } from "./src/lib/wifi-detection.ts";
 import {
   verifyCampusWifi,
-  extractClientPublicIpFromHeaders,
-  isAuthorizedMPublicIp,
 } from "./src/lib/wifi-config.ts";
 import { handleFaceVerifyApi } from "./src/server/api/face-search-handler.ts";
 import { handleFaceDetectionLogApi } from "./src/server/api/audit-log-handler.ts";
@@ -21,33 +19,6 @@ function apiMiddlewarePlugin(): Plugin {
     name: "api-middleware",
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        // Diagnostic endpoint to discover client's public IP
-        if (req.url && req.url.startsWith("/api/network-info")) {
-          const clientIp = extractClientPublicIpFromHeaders(req.headers);
-          const configuredIp = ((process.env["AUTHORIZED_M_PUBLIC_IP"] as string) || "").trim();
-          const isMatch = isAuthorizedMPublicIp(clientIp, configuredIp);
-
-          let networkCheck = "UNAUTHORIZED (Does not match AUTHORIZED_M_PUBLIC_IP)";
-          if (!configuredIp) {
-            networkCheck = "NOT_CONFIGURED (Please set AUTHORIZED_M_PUBLIC_IP in environment)";
-          } else if (isMatch) {
-            networkCheck = "AUTHORIZED (Matches AUTHORIZED_M_PUBLIC_IP)";
-          }
-
-          res.setHeader("Content-Type", "application/json");
-          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-          res.end(
-            JSON.stringify({
-              publicIp: clientIp || "unknown",
-              networkCheck,
-              configuredAuthorizedIp: configuredIp ? "[CONFIGURED]" : "[NOT SET]",
-              isAuthorized: isMatch,
-              timestamp: new Date().toISOString(),
-            }),
-          );
-          return;
-        }
-
         if (
           req.url &&
           (req.url.startsWith("/api/wifi/verify") ||
@@ -60,37 +31,24 @@ function apiMiddlewarePlugin(): Plugin {
             } catch {
               body = {};
             }
-            const clientPublicIp = extractClientPublicIpFromHeaders(req.headers);
-            const configuredAuthorizedIp = ((process.env["AUTHORIZED_M_PUBLIC_IP"] as string) || "").trim();
 
             const verification = verifyCampusWifi({
-              ...body,
-              clientPublicIp: clientPublicIp || body.clientPublicIp || body.clientIp || body.ip,
-              authorizedMPublicIp: configuredAuthorizedIp,
+              ssid: body.ssid,
+              state: body.state,
+              signal: body.signal,
+              band: body.band,
+              auth: body.auth,
             });
 
             const responsePayload = {
               isSonaWifi: verification.authorized,
               authorized: verification.authorized,
               ssid: verification.ssid,
-              bssid: verification.bssid,
-              ip: verification.ip,
-              publicIp: clientPublicIp,
-              gateway: verification.gateway,
-              dns: verification.dns,
-              state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
-              reason: verification.reason,
-              stage: verification.stage,
-              bssidStatusMessage: verification.bssidStatusMessage,
               networkSummary: verification.networkSummary,
-              authMethod: verification.authMethod,
+              reason: verification.reason,
+              state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
+              stage: verification.stage,
               timestamp: verification.timestamp,
-              signal: body.signal || (body.rssi ? `${body.rssi} dBm` : verification.signal || ""),
-              band: body.band || (body.frequency ? (body.frequency >= 4900 ? "5 GHz" : "2.4 GHz") : verification.band) || "",
-              auth: body.auth || body.security || verification.auth || "",
-              frequency: body.frequency,
-              linkSpeed: body.linkSpeed,
-              rssi: body.rssi,
             };
 
             res.setHeader("Content-Type", "application/json");
@@ -125,51 +83,25 @@ function apiMiddlewarePlugin(): Plugin {
         }
 
         if (req.url && req.url.startsWith("/api/wifi-status")) {
-          const clientPublicIp = extractClientPublicIpFromHeaders(req.headers);
-          const configuredAuthorizedIp = ((process.env["AUTHORIZED_M_PUBLIC_IP"] as string) || "").trim();
-
           let osStatus = null;
-          if (
-            process.platform === "win32" &&
-            (clientPublicIp === "127.0.0.1" || clientPublicIp === "::1" || !clientPublicIp)
-          ) {
+          if (process.platform === "win32") {
             osStatus = getWifiStatus();
           }
 
           const verification = verifyCampusWifi({
             ssid: osStatus?.ssid,
-            bssid: osStatus?.bssid,
             state: osStatus?.state,
-            ip: osStatus?.ip,
-            gateway: osStatus?.gateway,
-            dns: osStatus?.dns,
-            dnsSuffix: osStatus?.dnsSuffix,
-            auth: osStatus?.auth,
-            band: osStatus?.band,
-            signal: osStatus?.signal,
-            clientPublicIp,
-            authorizedMPublicIp: configuredAuthorizedIp,
           });
 
           const responsePayload = {
             isSonaWifi: verification.authorized,
             authorized: verification.authorized,
             ssid: verification.ssid,
-            bssid: verification.bssid,
-            ip: verification.ip || clientPublicIp,
-            publicIp: clientPublicIp,
-            gateway: verification.gateway,
-            dns: verification.dns,
-            state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
-            reason: verification.reason,
-            stage: verification.stage,
-            bssidStatusMessage: verification.bssidStatusMessage,
             networkSummary: verification.networkSummary,
-            authMethod: verification.authMethod,
+            reason: verification.reason,
+            state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
+            stage: verification.stage,
             timestamp: verification.timestamp,
-            signal: verification.signal || "",
-            band: verification.band || "",
-            auth: verification.auth || "",
           };
 
           res.setHeader("Content-Type", "application/json");

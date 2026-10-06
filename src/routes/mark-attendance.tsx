@@ -292,29 +292,23 @@ function MarkAttendancePage() {
     detail: React.ReactNode;
     state: "verified" | "warning" | "error" | "pending";
   }> => {
-    // 1. WI-FI AUTHORIZATION
-    const wifiBssidDisplay =
-      wifiStatus?.bssid &&
-      wifiStatus.bssid !== "None" &&
-      wifiStatus.bssid !== "Unknown" &&
-      wifiStatus.bssid !== "02:00:00:00:00:00"
-        ? wifiStatus.bssid
-        : "Not available in browser";
+    // 1. WI-FI AUTHORIZATION (SSID-ONLY)
+    const rawSsid = wifiStatus?.ssid?.trim() || "";
+    const displaySsid =
+      wifiCardStatus === "CHECKING"
+        ? "Checking…"
+        : rawSsid && rawSsid !== "Unavailable" && rawSsid !== "Unknown"
+          ? rawSsid
+          : wifiAuthorized
+            ? "M"
+            : rawSsid || "Unavailable";
 
-    const wifiNetworkDisplay =
-      wifiStatus?.gateway
-        ? `GW: ${wifiStatus.gateway}${wifiStatus.ip ? ` · IP: ${wifiStatus.ip}` : ""}`
-        : wifiStatus?.ip
-          ? `IP: ${wifiStatus.ip}`
-          : wifiStatus?.state === "disconnected"
-            ? "Disconnected / Offline"
-            : "Campus telemetry";
-
-    const isMVerified =
-      wifiAuthorized &&
-      (wifiStatus?.ssid === "M" ||
-        wifiStatus?.authMethod?.includes("public network") ||
-        wifiStatus?.authMethod?.includes("IP"));
+    const displayNetwork =
+      wifiCardStatus === "VERIFIED"
+        ? "Authorized campus Wi-Fi"
+        : wifiCardStatus === "CHECKING"
+          ? "Verifying network…"
+          : "Unauthorized Wi-Fi network";
 
     const wifiSignal = {
       key: "wifi" as const,
@@ -323,38 +317,18 @@ function MarkAttendancePage() {
         <div className="mt-1 space-y-0.5 font-mono text-[11px] text-muted-foreground">
           <div>
             <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">
-              {isMVerified ? "Network:" : "SSID:"}
+              SSID:
             </span>{" "}
             <span className="font-semibold text-foreground">
-              {wifiCardStatus === "VERIFIED"
-                ? isMVerified
-                  ? "M"
-                  : wifiStatus?.ssid || "SONA-WIFI"
-                : wifiCardStatus === "CHECKING"
-                  ? "Checking…"
-                  : wifiStatus?.ssid && wifiStatus.ssid !== "Unavailable" && wifiStatus.ssid !== "Unknown"
-                    ? wifiStatus.ssid
-                    : "Unauthorized campus network"}
+              {displaySsid}
             </span>
           </div>
           <div className="truncate">
             <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">
-              {isMVerified ? "Method:" : "BSSID:"}
+              Network:
             </span>{" "}
             <span>
-              {isMVerified
-                ? wifiStatus?.authMethod || "Campus public network verified"
-                : wifiBssidDisplay}
-            </span>
-          </div>
-          <div className="truncate">
-            <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">Status:</span>{" "}
-            <span>
-              {wifiCardStatus === "VERIFIED"
-                ? wifiStatus?.networkSummary || "Authorized campus Wi-Fi"
-                : wifiCardStatus === "FAILED"
-                  ? wifiStatus?.networkSummary || "Unauthorized campus network"
-                  : wifiNetworkDisplay}
+              {displayNetwork}
             </span>
           </div>
         </div>
@@ -362,76 +336,30 @@ function MarkAttendancePage() {
       state: (wifiCardStatus === "VERIFIED" ? "verified" : wifiCardStatus === "CHECKING" ? "warning" : "error") as "verified" | "warning" | "error",
     };
 
-    // 2. GPS POLYGON GEOFENCE
-    let locationSignal: {
-      key: "location";
-      value: string;
-      detail: React.ReactNode;
-      state: "verified" | "warning" | "error" | "pending";
+    // 2. GPS POLYGON GEOFENCE (Visible for diagnostics even if Wi-Fi fails)
+    const locationSignal = {
+      key: "location" as const,
+      value: liveLocationSignal.value,
+      detail: liveLocationSignal.detail,
+      state: liveLocationSignal.state,
     };
 
-    if (wifiCardStatus === "FAILED") {
-      locationSignal = {
-        key: "location",
-        value: "NOT STARTED",
-        detail: "Status: LOCKED until Wi-Fi verification succeeds",
-        state: "error",
-      };
-    } else if (wifiCardStatus === "CHECKING") {
-      locationSignal = {
-        key: "location",
-        value: "LOCKED",
-        detail: "Status: LOCKED until Wi-Fi verification succeeds",
-        state: "pending",
-      };
-    } else {
-      locationSignal = {
-        key: "location",
-        value: liveLocationSignal.value,
-        detail: liveLocationSignal.detail,
-        state: liveLocationSignal.state,
-      };
-    }
-
-    // 3. FACE RECOGNITION
-    let identitySignal: {
-      key: "identity";
-      value: string;
-      detail: React.ReactNode;
-      state: "verified" | "warning" | "error" | "pending";
-    };
-
-    if (wifiCardStatus === "FAILED") {
-      identitySignal = {
-        key: "identity",
-        value: "NOT STARTED",
-        detail: "Status: LOCKED until Wi-Fi + GPS succeed",
-        state: "error",
-      };
-    } else if (wifiCardStatus === "CHECKING" || !gpsInsideGeofence) {
-      identitySignal = {
-        key: "identity",
-        value: "LOCKED",
-        detail: "Status: LOCKED until Wi-Fi + GPS succeed",
-        state: "pending",
-      };
-    } else {
-      identitySignal = {
-        key: "identity",
-        value: faceAuthenticated
-          ? `Verified · ${faceResult?.staffName || faceResult?.staffCode || "Staff"}`
+    // 3. FACE RECOGNITION (Visible for diagnostics even if Wi-Fi fails)
+    const identitySignal = {
+      key: "identity" as const,
+      value: faceAuthenticated
+        ? `Verified · ${faceResult?.staffName || faceResult?.staffCode || "Staff"}`
+        : faceResult
+          ? "Unknown Face"
+          : "Live Face Scan",
+      detail:
+        faceAuthenticated && faceResult?.distance !== undefined
+          ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
           : faceResult
-            ? "Unknown Face"
-            : "Live Face Scan",
-        detail:
-          faceAuthenticated && faceResult?.distance !== undefined
-            ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
-            : faceResult
-              ? "Biometric match rejected"
-              : "ArcFace Biometrics Required",
-        state: faceAuthenticated ? "verified" : faceResult ? "error" : "pending",
-      };
-    }
+            ? "Biometric match rejected"
+            : "ArcFace Biometrics Required",
+      state: (faceAuthenticated ? "verified" : faceResult ? "error" : "pending") as "verified" | "error" | "pending",
+    };
 
     // 4. ATTENDANCE DECISION
     let decisionSignal: {
