@@ -74,75 +74,32 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         setLastChecked(new Date());
         return data;
       }
-
-      // If backend responded with non-200 but browser is online
-      if (typeof navigator !== "undefined" && navigator.onLine) {
-        const onlineWebStatus: WifiStatus = {
-          isSonaWifi: true,
-          authorized: true,
-          ssid: "M",
-          bssid: "Not available in browser",
-          signal: "",
-          ip: "",
-          gateway: "",
-          dns: "",
-          dnsSuffix: "",
-          auth: "WPA/WPA2-Personal",
-          state: "connected",
-          reason: 'Verified Campus Wi-Fi "M" (Authorized campus Wi-Fi)',
-          networkSummary: "Authorized campus Wi-Fi",
-          bssidStatusMessage: "BSSID not available in browser",
-          stage: "VERIFIED",
-          timestamp: new Date().toISOString(),
-        };
-        setStatus(onlineWebStatus);
-        setLastChecked(new Date());
-        return onlineWebStatus;
-      }
     } catch {
-      // If endpoint couldn't be reached
-      if (typeof navigator !== "undefined" && navigator.onLine) {
-        const onlineWebStatus: WifiStatus = {
-          isSonaWifi: true,
-          authorized: true,
-          ssid: "M",
-          bssid: "Not available in browser",
-          signal: "",
-          ip: "",
-          gateway: "",
-          dns: "",
-          dnsSuffix: "",
-          auth: "WPA/WPA2-Personal",
-          state: "connected",
-          reason: 'Verified Campus Wi-Fi "M" (Authorized campus Wi-Fi)',
-          networkSummary: "Authorized campus Wi-Fi",
-          bssidStatusMessage: "BSSID not available in browser",
-          stage: "VERIFIED",
-          timestamp: new Date().toISOString(),
-        };
-        setStatus(onlineWebStatus);
-        setLastChecked(new Date());
-        return onlineWebStatus;
-      }
-
-      const offlineStatus: WifiStatus = {
+      // If endpoint couldn't be reached or SSID is unavailable
+      const isOnline = typeof navigator !== "undefined" && navigator.onLine;
+      const errorStatus: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
-        ssid: "None",
-        bssid: "Not available",
+        ssid: "Unavailable",
+        bssid: "Not available in browser",
         signal: "",
         ip: "",
         gateway: "",
         dns: "",
         dnsSuffix: "",
         auth: "",
-        state: "disconnected",
-        reason: "Network offline or disconnected. Please connect to M or SONA-WIFI.",
+        state: isOnline ? "unknown" : "disconnected",
+        reason: isOnline
+          ? "Wi-Fi SSID is unavailable or unverified. Connect to an authorized campus network (M or SONA-WIFI)."
+          : "Network offline or disconnected. Please connect to M or SONA-WIFI.",
         timestamp: new Date().toISOString(),
+        bssidStatusMessage: "SSID unavailable",
+        networkSummary: isOnline ? "Wi-Fi verification required" : "Offline",
+        stage: isOnline ? "UNABLE_TO_VERIFY" : "DISCONNECTED",
       };
-      setStatus(offlineStatus);
+      setStatus(errorStatus);
       setLastChecked(new Date());
-      return offlineStatus;
+      return errorStatus;
     } finally {
       setIsLoading(false);
       setIsChecking(false);

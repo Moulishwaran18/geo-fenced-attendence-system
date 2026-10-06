@@ -318,7 +318,7 @@ function MarkAttendancePage() {
           <div>
             <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">SSID:</span>{" "}
             <span className="font-semibold text-foreground">
-              {wifiStatus?.ssid || (wifiCardStatus === "CHECKING" ? "Checking…" : "None")}
+              {wifiStatus?.ssid || (wifiCardStatus === "CHECKING" ? "Checking…" : "Unavailable")}
             </span>
           </div>
           <div className="truncate">

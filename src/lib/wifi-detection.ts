@@ -15,26 +15,23 @@ export { AUTHORIZED_SSIDS, type WifiStatus };
  */
 export function getWifiStatus(): WifiStatus {
   if (typeof window !== "undefined") {
-    const isOnline = typeof navigator === "undefined" || navigator.onLine;
     return {
-      isSonaWifi: isOnline,
-      authorized: isOnline,
-      ssid: isOnline ? "M" : "None",
-      bssid: isOnline ? "Not available in browser" : "Not available",
+      isSonaWifi: false,
+      authorized: false,
+      ssid: "Unavailable",
+      bssid: "Not available in browser",
       signal: "",
       ip: "",
       gateway: "",
       dns: "",
       dnsSuffix: "",
-      auth: isOnline ? "WPA/WPA2-Personal" : "",
-      state: isOnline ? "connected" : "disconnected",
-      reason: isOnline
-        ? 'Verified Campus Wi-Fi "M" (Authorized campus Wi-Fi)'
-        : "Device is disconnected from Wi-Fi. Please connect to an authorized campus network (M or SONA-WIFI).",
+      auth: "",
+      state: "unknown",
+      reason: "SSID unavailable. Connect to an authorized campus network (M or SONA-WIFI).",
       timestamp: new Date().toISOString(),
-      bssidStatusMessage: "BSSID not available in browser",
-      networkSummary: isOnline ? "Authorized campus Wi-Fi" : "Offline",
-      stage: isOnline ? "VERIFIED" : "DISCONNECTED",
+      bssidStatusMessage: "SSID unavailable",
+      networkSummary: "Wi-Fi verification required",
+      stage: "UNABLE_TO_VERIFY",
     };
   }
   let ssid = "";
@@ -154,7 +151,7 @@ export function getWifiStatus(): WifiStatus {
   return {
     isSonaWifi: verification.authorized,
     authorized: verification.authorized,
-    ssid: verification.ssid || ssid || "M",
+    ssid: verification.ssid || ssid || "Unavailable",
     bssid: verification.bssid || bssid || "Not available in browser",
     signal: verification.signal || signal,
     band: verification.band || band,

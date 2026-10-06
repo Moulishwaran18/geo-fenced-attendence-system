@@ -153,14 +153,26 @@ export const AUTHORIZED_SSIDS = ["M", "SONA-WIFI"];
  */
 export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerificationResult {
   const timestamp = new Date().toISOString();
-  let rawSsid = (payload.ssid || "").trim().replace(/^["']|["']$/g, "");
+  const rawSsid = (payload.ssid || "").trim().replace(/^["']|["']$/g, "");
   const bssid = (payload.bssid || "").trim();
   const state = payload.state || "unknown";
   const ip = (payload.ip || "").trim();
   const gateway = (payload.gateway || "").trim();
   const dns = (payload.dns || "").trim();
 
-  // 1. CONNECTED TO WI-FI?
+  // Normalize BSSID representation
+  const isBssidUnavailable =
+    !bssid ||
+    bssid === "None" ||
+    bssid === "Unknown" ||
+    bssid === "<unknown bssid>" ||
+    bssid === "02:00:00:00:00:00" ||
+    bssid === "Not available in browser" ||
+    bssid === "Not available";
+
+  const displayBssid = isBssidUnavailable ? "Not available in browser" : bssid;
+
+  // 1. DISCONNECTED CHECK
   if (state === "disconnected") {
     return {
       authorized: false,
@@ -179,50 +191,26 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     };
   }
 
-  // Normalize BSSID: browser does not reliably expose Android Wi-Fi BSSID.
-  // Never falsely claim BSSID verified or display "BSSID: Unknown" as a reason to reject.
-  const isBssidUnavailable =
-    !bssid ||
-    bssid === "None" ||
-    bssid === "Unknown" ||
-    bssid === "<unknown bssid>" ||
-    bssid === "02:00:00:00:00:00" ||
-    bssid === "Not available in browser" ||
-    bssid === "Not available";
-
-  const displayBssid = isBssidUnavailable ? "Not available in browser" : bssid;
-
-  // Web Browser / Hidden SSID handling:
-  // Standard web browsers (including Chrome on Android running on Vercel) cannot inspect Wi-Fi SSID directly.
-  // In the web application flow, treat the configured authorized SSID "M" as the available Wi-Fi check.
-  const isSsidWithheldOrEmpty =
+  // 2. SSID UNAVAILABLE / UNKNOWN CHECK
+  // NEVER assume M when SSID is unavailable or unknown!
+  if (
     !rawSsid ||
     rawSsid === "<unknown ssid>" ||
     rawSsid === "Unknown / Hidden" ||
     rawSsid === "None" ||
-    rawSsid === "Unknown";
-
-  if (isSsidWithheldOrEmpty) {
-    rawSsid = "M";
-  }
-
-  // 2. SSID MATCH? (Accept only "M" or "SONA-WIFI")
-  const matchedKey = Object.keys(AUTHORIZED_CAMPUS_NETWORKS).find(
-    (key) => key.toUpperCase() === rawSsid.toUpperCase(),
-  );
-
-  const profile = matchedKey ? AUTHORIZED_CAMPUS_NETWORKS[matchedKey] : undefined;
-
-  if (!matchedKey || !profile) {
+    rawSsid === "Unknown" ||
+    rawSsid === "Unavailable"
+  ) {
     return {
       authorized: false,
-      stage: "SSID_CHECK_FAILED",
-      reason: `Unauthorized Wi-Fi network "${rawSsid}". Only authorized networks ("M" or "SONA-WIFI") are permitted.`,
-      ssid: rawSsid,
+      stage: "UNABLE_TO_VERIFY",
+      reason:
+        "Wi-Fi SSID is unavailable or hidden. Wi-Fi cannot be verified. Connect to an authorized campus network (M or SONA-WIFI).",
+      ssid: "Unavailable",
       bssid: displayBssid,
       bssidVerified: false,
-      bssidStatusMessage: "SSID unauthorized",
-      networkSummary: "Unauthorized Wi-Fi network",
+      bssidStatusMessage: "SSID unavailable",
+      networkSummary: "Wi-Fi verification required",
       ip: ip || "—",
       gateway: gateway || "—",
       dns: dns || "—",
@@ -230,48 +218,16 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     };
   }
 
-  // 3. BSSID MATCH? (Do not require BSSID detection; do not reject solely because BSSID is unavailable)
-  let bssidVerified = false;
-  let bssidStatusMessage = "BSSID not available in browser";
-
-  if (!isBssidUnavailable && profile.authorizedBssids.length > 0) {
-    const cleanClientBssid = bssid.toLowerCase().replace(/[:-]/g, "");
-    const matchFound = profile.authorizedBssids.some(
-      (authBssid) => authBssid.toLowerCase().replace(/[:-]/g, "") === cleanClientBssid,
-    );
-
-    if (matchFound) {
-      bssidVerified = true;
-      bssidStatusMessage = `BSSID verified against campus AP list: ${bssid}`;
-    } else {
-      return {
-        authorized: false,
-        stage: "BSSID_CHECK_FAILED",
-        reason: `Unauthorized Wi-Fi network. Detected AP BSSID (${bssid}) does not match authorized campus access points for "${profile.ssid}". Rogue hotspot suspected.`,
-        ssid: profile.ssid,
-        bssid,
-        bssidVerified: false,
-        bssidStatusMessage: "Rogue AP BSSID detected",
-        networkSummary: "Unauthorized Wi-Fi network",
-        ip: ip || "—",
-        gateway: gateway || "—",
-        dns: dns || "—",
-        timestamp,
-      };
-    }
-  }
-
-  // 4. NETWORK & GATEWAY VALIDATION
-  // Anti-VPN check if capabilities provided
+  // Common Anti-VPN check if capabilities provided
   if (payload.capabilities && payload.capabilities.notVpn === false) {
     return {
       authorized: false,
       stage: "NETWORK_VALIDATION_FAILED",
       reason: "Active VPN or tunnel detected. Disable VPN to verify campus Wi-Fi connection.",
-      ssid: profile.ssid,
+      ssid: rawSsid,
       bssid: displayBssid,
       bssidVerified: false,
-      bssidStatusMessage,
+      bssidStatusMessage: "VPN detected",
       networkSummary: "Unauthorized Wi-Fi network (VPN / Proxy active)",
       ip: ip || "—",
       gateway: gateway || "—",
@@ -280,7 +236,7 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     };
   }
 
-  // Anti-Hotspot check: Reject personal mobile hotspot subnets (192.168.43.x, 172.20.10.x, 192.168.137.x, etc.)
+  // Common Anti-Hotspot check: Reject personal mobile hotspot subnets (192.168.43.x, 172.20.10.x, 192.168.137.x, etc.)
   const isObviousHotspotIp =
     ip.startsWith("192.168.43.") ||
     gateway.startsWith("192.168.43.") ||
@@ -293,8 +249,8 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     return {
       authorized: false,
       stage: "NETWORK_VALIDATION_FAILED",
-      reason: `Unauthorized Wi-Fi network. Detected rogue mobile hotspot subnet (IP: ${ip}, Gateway: ${gateway}) matching SSID "${profile.ssid}".`,
-      ssid: profile.ssid,
+      reason: `Unauthorized Wi-Fi network. Detected rogue mobile hotspot subnet (IP: ${ip}, Gateway: ${gateway}) matching SSID "${rawSsid}".`,
+      ssid: rawSsid,
       bssid: displayBssid,
       bssidVerified: false,
       bssidStatusMessage: "Mobile hotspot subnet detected",
@@ -309,22 +265,157 @@ export function verifyCampusWifi(payload: WifiVerificationPayload): WifiVerifica
     };
   }
 
-  // 5. SUCCESS: Wi-Fi Authorized (M or SONA-WIFI)
+  // =========================================================================
+  // NETWORK 1: SONA-WIFI — STRICT UNIQUE IDENTITY AUTHENTICATION
+  // =========================================================================
+  if (rawSsid.toUpperCase() === "SONA-WIFI") {
+    const profile = AUTHORIZED_CAMPUS_NETWORKS["SONA-WIFI"];
+    if (!profile) {
+      return {
+        authorized: false,
+        stage: "SSID_CHECK_FAILED",
+        reason: 'Configuration missing for "SONA-WIFI"',
+        ssid: "SONA-WIFI",
+        bssid: displayBssid,
+        bssidVerified: false,
+        bssidStatusMessage: "Configuration error",
+        networkSummary: "Unauthorized Wi-Fi network",
+        ip: ip || "—",
+        gateway: gateway || "—",
+        dns: dns || "—",
+        timestamp,
+      };
+    }
+
+    // BSSID Check (if authorized AP list configured)
+    let bssidVerified = false;
+    if (!isBssidUnavailable && profile.authorizedBssids.length > 0) {
+      const cleanClientBssid = bssid.toLowerCase().replace(/[:-]/g, "");
+      const matchFound = profile.authorizedBssids.some(
+        (authBssid) => authBssid.toLowerCase().replace(/[:-]/g, "") === cleanClientBssid,
+      );
+      if (matchFound) {
+        bssidVerified = true;
+      } else {
+        return {
+          authorized: false,
+          stage: "BSSID_CHECK_FAILED",
+          reason: `Unauthorized Wi-Fi network. Detected AP BSSID (${bssid}) does not match authorized campus access points for "SONA-WIFI". Rogue hotspot suspected.`,
+          ssid: "SONA-WIFI",
+          bssid,
+          bssidVerified: false,
+          bssidStatusMessage: "Rogue AP BSSID detected",
+          networkSummary: "Unauthorized Wi-Fi network",
+          ip: ip || "—",
+          gateway: gateway || "—",
+          dns: dns || "—",
+          timestamp,
+        };
+      }
+    }
+
+    // Stable Network Infrastructure Identity Verification:
+    // Gateway 172.16.16.16 OR (DNS 172.16.16.16 AND Subnet 172.16.x.x) OR BSSID verified
+    const matchesGateway = gateway.includes("172.16.16.16");
+    const matchesDns = dns.includes("172.16.16.16");
+    const matchesSubnet = ip.startsWith("172.16.");
+
+    const hasUniqueIdentity = matchesGateway || (matchesDns && matchesSubnet) || bssidVerified;
+
+    if (!hasUniqueIdentity) {
+      return {
+        authorized: false,
+        stage: "NETWORK_VALIDATION_FAILED",
+        reason: `Unauthorized Wi-Fi network. Connected to "SONA-WIFI", but unique network identity could not be verified (authoritative gateway/DNS 172.16.16.16 on subnet 172.16.x.x required).`,
+        ssid: "SONA-WIFI",
+        bssid: displayBssid,
+        bssidVerified: false,
+        bssidStatusMessage: "Unique network identity verification failed",
+        networkSummary: "Unauthorized Wi-Fi network",
+        ip: ip || "—",
+        gateway: gateway || "—",
+        dns: dns || "—",
+        timestamp,
+      };
+    }
+
+    return {
+      authorized: true,
+      stage: "VERIFIED",
+      reason: `Verified Campus Wi-Fi "SONA-WIFI" (Unique institutional network identity verified)`,
+      ssid: "SONA-WIFI",
+      bssid: displayBssid,
+      bssidVerified,
+      bssidStatusMessage: bssidVerified
+        ? `BSSID verified against campus AP list: ${bssid}`
+        : "Institutional network gateway/DNS identity verified",
+      networkSummary: "Authorized campus Wi-Fi",
+      ip,
+      gateway,
+      dns,
+      timestamp,
+      band: payload.band || profile.networkBand,
+      signal: payload.signal,
+      auth: payload.auth || profile.securityType,
+    };
+  }
+
+  // =========================================================================
+  // NETWORK 2: M — SSID / NAME VERIFICATION ONLY
+  // =========================================================================
+  if (rawSsid === "M") {
+    const profile = AUTHORIZED_CAMPUS_NETWORKS["M"];
+    if (!profile) {
+      return {
+        authorized: false,
+        stage: "SSID_CHECK_FAILED",
+        reason: 'Configuration missing for "M"',
+        ssid: "M",
+        bssid: displayBssid,
+        bssidVerified: false,
+        bssidStatusMessage: "Configuration error",
+        networkSummary: "Unauthorized Wi-Fi network",
+        ip: ip || "—",
+        gateway: gateway || "—",
+        dns: dns || "—",
+        timestamp,
+      };
+    }
+
+    return {
+      authorized: true,
+      stage: "VERIFIED",
+      reason: `Verified Campus Wi-Fi "M" (Authorized campus Wi-Fi)`,
+      ssid: "M",
+      bssid: displayBssid,
+      bssidVerified: false,
+      bssidStatusMessage: "BSSID not required for M",
+      networkSummary: "Authorized campus Wi-Fi",
+      ip,
+      gateway,
+      dns,
+      timestamp,
+      band: payload.band || profile.networkBand,
+      signal: payload.signal,
+      auth: payload.auth || profile.securityType,
+    };
+  }
+
+  // =========================================================================
+  // ALL OTHER NETWORKS (e.g. Oppo K13, unauthorized networks)
+  // =========================================================================
   return {
-    authorized: true,
-    stage: "VERIFIED",
-    reason: `Verified Campus Wi-Fi "${profile.ssid}" (Authorized campus Wi-Fi)`,
-    ssid: profile.ssid,
+    authorized: false,
+    stage: "SSID_CHECK_FAILED",
+    reason: `Unauthorized Wi-Fi network "${rawSsid}". Only authorized networks ("M" or "SONA-WIFI") are permitted.`,
+    ssid: rawSsid,
     bssid: displayBssid,
-    bssidVerified,
-    bssidStatusMessage,
-    networkSummary: "Authorized campus Wi-Fi",
-    ip,
-    gateway,
-    dns,
+    bssidVerified: false,
+    bssidStatusMessage: "SSID unauthorized",
+    networkSummary: "Unauthorized Wi-Fi network",
+    ip: ip || "—",
+    gateway: gateway || "—",
+    dns: dns || "—",
     timestamp,
-    band: payload.band || profile.networkBand,
-    signal: payload.signal,
-    auth: payload.auth || profile.securityType,
   };
 }

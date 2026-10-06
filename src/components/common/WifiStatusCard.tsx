@@ -199,15 +199,15 @@ export function WifiStatusCard({
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
             SSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.ssid || "None"}>
-            {status?.ssid || (isChecking ? "Checking…" : "None")}
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.ssid || "Unavailable"}>
+            {status?.ssid || (isChecking ? "Checking…" : "Unavailable")}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {AUTHORIZED_SSIDS.includes(status?.ssid || "")
+            {wifiAuthorized
               ? "Authorized campus Wi-Fi"
               : authorizationStatus === "CHECKING"
                 ? "Detecting network…"
-                : "Unauthorized Wi-Fi network"}
+                : status?.networkSummary || "Unauthorized Wi-Fi network"}
           </div>
         </div>
 

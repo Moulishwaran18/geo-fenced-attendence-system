@@ -2,7 +2,8 @@ import { verifyCampusWifi, AUTHORIZED_CAMPUS_NETWORKS } from "../src/lib/wifi-co
 import { AUTHORIZED_SSIDS } from "../src/lib/wifi-detection.ts";
 
 console.log("=================================================================");
-console.log("   AUTHORITATIVE 3-FACTOR WI-FI SECURITY VERIFICATION SUITE      ");
+console.log("   CAMPUSATTEND DUAL-PATH WI-FI AUTHENTICATION TEST SUITE        ");
+console.log("   (SONA-WIFI: Strict Identity | M: SSID Verification Only)      ");
 console.log("=================================================================\n");
 
 let passed = 0;
@@ -19,181 +20,152 @@ function assert(condition, message) {
 }
 
 // -------------------------------------------------------------
-// Test 1: Verify Configuration Contains Exactly 2 Authorized Networks (M and SONA-WIFI)
+// Test 1: Connected to M (Detected SSID = M)
 // -------------------------------------------------------------
-console.log("1. Verifying Authorized Networks Configuration (M & SONA-WIFI):");
-assert(AUTHORIZED_CAMPUS_NETWORKS["M"] !== undefined, "Network 'M' is configured");
-assert(AUTHORIZED_CAMPUS_NETWORKS["SONA-WIFI"] !== undefined, "Network 'SONA-WIFI' is configured");
-assert(AUTHORIZED_SSIDS.includes("M"), "AUTHORIZED_SSIDS includes 'M'");
-assert(AUTHORIZED_SSIDS.includes("SONA-WIFI"), "AUTHORIZED_SSIDS includes 'SONA-WIFI'");
-assert(AUTHORIZED_SSIDS.length === 2, "AUTHORIZED_SSIDS contains exactly 2 networks (M OR SONA-WIFI)");
-
-// -------------------------------------------------------------
-// Test 2: Network 1 (M) - Campus Wi-Fi Network
-// -------------------------------------------------------------
-console.log("\n2. Testing Network 1: M (Campus 10.220.86.x Subnet & DNS):");
-const mResult = verifyCampusWifi({
+console.log("TEST 1: Connected to M (Detected SSID = M):");
+const test1 = verifyCampusWifi({
   ssid: "M",
   state: "connected",
-  ip: "10.220.86.78",
-  gateway: "",
-  dns: "10.220.86.133, 2409:40f4:301e:8572::94",
-  auth: "WPA/WPA2-Personal",
-  band: "5 GHz",
 });
-assert(mResult.authorized === true, "M authorized = true");
-assert(mResult.stage === "VERIFIED", `M stage = VERIFIED (got: ${mResult.stage})`);
-assert(mResult.networkSummary === "Authorized campus Wi-Fi", `Network summary = 'Authorized campus Wi-Fi'`);
-console.log(`     Summary: ${mResult.networkSummary}`);
+assert(test1.authorized === true, "Wi-Fi AUTHORIZED for detected SSID 'M'");
+assert(test1.stage === "VERIFIED", `Stage = VERIFIED (got: ${test1.stage})`);
+assert(test1.ssid === "M", `SSID = 'M' (got: ${test1.ssid})`);
+assert(test1.bssidVerified === false, "BSSID is not required for M (bssidVerified = false)");
+assert(test1.bssid === "Not available in browser", "BSSID displayed as 'Not available in browser'");
+assert(test1.networkSummary === "Authorized campus Wi-Fi", "Network summary = 'Authorized campus Wi-Fi'");
 
 // -------------------------------------------------------------
-// Test 3: Network 2 (SONA-WIFI) - Institutional Campus Open Wi-Fi
+// Test 2: Connected to Oppo K13 (Detected SSID = Oppo K13)
 // -------------------------------------------------------------
-console.log("\n3. Testing Network 2: SONA-WIFI (Institutional Gateway & Subnet):");
-const sonaResult = verifyCampusWifi({
+console.log("\nTEST 2: Connected to Oppo K13 (Detected SSID = Oppo K13):");
+const test2 = verifyCampusWifi({
+  ssid: "Oppo K13",
+  state: "connected",
+});
+assert(test2.authorized === false, "Wi-Fi FAILED for unauthorized SSID 'Oppo K13'");
+assert(test2.stage === "SSID_CHECK_FAILED", `Stage = SSID_CHECK_FAILED (got: ${test2.stage})`);
+assert(test2.networkSummary === "Unauthorized Wi-Fi network", "Network summary = 'Unauthorized Wi-Fi network'");
+
+// -------------------------------------------------------------
+// Test 3: Connected to SONA-WIFI (Unique Identity Matches)
+// -------------------------------------------------------------
+console.log("\nTEST 3: Connected to SONA-WIFI (Unique Identity Matches):");
+const test3 = verifyCampusWifi({
   ssid: "SONA-WIFI",
   state: "connected",
   ip: "172.16.184.252",
   gateway: "172.16.16.16",
   dns: "172.16.16.16",
-  auth: "Open",
   band: "5 GHz (52)",
+  auth: "Open",
 });
-assert(sonaResult.authorized === true, "SONA-WIFI authorized = true");
-assert(sonaResult.stage === "VERIFIED", `SONA-WIFI stage = VERIFIED (got: ${sonaResult.stage})`);
-assert(sonaResult.networkSummary === "Authorized campus Wi-Fi", `Network summary = 'Authorized campus Wi-Fi'`);
-console.log(`     Summary: ${sonaResult.networkSummary}`);
+assert(test3.authorized === true, "Wi-Fi VERIFIED when SONA-WIFI unique identity matches");
+assert(test3.stage === "VERIFIED", `Stage = VERIFIED (got: ${test3.stage})`);
+assert(test3.ssid === "SONA-WIFI", `SSID = 'SONA-WIFI' (got: ${test3.ssid})`);
+assert(test3.networkSummary === "Authorized campus Wi-Fi", "Network summary = 'Authorized campus Wi-Fi'");
 
 // -------------------------------------------------------------
-// Test 4: Other Networks Are Strictly Rejected (Only M and SONA-WIFI permitted)
+// Test 4: SSID = SONA-WIFI (Unique Identity Does NOT Match)
 // -------------------------------------------------------------
-console.log("\n4. Testing Other Network Rejection:");
-const nonAuthResult = verifyCampusWifi({
-  ssid: "LAPTOP-96EEBK69 4670",
+console.log("\nTEST 4: SSID = SONA-WIFI (Unique Identity Does NOT Match):");
+// Case 4A: Wrong gateway (e.g. personal router / hotspot named SONA-WIFI)
+const test4A = verifyCampusWifi({
+  ssid: "SONA-WIFI",
   state: "connected",
-  ip: "192.168.137.125",
-  gateway: "192.168.137.1",
+  ip: "192.168.1.150",
+  gateway: "192.168.1.1",
+  dns: "192.168.1.1",
 });
-assert(nonAuthResult.authorized === false, "LAPTOP-96EEBK69 4670 is now rejected (authorized = false)");
-assert(nonAuthResult.stage === "SSID_CHECK_FAILED", `Stage = SSID_CHECK_FAILED (got: ${nonAuthResult.stage})`);
-assert(nonAuthResult.networkSummary === "Unauthorized Wi-Fi network", `Network summary = 'Unauthorized Wi-Fi network'`);
+assert(test4A.authorized === false, "Wi-Fi FAILED when gateway does not match 172.16.16.16");
+assert(test4A.stage === "NETWORK_VALIDATION_FAILED", `Stage = NETWORK_VALIDATION_FAILED (got: ${test4A.stage})`);
+assert(test4A.networkSummary === "Unauthorized Wi-Fi network", "Network summary = 'Unauthorized Wi-Fi network'");
+
+// Case 4B: SONA-WIFI with no unique identity telemetry (cannot be verified on SSID alone)
+const test4B = verifyCampusWifi({
+  ssid: "SONA-WIFI",
+  state: "connected",
+});
+assert(test4B.authorized === false, "Wi-Fi FAILED when SONA-WIFI unique identity is unavailable");
+assert(test4B.stage === "NETWORK_VALIDATION_FAILED", `Stage = NETWORK_VALIDATION_FAILED (got: ${test4B.stage})`);
 
 // -------------------------------------------------------------
-// Test 5: Security - Spoofed SSID Rogue Hotspot Detection
+// Test 5: SSID Unavailable (Do NOT assume M)
 // -------------------------------------------------------------
-console.log("\n5. Testing Security: Rogue Hotspot & Subnet Spoofing Defense:");
+console.log("\nTEST 5: SSID Unavailable (Do NOT assume M):");
+// Case 5A: Empty SSID
+const test5A = verifyCampusWifi({
+  ssid: "",
+  state: "connected",
+});
+assert(test5A.authorized === false, "Wi-Fi FAILED when SSID is empty (did not assume M)");
+assert(test5A.stage === "UNABLE_TO_VERIFY", `Stage = UNABLE_TO_VERIFY (got: ${test5A.stage})`);
+assert(test5A.ssid !== "M", "Did NOT assume M when SSID was empty");
 
-// Case 5A: Attacker sets up personal mobile hotspot named "SONA-WIFI" on 192.168.43.x (Android)
-const spoofedAndroidHotspot = verifyCampusWifi({
+// Case 5B: Unknown / hidden SSID
+const test5B = verifyCampusWifi({
+  ssid: "<unknown ssid>",
+  state: "connected",
+});
+assert(test5B.authorized === false, "Wi-Fi FAILED when SSID is <unknown ssid> (did not assume M)");
+assert(test5B.stage === "UNABLE_TO_VERIFY", `Stage = UNABLE_TO_VERIFY (got: ${test5B.stage})`);
+assert(test5B.ssid !== "M", "Did NOT assume M when SSID was <unknown ssid>");
+
+// Case 5C: Omitted SSID payload
+const test5C = verifyCampusWifi({
+  state: "connected",
+});
+assert(test5C.authorized === false, "Wi-Fi FAILED when SSID payload is omitted (did not assume M)");
+assert(test5C.stage === "UNABLE_TO_VERIFY", `Stage = UNABLE_TO_VERIFY (got: ${test5C.stage})`);
+assert(test5C.ssid !== "M", "Did NOT assume M when SSID payload was omitted");
+
+// Case 5D: Disconnected state
+const test5D = verifyCampusWifi({
+  state: "disconnected",
+});
+assert(test5D.authorized === false, "Wi-Fi FAILED when device is disconnected");
+assert(test5D.stage === "DISCONNECTED", `Stage = DISCONNECTED (got: ${test5D.stage})`);
+
+// -------------------------------------------------------------
+// Test 6: Security - Rogue Mobile Hotspot Subnets & Anti-VPN
+// -------------------------------------------------------------
+console.log("\nTEST 6: Security Defense (Rogue Hotspots & VPN):");
+const rogueHotspotAndroid = verifyCampusWifi({
   ssid: "SONA-WIFI",
   state: "connected",
   ip: "192.168.43.88",
   gateway: "192.168.43.1",
 });
-assert(spoofedAndroidHotspot.authorized === false, "Spoofed SONA-WIFI on 192.168.43.x rejected");
-assert(spoofedAndroidHotspot.stage === "NETWORK_VALIDATION_FAILED", "Rogue Android hotspot detected");
+assert(rogueHotspotAndroid.authorized === false, "Rogue Android hotspot (192.168.43.x) rejected");
 
-// Case 5B: Attacker sets up laptop hotspot named "SONA-WIFI" on 192.168.137.x
-const spoofedWindowsHotspot = verifyCampusWifi({
+const rogueHotspotWindows = verifyCampusWifi({
   ssid: "SONA-WIFI",
   state: "connected",
   ip: "192.168.137.45",
   gateway: "192.168.137.1",
 });
-assert(spoofedWindowsHotspot.authorized === false, "Spoofed SONA-WIFI on 192.168.137.x rejected");
-assert(spoofedWindowsHotspot.stage === "NETWORK_VALIDATION_FAILED", "Spoofed Windows hotspot detected for SONA-WIFI");
+assert(rogueHotspotWindows.authorized === false, "Rogue Windows hotspot (192.168.137.x) rejected");
 
-// Case 5C: Attacker sets up iPhone hotspot named "M" on 172.20.10.x
-const spoofedIphoneHotspot = verifyCampusWifi({
-  ssid: "M",
-  state: "connected",
-  ip: "172.20.10.4",
-  gateway: "172.20.10.1",
-});
-assert(spoofedIphoneHotspot.authorized === false, "Spoofed M on 172.20.10.x rejected");
-
-// -------------------------------------------------------------
-// Test 6: Security - Unknown / Rogue Networks
-// -------------------------------------------------------------
-console.log("\n6. Testing Security: Completely Unknown / Rogue Networks:");
-const unknownNetwork = verifyCampusWifi({
-  ssid: "CoffeeShop-Free-WiFi",
-  state: "connected",
-  ip: "192.168.1.50",
-  gateway: "192.168.1.1",
-});
-assert(unknownNetwork.authorized === false, "Unknown network rejected");
-assert(unknownNetwork.stage === "SSID_CHECK_FAILED", `Correct stage SSID_CHECK_FAILED (got: ${unknownNetwork.stage})`);
-
-// -------------------------------------------------------------
-// Test 7: Browser Wi-Fi Authorization When BSSID is Unavailable
-// -------------------------------------------------------------
-console.log("\n7. Testing Browser Wi-Fi Authorization (BSSID Unavailable in Browser):");
-
-// Case 7A: Connected to M without BSSID (Chrome/browser environment)
-const webMWithoutBssid = verifyCampusWifi({
-  ssid: "M",
-  bssid: "",
-  state: "connected",
-});
-assert(webMWithoutBssid.authorized === true, "Connected to M without BSSID passes authorization");
-assert(webMWithoutBssid.stage === "VERIFIED", `M stage = VERIFIED (got: ${webMWithoutBssid.stage})`);
-assert(webMWithoutBssid.bssid === "Not available in browser", "BSSID displayed as 'Not available in browser'");
-assert(webMWithoutBssid.bssidVerified === false, "Does not falsely claim BSSID verified");
-
-// Case 7B: Connected to SONA-WIFI without BSSID
-const webSonaWithoutBssid = verifyCampusWifi({
-  ssid: "SONA-WIFI",
-  bssid: "02:00:00:00:00:00",
-  state: "connected",
-});
-assert(webSonaWithoutBssid.authorized === true, "Connected to SONA-WIFI without BSSID passes authorization");
-assert(webSonaWithoutBssid.stage === "VERIFIED", `SONA-WIFI stage = VERIFIED (got: ${webSonaWithoutBssid.stage})`);
-assert(webSonaWithoutBssid.bssid === "Not available in browser", "Masked Android BSSID normalized to 'Not available in browser'");
-
-// Case 7C: Web application flow where browser cannot expose SSID
-const webBrowserDefault = verifyCampusWifi({
-  state: "connected",
-});
-assert(webBrowserDefault.authorized === true, "Browser flow defaults to configured authorized SSID 'M'");
-assert(webBrowserDefault.ssid === "M", `Configured SSID = 'M' (got: ${webBrowserDefault.ssid})`);
-assert(webBrowserDefault.bssid === "Not available in browser", "BSSID = 'Not available in browser'");
-assert(webBrowserDefault.networkSummary === "Authorized campus Wi-Fi", "Network summary = 'Authorized campus Wi-Fi'");
-
-// Case 7D: Device completely disconnected from Wi-Fi
-const disconnectedState = verifyCampusWifi({
-  state: "disconnected",
-});
-assert(disconnectedState.authorized === false, "Disconnected state is strictly rejected");
-assert(disconnectedState.stage === "DISCONNECTED", `Disconnected stage = DISCONNECTED (got: ${disconnectedState.stage})`);
-
-// -------------------------------------------------------------
-// Test 8: Security - Anti-VPN & Active Tunnel Detection
-// -------------------------------------------------------------
-console.log("\n8. Testing Security: Active VPN / Tunnel Detection:");
 const vpnAttempt = verifyCampusWifi({
   ssid: "M",
   state: "connected",
-  ip: "10.220.86.78",
-  gateway: "10.220.86.1",
   capabilities: { notVpn: false, hasWifi: true },
 });
 assert(vpnAttempt.authorized === false, "Active VPN connection rejected");
-assert(vpnAttempt.stage === "NETWORK_VALIDATION_FAILED", "VPN blocked at NETWORK_VALIDATION_FAILED");
 
 // -------------------------------------------------------------
-// Test 9: Complete 5-Stage Attendance Gate Flow
+// Test 7: Complete 5-Stage Verification Enforcement
 // -------------------------------------------------------------
-console.log("\n9. Testing Full 5-Stage Verification Enforcement:");
-console.log("   WI-FI AUTH -> GPS VERIFY -> GEOFENCE POLYGON -> FACE + LIVENESS -> ATTENDANCE");
+console.log("\nTEST 7: Full 5-Stage Attendance Gate Flow:");
+console.log("   Wi-Fi Auth -> GPS Location -> Polygon Geofence -> Face Recognition -> Liveness -> Attendance\n");
 
 const flowCases = [
-  { name: "All Factors Passed (M)", wifi: true, gps: true, geofence: true, face: true, allowed: true },
-  { name: "All Factors Passed (SONA-WIFI)", wifi: true, gps: true, geofence: true, face: true, allowed: true },
-  { name: "Wi-Fi Failed -> Attendance BLOCKED", wifi: false, gps: true, geofence: true, face: true, allowed: false },
-  { name: "Wi-Fi OK, GPS Outside Polygon -> BLOCKED", wifi: true, gps: true, geofence: false, face: true, allowed: false },
-  { name: "Wi-Fi OK, GPS OK, Face Unmatched -> BLOCKED", wifi: true, gps: true, geofence: true, face: false, allowed: false },
-  { name: "Wi-Fi Failed + Outside Polygon -> BLOCKED", wifi: false, gps: false, geofence: false, face: false, allowed: false },
+  { name: "TEST 1 Flow: Connected to M -> Wi-Fi OK -> Attendance proceeds", wifi: test1.authorized, gps: true, geofence: true, face: true, allowed: true },
+  { name: "TEST 2 Flow: Connected to Oppo K13 -> Wi-Fi Fails -> Attendance BLOCKED", wifi: test2.authorized, gps: true, geofence: true, face: true, allowed: false },
+  { name: "TEST 3 Flow: Connected to SONA-WIFI (Identity Valid) -> Wi-Fi OK -> Attendance proceeds", wifi: test3.authorized, gps: true, geofence: true, face: true, allowed: true },
+  { name: "TEST 4 Flow: SONA-WIFI (Identity Mismatch) -> Wi-Fi Fails -> Attendance BLOCKED", wifi: test4A.authorized, gps: true, geofence: true, face: true, allowed: false },
+  { name: "TEST 5 Flow: SSID Unavailable -> Wi-Fi Fails -> Attendance BLOCKED", wifi: test5A.authorized, gps: true, geofence: true, face: true, allowed: false },
+  { name: "Flow: Wi-Fi OK, GPS Outside Geofence -> Attendance BLOCKED", wifi: true, gps: true, geofence: false, face: true, allowed: false },
+  { name: "Flow: Wi-Fi OK, Face Unmatched -> Attendance BLOCKED", wifi: true, gps: true, geofence: true, face: false, allowed: false },
 ];
 
 for (const fc of flowCases) {
