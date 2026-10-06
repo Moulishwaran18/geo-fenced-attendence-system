@@ -154,18 +154,65 @@ assert(isSsidAuthorized("Unavailable") === false, 'isSsidAuthorized("Unavailable
 assert(isSsidAuthorized("Hidden") === false, 'isSsidAuthorized("Hidden") === false');
 
 // =================================================================
-// 5. PUBLIC IP INDEPENDENCE
+// 5. PUBLIC IP & SERVER-OBSERVABLE VERIFICATION TESTS
 // =================================================================
-console.log("\n--- 5. PUBLIC IP INDEPENDENCE TESTS ---");
+console.log("\n--- 5. PUBLIC IP & SERVER-OBSERVABLE VERIFICATION TESTS ---");
 
 const ip1 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "103.21.244.2" });
-assert(ip1.authorized === true, '"M" is AUTHORIZED with Public IP 103.21.244.2');
+assert(ip1.authorized === true, '"M" is AUTHORIZED with Public IP 103.21.244.2 (native bridge)');
 
 const ip2 = verifyCampusWifi({ ssid: "M", state: "connected", clientPublicIp: "49.36.12.80" });
-assert(ip2.authorized === true, '"M" is AUTHORIZED with Public IP 49.36.12.80 (changed IP has no effect)');
+assert(ip2.authorized === true, '"M" is AUTHORIZED with Public IP 49.36.12.80 (native bridge)');
 
 const ipInvalid1 = verifyCampusWifi({ ssid: "Oppo K13", state: "connected", clientPublicIp: "203.0.113.195" });
 assert(ipInvalid1.authorized === false, '"Oppo K13" remains UNAUTHORIZED regardless of Public IP 203.0.113.195');
+
+// 5B. Server-Observable Campus Network Verification in Mobile Chrome
+console.log("\n--- 5B. SERVER-OBSERVABLE VERIFICATION IN MOBILE CHROME ---");
+
+// Case 5B-1: Chrome on M network (egress IP matches M)
+const chromeM = verifyCampusWifi({
+  ssid: "Unavailable",
+  state: "connected",
+  clientPublicIp: "203.0.113.195",
+  authorizedMPublicIp: "203.0.113.195",
+});
+assert(chromeM.authorized === true, "Mobile Chrome on M network -> AUTHORIZED via server egress IP");
+assert(chromeM.ssid === "Unavailable in browser", 'SSID is "Unavailable in browser" (never faked)');
+assert(chromeM.networkSummary === "Authorized campus network", 'networkSummary is "Authorized campus network"');
+
+// Case 5B-2: Chrome on SONA-WIFI network (egress IP matches SONA CIDR)
+const chromeSona = verifyCampusWifi({
+  ssid: "Unavailable",
+  state: "connected",
+  clientPublicIp: "115.240.192.50",
+  authorizedSonaPublicIp: "115.240.192.0/22",
+});
+assert(chromeSona.authorized === true, "Mobile Chrome on SONA network -> AUTHORIZED via server egress CIDR");
+assert(chromeSona.ssid === "Unavailable in browser", 'SSID is "Unavailable in browser" (never faked)');
+assert(chromeSona.networkSummary === "Authorized campus network", 'networkSummary is "Authorized campus network"');
+
+// Case 5B-3: Chrome on Oppo K13 / Home Wi-Fi / Mobile Data (unauthorized public IP)
+const chromeUnauthorized = verifyCampusWifi({
+  ssid: "Unavailable",
+  state: "connected",
+  clientPublicIp: "49.36.12.80",
+  authorizedMPublicIp: "203.0.113.195",
+  authorizedSonaPublicIp: "115.240.192.0/22",
+});
+assert(chromeUnauthorized.authorized === false, "Mobile Chrome on unauthorized IP (Oppo K13 / Mobile Data) -> FAILED");
+assert(chromeUnauthorized.ssid === "Unavailable in browser", 'SSID is "Unavailable in browser"');
+assert(chromeUnauthorized.networkSummary === "Unauthorized Wi-Fi network", 'networkSummary is "Unauthorized Wi-Fi network"');
+
+// Case 5B-4: Chrome on general campus egress pool
+const chromeCampus = verifyCampusWifi({
+  ssid: "Unavailable",
+  state: "connected",
+  clientPublicIp: "10.0.0.1",
+  authorizedCampusIp: "10.0.0.0/8",
+});
+assert(chromeCampus.authorized === true, "Mobile Chrome on campus IP pool -> AUTHORIZED");
+assert(chromeCampus.networkSummary === "Authorized campus network", 'networkSummary is "Authorized campus network"');
 
 // =================================================================
 // 6. ANDROID NATIVE BRIDGE BEHAVIOR TESTS (PHASE 13 SPECIFICATION)

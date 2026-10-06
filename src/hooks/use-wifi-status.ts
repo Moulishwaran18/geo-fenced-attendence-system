@@ -218,23 +218,24 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
         // backend unreachable
       }
 
-      // If backend was able to identify an OS-level SSID (e.g. running on Windows dev server):
-      if (backendStatus && backendStatus.ssid && backendStatus.ssid !== "Unavailable" && backendStatus.ssid !== "SSID_UNAVAILABLE") {
+      // In web browser (Mobile Chrome on Android or Desktop):
+      // The backend /api/wifi-status determines authorization based on server-observable network evidence.
+      if (backendStatus) {
         backendStatus.isNativeBridge = false;
         setStatus(backendStatus);
         setLastChecked(new Date());
         return backendStatus;
       }
 
-      // Standard browser cannot access client Wi-Fi SSID: Mark as FAILED / SSID_UNAVAILABLE
+      // If backend call failed or network is unreachable:
       const browserFallback: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
-        ssid: "Unavailable",
+        ssid: "Unavailable in browser",
         state: isOnline ? "connected" : "disconnected",
         reason: isOnline
-          ? "Browser cannot access the connected Wi-Fi SSID. Use the Android attendance app to verify campus Wi-Fi."
-          : "Device is offline. Connect to Wi-Fi using the Android attendance app.",
+          ? "Unable to reach server for campus network verification."
+          : "Device is offline. Connect to an authorized campus Wi-Fi network.",
         networkSummary: "Unauthorized Wi-Fi network",
         stage: "UNABLE_TO_VERIFY",
         timestamp: new Date().toISOString(),
@@ -248,9 +249,9 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       const errorStatus: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
-        ssid: "Unavailable",
+        ssid: "Unavailable in browser",
         state: "unknown",
-        reason: "Browser cannot access the connected Wi-Fi SSID. Use the Android attendance app to verify campus Wi-Fi.",
+        reason: "Unable to verify campus network with server.",
         timestamp: new Date().toISOString(),
         networkSummary: "Unauthorized Wi-Fi network",
         stage: "UNABLE_TO_VERIFY",

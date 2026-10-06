@@ -65,21 +65,29 @@ export function WifiStatusCard({
         ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 font-bold"
         : "border-destructive/40 text-destructive bg-destructive/10 font-bold";
 
-  // SSID Display Value
+  // SSID Display Value: Never fabricate "M" or "SONA" if browser cannot access SSID
   const rawSsid = status?.ssid?.trim() || "";
+  const isSsidKnown =
+    Boolean(rawSsid) &&
+    rawSsid !== "Unavailable" &&
+    rawSsid !== "Unknown" &&
+    rawSsid !== "Hidden" &&
+    rawSsid !== "<unknown ssid>" &&
+    rawSsid !== "None" &&
+    rawSsid !== "SSID_UNAVAILABLE" &&
+    rawSsid !== "Unavailable in browser";
+
   const displaySsid = isChecking
     ? "Checking…"
-    : rawSsid && rawSsid !== "Unavailable" && rawSsid !== "Unknown"
+    : isSsidKnown
       ? rawSsid
-      : wifiAuthorized
-        ? "M"
-        : rawSsid || "Unavailable";
+      : "Unavailable in browser";
 
   // Network Display Value
-  const displayNetwork = wifiAuthorized
-    ? "Authorized campus Wi-Fi"
-    : isChecking
-      ? "Verifying network…"
+  const displayNetwork = isChecking
+    ? "Verifying network…"
+    : wifiAuthorized
+      ? "Authorized campus network"
       : "Unauthorized Wi-Fi network";
 
   return (
@@ -254,11 +262,11 @@ export function WifiStatusCard({
         </div>
       </div>
 
-      {/* Browser Limitation Note */}
+      {/* Network Verification Notice */}
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Browser Limitation Notice:</strong> Standard web browsers cannot access the connected Wi-Fi SSID directly. Use the Android attendance app to verify campus Wi-Fi.
+          <strong className="text-foreground">Network Verification:</strong> When accessed in mobile Chrome, campus authorization is verified directly by server-observable network evidence.
         </p>
       </div>
 
