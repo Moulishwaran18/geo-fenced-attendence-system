@@ -131,13 +131,13 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
       case "EXCELLENT":
         return {
           icon: SignalHigh,
-          label: "EXCELLENT (≤ 10 m)",
+          label: "EXCELLENT (≤ 15 m)",
           color: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10",
         };
       case "GOOD":
         return {
           icon: SignalMedium,
-          label: "GOOD (≤ 20 m)",
+          label: "ACCEPTED (≤ 20 m)",
           color: "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10",
         };
       case "ACQUIRING / WAIT":
@@ -264,18 +264,38 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
 
       {/* Poor Accuracy & Acquisition Guidance Alert Banner */}
       {(isChecking || isInsuff || isPoorAccuracy || status === "timeout") && (
-        <div className="flex items-start gap-2.5 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-800 dark:text-amber-300">
-          <AlertTriangle className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+        <div className={`flex items-start gap-2.5 border-b px-4 py-2.5 text-xs ${
+          displayAccuracy !== null && displayAccuracy <= 15
+            ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
+            : displayAccuracy !== null && displayAccuracy <= 20
+              ? "border-blue-500/20 bg-blue-500/10 text-blue-800 dark:text-blue-300"
+              : "border-amber-500/20 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+        }`}>
+          <AlertTriangle className={`size-4 shrink-0 mt-0.5 ${
+            displayAccuracy !== null && displayAccuracy <= 15
+              ? "text-emerald-600 dark:text-emerald-400"
+              : displayAccuracy !== null && displayAccuracy <= 20
+                ? "text-blue-600 dark:text-blue-400"
+                : "text-amber-600 dark:text-amber-400"
+          }`} />
           <div className="flex-1 space-y-0.5">
             <p className="font-semibold">
-              {status === "acquiring"
-                ? "Waiting for accurate GPS location..."
-                : isInsuff
-                  ? `GPS accuracy insufficient — Current accuracy: ±${displayAccuracy ? displayAccuracy.toFixed(1) : "—"} m`
-                  : statusMessage}
+              {displayAccuracy !== null && displayAccuracy > 20
+                ? `GPS accuracy insufficient — Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                : displayAccuracy !== null && displayAccuracy <= 15
+                  ? `GPS accuracy excellent — Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                  : displayAccuracy !== null && displayAccuracy <= 20
+                    ? `GPS accuracy accepted — Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                    : statusMessage}
             </p>
-            <p className="text-[11px] text-amber-700 dark:text-amber-400/90">
-              {instructionMessage || "Move to open sky / enable Precise Location"}
+            <p className="text-[11px] opacity-90">
+              {displayAccuracy !== null && displayAccuracy > 20
+                ? "Acquiring better GPS fix..."
+                : displayAccuracy !== null && displayAccuracy <= 15
+                  ? "Preferred accuracy target reached (≤15m)"
+                  : displayAccuracy !== null && displayAccuracy <= 20
+                    ? "Improving GPS accuracy toward ±15m..."
+                    : (instructionMessage || "Move to open sky / enable Precise Location")}
             </p>
           </div>
           {geofence.openLocationSettings && (status === "position_unavailable" || status === "permission_denied") && (
@@ -321,7 +341,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
             {displayAccuracy !== null ? (
               <span
                 className={
-                  displayAccuracy <= 10
+                  displayAccuracy <= 15
                     ? "text-emerald-600 dark:text-emerald-400"
                     : displayAccuracy <= 20
                       ? "text-blue-600 dark:text-blue-400"
@@ -348,7 +368,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
             {bestAccuracy !== null ? (
               <span
                 className={
-                  bestAccuracy <= 10
+                  bestAccuracy <= 15
                     ? "text-emerald-600 dark:text-emerald-400"
                     : bestAccuracy <= 20
                       ? "text-blue-600 dark:text-blue-400"
@@ -624,7 +644,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                           <td className="px-2.5 py-1">
                             <span
                               className={
-                                r.accuracy <= 10
+                                r.accuracy <= 15
                                   ? "text-emerald-600 dark:text-emerald-400 font-bold"
                                   : r.accuracy <= 20
                                     ? "text-blue-600 dark:text-blue-400 font-bold"

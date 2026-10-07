@@ -165,7 +165,7 @@ function MarkAttendancePage() {
         detail: "Device must be connected to authorized institutional Wi-Fi network",
       };
     }
-    if (!isUsingMockScenario && geofence.status === "acquiring") {
+    if (!isUsingMockScenario && geofence.status === "acquiring" && !geofence.isAcceptableAccuracy) {
       return {
         label: "REJECTED (Acquiring GPS Fix)",
         tone: "warning" as const,
@@ -176,12 +176,12 @@ function MarkAttendancePage() {
       !isUsingMockScenario &&
       geofence.accuracy !== null &&
       geofence.accuracy > 20 &&
-      geofence.status !== "inside"
+      !geofence.isAcceptableAccuracy
     ) {
       return {
-        label: `REJECTED (GPS Accuracy Insufficient: ±${Math.round(geofence.accuracy || 0)} m)`,
+        label: `REJECTED (GPS Accuracy Insufficient: ±${geofence.accuracy.toFixed(1)}m)`,
         tone: "error" as const,
-        detail: `GPS accuracy insufficient — Current accuracy: ±${Math.round(geofence.accuracy || 0)} m. Move to open sky / enable Precise Location.`,
+        detail: `GPS accuracy insufficient — Current accuracy: ±${geofence.accuracy.toFixed(1)}m. Move to open sky / enable Precise Location.`,
       };
     }
     if (!gpsInsideGeofence) {
@@ -244,10 +244,14 @@ function MarkAttendancePage() {
     }
 
     if (geofence.isInside === true || (geofence.accuracy !== null && geofence.accuracy <= 20 && geofence.isInsidePolygon === true)) {
+      const acc = geofence.accuracy ?? 0;
+      const isTarget = acc <= 15;
       return {
         key: "location",
         value: "Inside Campus Polygon",
-        detail: `High Accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "0.0"}m · ${geofence.distanceToBoundary}m from boundary`,
+        detail: isTarget
+          ? `GPS accuracy excellent — Current accuracy: ±${acc.toFixed(1)}m`
+          : `GPS accuracy accepted — Current accuracy: ±${acc.toFixed(1)}m · Improving toward ±15m...`,
         state: "verified",
       };
     }
@@ -256,12 +260,12 @@ function MarkAttendancePage() {
       return {
         key: "location",
         value: "Outside Campus Polygon",
-        detail: `${geofence.distanceToBoundary}m from authorized perimeter (±${Math.round(geofence.accuracy || 0)}m)`,
+        detail: `${geofence.distanceToBoundary}m from authorized perimeter (±${geofence.accuracy.toFixed(1)}m)`,
         state: "error",
       };
     }
 
-    if ((geofence.status as string) === "acquiring" || geofence.isChecking) {
+    if (!geofence.isAcceptableAccuracy && ((geofence.status as string) === "acquiring" || geofence.isChecking)) {
       return {
         key: "location",
         value: "Acquiring GPS Fix…",
@@ -273,7 +277,7 @@ function MarkAttendancePage() {
     return {
       key: "location",
       value: "GPS accuracy insufficient",
-      detail: `Current accuracy: ±${Math.round(geofence.accuracy || 0)} m · Move to open sky / enable Precise Location`,
+      detail: `GPS accuracy insufficient — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m · Acquiring better GPS fix...`,
       state: "warning",
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
@@ -417,7 +421,7 @@ function MarkAttendancePage() {
       toast.error("GPS Geofence Verification Failed", {
         description:
           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-            ? `GPS accuracy insufficient (Current accuracy: ±${Math.round(geofence.accuracy || 0)} m). Move to open sky / enable Precise Location.`
+            ? `GPS accuracy insufficient — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Move to open sky / enable Precise Location.`
             : "Your device GPS position is outside the authoritative 5-point campus polygon.",
       });
       return;
@@ -703,7 +707,7 @@ function MarkAttendancePage() {
                       {geofence.accuracy !== null ? (
                         <span
                           className={
-                            geofence.accuracy <= 10
+                            geofence.accuracy <= 15
                               ? "text-emerald-600 dark:text-emerald-400"
                               : geofence.accuracy <= 20
                                 ? "text-blue-600 dark:text-blue-400"

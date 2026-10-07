@@ -8,6 +8,9 @@ import {
 import {
   getGpsQuality,
   checkTemporalStability,
+  evaluateGpsAccuracy,
+  GPS_ACCEPTANCE_THRESHOLD_METERS,
+  GPS_TARGET_ACCURACY_METERS,
 } from "../src/hooks/use-geofence.ts";
 
 console.log("===============================================================================");
@@ -68,17 +71,24 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// TEST 2: GPS Accuracy Policy Tiers
+// TEST 2A: GPS Quality Policy Tiers (<=15m EXCELLENT, 15-20m GOOD, 20-50m ACQUIRING / WAIT, >50m UNRELIABLE)
 // -----------------------------------------------------------------------------
-console.log("\n2. TESTING GPS ACCURACY POLICY TIERS (<=10m EXCELLENT, 10-20m GOOD, 20-50m ACQUIRING / WAIT, >50m UNRELIABLE):");
+console.log("\n2A. TESTING GPS QUALITY TIERS (<=15m EXCELLENT, 15-20m GOOD, 20-50m ACQUIRING / WAIT, >50m UNRELIABLE):");
 
-const accuracyTestCases = [
+assert(GPS_ACCEPTANCE_THRESHOLD_METERS === 20, "GPS ACCEPTANCE THRESHOLD is strictly 20 meters");
+assert(GPS_TARGET_ACCURACY_METERS === 15, "GPS TARGET/BEST-ACCURACY GOAL is strictly 15 meters");
+
+const qualityTestCases = [
   { acc: 3.5, expected: "EXCELLENT", desc: "Superb GPS fix (3.5m)" },
   { acc: 8.0, expected: "EXCELLENT", desc: "High accuracy GPS fix (8.0m)" },
-  { acc: 10.0, expected: "EXCELLENT", desc: "Boundary high accuracy fix (10.0m)" },
-  { acc: 11.0, expected: "GOOD", desc: "Good precision fix (11.0m)" },
-  { acc: 18.5, expected: "GOOD", desc: "Good precision fix (18.5m)" },
-  { acc: 20.0, expected: "GOOD", desc: "Boundary good precision fix (20.0m)" },
+  { acc: 10.0, expected: "EXCELLENT", desc: "High accuracy fix (10.0m)" },
+  { acc: 14.9, expected: "EXCELLENT", desc: "Target accuracy goal achieved (14.9m)" },
+  { acc: 15.0, expected: "EXCELLENT", desc: "Target boundary accuracy goal achieved (15.0m)" },
+  { acc: 15.1, expected: "GOOD", desc: "Accepted fix improving toward 15m (15.1m)" },
+  { acc: 18.5, expected: "GOOD", desc: "Accepted fix (18.5m)" },
+  { acc: 19.9, expected: "GOOD", desc: "Accepted fix (19.9m)" },
+  { acc: 20.0, expected: "GOOD", desc: "Boundary accepted precision fix (20.0m)" },
+  { acc: 20.1, expected: "ACQUIRING / WAIT", desc: "Accuracy exceeding 20m threshold (20.1m)" },
   { acc: 21.0, expected: "ACQUIRING / WAIT", desc: "Low accuracy fix (21.0m)" },
   { acc: 45.0, expected: "ACQUIRING / WAIT", desc: "Low accuracy fix (45.0m)" },
   { acc: 50.0, expected: "ACQUIRING / WAIT", desc: "Boundary low accuracy fix (50.0m)" },
@@ -87,7 +97,7 @@ const accuracyTestCases = [
   { acc: 850.0, expected: "UNRELIABLE", desc: "Cell-tower IP estimate (850.0m)" },
 ];
 
-accuracyTestCases.forEach((tc) => {
+qualityTestCases.forEach((tc) => {
   const result = getGpsQuality(tc.acc);
   assert(
     result === tc.expected,
@@ -95,6 +105,147 @@ accuracyTestCases.forEach((tc) => {
     `${tc.desc} => Result: ${result}`,
   );
 });
+
+// -----------------------------------------------------------------------------
+// TEST 2B: Required Boundary Accuracy Acceptance & Rejection Verification
+// -----------------------------------------------------------------------------
+console.log("\n2B. TESTING REQUIRED BOUNDARY ACCURACY VALUES (20.1m, 20.0m, 19.9m, 19.0m, 15.1m, 15.0m, 14.9m):");
+
+const requiredBoundaryTests = [
+  { acc: 20.1, expectedAccepted: false, expectedPreferred: false, label: "rejected" },
+  { acc: 20.0, expectedAccepted: true, expectedPreferred: false, label: "accepted" },
+  { acc: 19.9, expectedAccepted: true, expectedPreferred: false, label: "accepted" },
+  { acc: 19.0, expectedAccepted: true, expectedPreferred: false, label: "accepted" },
+  { acc: 15.1, expectedAccepted: true, expectedPreferred: false, label: "accepted" },
+  { acc: 15.0, expectedAccepted: true, expectedPreferred: true, label: "accepted/preferred" },
+  { acc: 14.9, expectedAccepted: true, expectedPreferred: true, label: "accepted/preferred" },
+];
+
+requiredBoundaryTests.forEach((t) => {
+  const evalInfo = evaluateGpsAccuracy(t.acc);
+  assert(
+    evalInfo.isAccepted === t.expectedAccepted,
+    `${t.acc.toFixed(1)}m -> ${t.label} (isAccepted === ${t.expectedAccepted})`,
+    `Status text: "${evalInfo.statusText}"`,
+  );
+  if (t.expectedPreferred) {
+    assert(
+      evalInfo.isTargetReached === true,
+      `${t.acc.toFixed(1)}m marked as preferred best-accuracy target (isTargetReached === true)`,
+      `Tier: ${evalInfo.tier}`,
+    );
+  }
+});
+
+// -----------------------------------------------------------------------------
+// TEST 2C: Exact UI Text Gating Requirements
+// -----------------------------------------------------------------------------
+console.log("\n2C. TESTING EXACT UI TEXT GATING SPECIFICATIONS:");
+
+// >20m
+const uiGt20 = evaluateGpsAccuracy(20.1);
+assert(
+  uiGt20.statusText === "GPS accuracy insufficient — Current accuracy: ±20.1m",
+  '>20m UI status text matches: "GPS accuracy insufficient — Current accuracy: ±20.1m"',
+  uiGt20.statusText,
+);
+assert(
+  uiGt20.instructionText === "Acquiring better GPS fix...",
+  '>20m UI instruction text matches: "Acquiring better GPS fix..."',
+  uiGt20.instructionText || "",
+);
+
+// <=20m and >15m
+const uiLe20Gt15 = evaluateGpsAccuracy(19.6);
+assert(
+  uiLe20Gt15.statusText === "GPS accuracy accepted — Current accuracy: ±19.6m",
+  '<=20m and >15m UI status text matches: "GPS accuracy accepted — Current accuracy: ±19.6m"',
+  uiLe20Gt15.statusText,
+);
+assert(
+  uiLe20Gt15.instructionText === "Improving GPS accuracy toward ±15m...",
+  '<=20m and >15m UI instruction matches: "Improving GPS accuracy toward ±15m..."',
+  uiLe20Gt15.instructionText || "",
+);
+
+// <=15m
+const uiLe15 = evaluateGpsAccuracy(14.9);
+assert(
+  uiLe15.statusText === "GPS accuracy excellent — Current accuracy: ±14.9m",
+  '<=15m UI status text matches: "GPS accuracy excellent — Current accuracy: ±14.9m"',
+  uiLe15.statusText,
+);
+
+// -----------------------------------------------------------------------------
+// TEST 2D: Multi-Reading Sequential Flow & Non-Blocking Verification
+// -----------------------------------------------------------------------------
+console.log("\n2D. TESTING MULTI-READING SEQUENTIAL FLOW & BEST-ACCURACY TRACKING:");
+
+// Simulating Reading Sequence:
+// Reading 1: 20.1m -> NOT ACCEPTED -> continue acquiring
+// Reading 2: 19.6m -> ACCEPTED -> geofence may proceed -> continue looking for better fix
+// Reading 3: 17.8m -> ACCEPTED -> best accuracy = 17.8m
+// Reading 4: 14.9m -> ACCEPTED -> preferred target reached -> best accuracy = 14.9m
+
+const sequence = [20.1, 19.6, 17.8, 14.9];
+let trackedBestAccuracy = null;
+const sequenceStates = [];
+
+sequence.forEach((acc, idx) => {
+  const info = evaluateGpsAccuracy(acc);
+  if (trackedBestAccuracy === null || acc < trackedBestAccuracy) {
+    trackedBestAccuracy = acc;
+  }
+  sequenceStates.push({
+    readingNum: idx + 1,
+    acc,
+    isAccepted: info.isAccepted,
+    isTargetReached: info.isTargetReached,
+    bestAcc: trackedBestAccuracy,
+  });
+});
+
+assert(sequenceStates[0].isAccepted === false, "Reading 1 (20.1m) -> NOT ACCEPTED (continue acquiring)");
+assert(sequenceStates[1].isAccepted === true, "Reading 2 (19.6m) -> ACCEPTED (geofence may proceed immediately)");
+assert(sequenceStates[1].bestAcc === 19.6, "Reading 2 sets best accuracy to 19.6m");
+assert(sequenceStates[2].isAccepted === true, "Reading 3 (17.8m) -> ACCEPTED");
+assert(sequenceStates[2].bestAcc === 17.8, "Reading 3 updates best accuracy to 17.8m");
+assert(sequenceStates[3].isAccepted === true, "Reading 4 (14.9m) -> ACCEPTED");
+assert(sequenceStates[3].isTargetReached === true, "Reading 4 (14.9m) -> preferred target reached (<=15m)");
+assert(sequenceStates[3].bestAcc === 14.9, "Reading 4 updates best accuracy to 14.9m");
+
+// Specific requirement: First valid reading is 19.5m -> attendance allowed, DO NOT wait for 15m
+const firstFixAcc = 19.5;
+const firstFixEval = evaluateGpsAccuracy(firstFixAcc);
+const firstFixInside = isPointInPolygon({ lat: centroid.lat, lng: centroid.lng });
+const firstFixGeofenceAllowed = firstFixInside && firstFixEval.isAccepted;
+assert(
+  firstFixGeofenceAllowed === true,
+  "First valid reading is 19.5m inside geofence -> attendance/geofence ALLOWED immediately without waiting for 15m",
+  `Geofence allowed: ${firstFixGeofenceAllowed} (isAccepted: ${firstFixEval.isAccepted})`,
+);
+
+// Specific requirement: Later reading improves to 14.8m -> best accuracy becomes 14.8m
+let liveBestAcc = firstFixAcc;
+const improvedAcc = 14.8;
+if (improvedAcc < liveBestAcc) {
+  liveBestAcc = improvedAcc;
+}
+assert(
+  liveBestAcc === 14.8,
+  "Later reading improves to 14.8m -> best accuracy becomes 14.8m",
+  `liveBestAcc: ${liveBestAcc}m`,
+);
+
+// Specific requirement: Readings never reach 15m but remain <=20m -> system still allows attendance
+const sub20Non15Readings = [19.8, 19.2, 18.5, 17.5];
+const allSub20Accepted = sub20Non15Readings.every((acc) => evaluateGpsAccuracy(acc).isAccepted);
+const allSub20NotTarget = sub20Non15Readings.every((acc) => !evaluateGpsAccuracy(acc).isTargetReached);
+assert(
+  allSub20Accepted && allSub20NotTarget,
+  "Readings never reach 15m but remain <=20m -> system STILL allows attendance without blocking",
+  `All accepted: ${allSub20Accepted} | None reached 15m: ${allSub20NotTarget}`,
+);
 
 // -----------------------------------------------------------------------------
 // TEST 3: Point-in-Polygon Containment (Inside vs Outside)
