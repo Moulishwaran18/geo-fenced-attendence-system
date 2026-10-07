@@ -14,6 +14,8 @@ import android.webkit.WebView
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import com.campusattend.biometric.MainActivity
+import android.text.format.Formatter
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -100,6 +102,154 @@ class AndroidWifiBridge(
         val activity = context as? MainActivity
         activity?.requestWifiPermissionsFromBridge()
         return true
+    }
+
+    @Suppress("DEPRECATION")
+    private fun formatIp(ipInt: Int): String {
+        return if (ipInt == 0) "" else Formatter.formatIpAddress(ipInt)
+    }
+
+    private fun calculateSubnet(addr: Inet4Address, prefixLength: Int): String {
+        return try {
+            val bytes = addr.address
+            val ipInt = ((bytes[0].toInt() and 0xFF) shl 24) or
+                    ((bytes[1].toInt() and 0xFF) shl 16) or
+                    ((bytes[2].toInt() and 0xFF) shl 8) or
+                    (bytes[3].toInt() and 0xFF)
+            val mask = if (prefixLength == 0) 0 else (-1 shl (32 - prefixLength))
+            val subnetInt = ipInt and mask
+            val b1 = (subnetInt ushr 24) and 0xFF
+            val b2 = (subnetInt ushr 16) and 0xFF
+            val b3 = (subnetInt ushr 8) and 0xFF
+            val b4 = subnetInt and 0xFF
+            "$b1.$b2.$b3.$b4/$prefixLength"
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    /**
+     * Obtains the connected network-level fingerprint:
+     * - Transport (wifi, cellular, none)
+     * - Client IPv4 address
+     * - IPv4 CIDR subnet (calculated from address + prefix length)
+     * - Prefix length
+     * - Default gateway (from active routing table or DHCP)
+     * - DNS servers (from LinkProperties or DHCP)
+     * - Internet & VPN capabilities
+     *
+     * DOES NOT REQUIRE OR USE:
+     * - SSID / Wi-Fi name
+     * - BSSID
+     * - MAC address
+     * - Location permissions
+     */
+    @JavascriptInterface
+    fun getNetworkFingerprint(): String {
+        val json = JSONObject()
+        if (!isCallingOriginTrusted()) {
+            json.put("transport", "unknown")
+            json.put("isWifi", false)
+            json.put("reason", "UNTRUSTED_ORIGIN")
+            return json.toString()
+        }
+
+        try {
+            val activeNetwork = connectivityManager?.activeNetwork
+            val caps = connectivityManager?.getNetworkCapabilities(activeNetwork)
+            val linkProps = connectivityManager?.getLinkProperties(activeNetwork)
+
+            val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            val isCellular = caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+            val hasInternet = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            val notVpn = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ?: true
+
+            val transport = when {
+                isWifi -> "wifi"
+                isCellular -> "cellular"
+                activeNetwork != null -> "other"
+                else -> "none"
+            }
+
+            json.put("transport", transport)
+            json.put("isWifi", isWifi)
+            json.put("hasInternet", hasInternet)
+            json.put("notVpn", notVpn)
+
+            if (!isWifi) {
+                json.put("ipv4", JSONObject.NULL)
+                json.put("ipv4Subnet", JSONObject.NULL)
+                json.put("prefixLength", 0)
+                json.put("gateway", JSONObject.NULL)
+                json.put("dnsServers", JSONArray())
+                json.put("reason", if (isCellular) "CELLULAR_DATA" else "NOT_WIFI")
+                return json.toString()
+            }
+
+            // Extract IPv4 & Subnet from LinkProperties
+            var ipv4 = ""
+            var prefixLength = 0
+            var ipv4Subnet = ""
+            linkProps?.linkAddresses?.forEach { addr ->
+                val inetAddr = addr.address
+                if (inetAddr is Inet4Address && ipv4.isEmpty()) {
+                    ipv4 = inetAddr.hostAddress ?: ""
+                    prefixLength = addr.prefixLength
+                    ipv4Subnet = calculateSubnet(inetAddr, prefixLength)
+                }
+            }
+
+            // Extract Gateway from Routes or DHCP
+            var gateway = ""
+            linkProps?.routes?.forEach { route ->
+                if (route.isDefaultRoute || route.hasGateway()) {
+                    val gw = route.gateway
+                    if (gw is Inet4Address && gateway.isEmpty()) {
+                        gateway = gw.hostAddress ?: ""
+                    }
+                }
+            }
+            if (gateway.isEmpty() && wifiManager != null) {
+                @Suppress("DEPRECATION")
+                val dhcp = wifiManager.dhcpInfo
+                if (dhcp != null && dhcp.gateway != 0) {
+                    gateway = formatIp(dhcp.gateway)
+                }
+            }
+
+            // Extract DNS servers from LinkProperties or DHCP
+            val dnsServers = JSONArray()
+            linkProps?.dnsServers?.forEach { dns ->
+                val host = dns.hostAddress
+                if (!host.isNullOrBlank()) {
+                    dnsServers.put(host)
+                }
+            }
+            if (dnsServers.length() == 0 && wifiManager != null) {
+                @Suppress("DEPRECATION")
+                val dhcp = wifiManager.dhcpInfo
+                if (dhcp != null) {
+                    val d1 = formatIp(dhcp.dns1)
+                    val d2 = formatIp(dhcp.dns2)
+                    if (d1.isNotEmpty()) dnsServers.put(d1)
+                    if (d2.isNotEmpty()) dnsServers.put(d2)
+                }
+            }
+
+            json.put("ipv4", if (ipv4.isNotEmpty()) ipv4 else JSONObject.NULL)
+            json.put("ipv4Subnet", if (ipv4Subnet.isNotEmpty()) ipv4Subnet else JSONObject.NULL)
+            json.put("prefixLength", prefixLength)
+            json.put("gateway", if (gateway.isNotEmpty()) gateway else JSONObject.NULL)
+            json.put("dnsServers", dnsServers)
+            json.put("reason", "SUCCESS")
+
+        } catch (e: Exception) {
+            json.put("transport", "unknown")
+            json.put("isWifi", false)
+            json.put("reason", e.message ?: "FINGERPRINT_EXTRACTION_FAILED")
+        }
+
+        return json.toString()
     }
 
     /**

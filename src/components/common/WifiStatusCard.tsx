@@ -65,34 +65,15 @@ export function WifiStatusCard({
         ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 font-bold"
         : "border-destructive/40 text-destructive bg-destructive/10 font-bold";
 
-  // SSID Display Value: Never fabricate "M" or "SONA" if browser cannot access SSID
-  const rawSsid = status?.ssid?.trim() || "";
-  const isSsidKnown =
-    Boolean(rawSsid) &&
-    rawSsid !== "Unavailable" &&
-    rawSsid !== "Unknown" &&
-    rawSsid !== "Hidden" &&
-    rawSsid !== "<unknown ssid>" &&
-    rawSsid !== "None" &&
-    rawSsid !== "SSID_UNAVAILABLE" &&
-    rawSsid !== "Unavailable in browser";
-
-  const displaySsid = isChecking
+  // Subnet / IP display
+  const displaySubnet = isChecking
     ? "Checking…"
-    : isSsidKnown
-      ? rawSsid
-      : "Unavailable";
+    : status?.ipv4Subnet || (status?.ipv4 ? `${status.ipv4}/24` : "Unavailable");
 
-  // Network Display Value:
-  // - When native Android provides M: "M"
-  // - When native Android provides SONA-WIFI: "SONA-WIFI"
-  // - When native Android provides another SSID: "<actual SSID>"
-  // - When SSID is unavailable: "Unable to determine Wi-Fi name"
+  // Network display
   const displayNetwork = isChecking
     ? "Verifying network…"
-    : isSsidKnown
-      ? rawSsid
-      : "Unable to determine Wi-Fi name";
+    : status?.networkSummary || (wifiAuthorized ? "Authorized Campus Network" : "Unable to verify network fingerprint");
 
   return (
     <div
@@ -120,7 +101,7 @@ export function WifiStatusCard({
               </span>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Campus Wi-Fi SSID authorization · Real-time connectivity check
+              Campus Wi-Fi fingerprint authorization · Real-time connectivity check
             </p>
           </div>
         </div>
@@ -152,37 +133,8 @@ export function WifiStatusCard({
         </div>
       </div>
 
-      {/* Wi-Fi Permission Request Banner if permission is missing on native Android */}
-      {status?.permissionDenied && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-800 dark:text-amber-200">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-            <div>
-              <p className="font-semibold">Wi-Fi permission required</p>
-              <p className="text-[11px] opacity-90">
-                Grant Wi-Fi / location permission on your device to identify the connected campus network.
-              </p>
-            </div>
-          </div>
-          <Button
-            size="sm"
-            variant="default"
-            onClick={async () => {
-              const { requestNativeWifiPermissions } = await import("@/lib/native-wifi-bridge");
-              requestNativeWifiPermissions();
-              setTimeout(() => {
-                void onRecheck();
-              }, 1000);
-            }}
-            className="h-7 text-xs px-2.5"
-          >
-            Grant Wi-Fi Permission
-          </Button>
-        </div>
-      )}
-
       {/* Unauthorized Warning Banner if Wi-Fi fails */}
-      {!wifiAuthorized && authorizationStatus !== "CHECKING" && !status?.permissionDenied && (
+      {!wifiAuthorized && authorizationStatus !== "CHECKING" && (
         <div className="flex items-start gap-2.5 border-b border-destructive/20 bg-danger-soft px-4 py-2.5 text-xs text-destructive">
           <AlertTriangle className="size-4 shrink-0 mt-0.5" />
           <div className="flex-1 space-y-0.5">
@@ -191,13 +143,13 @@ export function WifiStatusCard({
             </p>
             <p className="text-[11px] opacity-90">
               {status?.reason ||
-                "Device must be connected to an authorized campus Wi-Fi network (SSID \"M\" or containing \"SONA\")."}
+                "Device must be connected to an authorized campus Wi-Fi network (SONA or M network)."}
             </p>
           </div>
         </div>
       )}
 
-      {/* SSID Name-Based Metrics Grid */}
+      {/* Network Fingerprint Metrics Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-border text-xs">
         {/* 1. Status */}
         <div className="p-3">
@@ -218,27 +170,27 @@ export function WifiStatusCard({
           </div>
         </div>
 
-        {/* 2. SSID */}
+        {/* 2. Subnet */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            SSID
+            Network Subnet
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={displaySsid}>
-            {displaySsid}
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={displaySubnet}>
+            {displaySubnet}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
             {authorizationStatus === "AUTHORIZED"
-              ? "Authorized campus network"
+              ? "Authorized campus subnet"
               : authorizationStatus === "CHECKING"
-                ? "Detecting SSID…"
-                : "Unauthorized SSID"}
+                ? "Detecting subnet…"
+                : "Unverified subnet"}
           </div>
         </div>
 
-        {/* 3. Network */}
+        {/* 3. Campus Network */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Network
+            Campus Network
           </div>
           <div className="mt-1 font-medium text-xs text-foreground truncate" title={displayNetwork}>
             {displayNetwork}
@@ -270,7 +222,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Wi-Fi Requirement:</strong> Attendance requires an actual connection to campus Wi-Fi (SSID &quot;M&quot; or containing &quot;SONA&quot;) verified via the Android attendance app.
+          <strong className="text-foreground">Wi-Fi Requirement:</strong> Attendance requires connection to an authorized campus Wi-Fi network (SONA or M) verified via network-level fingerprinting in the Android attendance app.
         </p>
       </div>
 
@@ -283,7 +235,7 @@ export function WifiStatusCard({
         >
           <span className="flex items-center gap-1.5">
             <Network className="size-3.5" />
-            <span>Wi-Fi Diagnostic Details</span>
+            <span>Network Fingerprint Diagnostics</span>
           </span>
           {showDiagnostics ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         </button>
@@ -293,21 +245,37 @@ export function WifiStatusCard({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Detected SSID:
+                  IPv4 Subnet:
                 </span>
-                <span className="font-semibold text-foreground">{displaySsid}</span>
+                <span className="font-semibold text-foreground">{status?.ipv4Subnet || status?.ipv4 || "—"}</span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Authorization Status:
+                  Default Gateway:
                 </span>
-                <span className="font-semibold text-foreground">{authorizationStatus}</span>
+                <span className="font-semibold text-foreground">{status?.gateway || "—"}</span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  DNS Servers:
+                </span>
+                <span className="font-semibold text-foreground">
+                  {status?.dnsServers && status.dnsServers.length > 0
+                    ? status.dnsServers.join(", ")
+                    : "—"}
+                </span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
                   Network Classification:
                 </span>
                 <span className="font-semibold text-foreground">{displayNetwork}</span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Authorization Status:
+                </span>
+                <span className="font-semibold text-foreground">{authorizationStatus}</span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">

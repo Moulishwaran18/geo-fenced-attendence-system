@@ -26,6 +26,20 @@ export interface NativeConnectedWifi {
     | string;
 }
 
+export interface NativeNetworkFingerprint {
+  transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
+  isWifi: boolean;
+  ipv4?: string | null;
+  ipv4Subnet?: string | null;
+  prefixLength?: number;
+  gateway?: string | null;
+  dnsServers?: string[];
+  hasInternet?: boolean;
+  notVpn?: boolean;
+  reason?: string;
+  isNativeBridge?: boolean;
+}
+
 /**
  * Checks whether the native Android Wi-Fi bridge is accessible in the current execution environment.
  */
@@ -34,7 +48,8 @@ export function isNativeWifiBridgeAvailable(): boolean {
   const bridge = (window as any).AndroidWifiBridge;
   return Boolean(
     bridge &&
-      (typeof bridge.getWifiSsid === "function" ||
+      (typeof bridge.getNetworkFingerprint === "function" ||
+        typeof bridge.getWifiSsid === "function" ||
         typeof bridge.getConnectedWifi === "function" ||
         typeof bridge.isAvailable === "function" ||
         typeof bridge.getWifiDetails === "function")
@@ -150,4 +165,91 @@ export async function getNativeWifiSsid(): Promise<string | null> {
   const wifi = getNativeConnectedWifi();
   return wifi.connected && wifi.transport === "wifi" ? wifi.ssid : null;
 }
+
+/**
+ * Obtains the real connected network-level fingerprint from the native Android bridge.
+ * If running in standard Chrome (no native bridge), reports NO_NATIVE_BRIDGE.
+ */
+export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
+  if (typeof window === "undefined") {
+    return {
+      transport: "unknown",
+      isWifi: false,
+      reason: "NO_NATIVE_BRIDGE",
+      isNativeBridge: false,
+    };
+  }
+
+  const bridge = (window as any).AndroidWifiBridge;
+  if (!bridge) {
+    return {
+      transport: "unknown",
+      isWifi: false,
+      reason: "NO_NATIVE_BRIDGE",
+      isNativeBridge: false,
+    };
+  }
+
+  if (typeof bridge.getNetworkFingerprint === "function") {
+    try {
+      const raw = bridge.getNetworkFingerprint();
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (parsed && typeof parsed === "object") {
+        return {
+          transport: parsed.transport || "unknown",
+          isWifi: Boolean(parsed.isWifi),
+          ipv4: parsed.ipv4 || null,
+          ipv4Subnet: parsed.ipv4Subnet || null,
+          prefixLength: parsed.prefixLength || 0,
+          gateway: parsed.gateway || null,
+          dnsServers: Array.isArray(parsed.dnsServers) ? parsed.dnsServers : [],
+          hasInternet: Boolean(parsed.hasInternet),
+          notVpn: Boolean(parsed.notVpn ?? true),
+          reason: parsed.reason || "SUCCESS",
+          isNativeBridge: true,
+        };
+      }
+    } catch (e) {
+      console.warn("[NativeWifiBridge] Failed to parse getNetworkFingerprint:", e);
+    }
+  }
+
+  // Fallback to getWifiDetails()
+  if (typeof bridge.getWifiDetails === "function") {
+    try {
+      const raw = bridge.getWifiDetails();
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (parsed && typeof parsed === "object") {
+        const isWifi = Boolean(parsed.isWifi ?? (parsed.state === "connected"));
+        const dnsList = parsed.dns
+          ? String(parsed.dns)
+              .split(",")
+              .map((s: string) => s.trim())
+              .filter(Boolean)
+          : [];
+        return {
+          transport: isWifi ? "wifi" : "unknown",
+          isWifi,
+          ipv4: parsed.ip || null,
+          gateway: parsed.gateway || null,
+          dnsServers: dnsList,
+          hasInternet: true,
+          notVpn: true,
+          reason: "SUCCESS",
+          isNativeBridge: true,
+        };
+      }
+    } catch (e) {
+      console.warn("[NativeWifiBridge] Failed to parse getWifiDetails:", e);
+    }
+  }
+
+  return {
+    transport: "unknown",
+    isWifi: false,
+    reason: "FINGERPRINT_UNAVAILABLE",
+    isNativeBridge: true,
+  };
+}
+
 

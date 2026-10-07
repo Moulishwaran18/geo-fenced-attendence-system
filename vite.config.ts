@@ -46,23 +46,21 @@ function apiMiddlewarePlugin(): Plugin {
               body = {};
             }
 
-            const verification = verifyCampusWifi({
-              ssid: body.ssid,
-              state: body.state,
-              signal: body.signal,
-              band: body.band,
-              auth: body.auth,
-            });
+            const verification = verifyCampusWifi(body);
 
             const responsePayload = {
               isSonaWifi: verification.authorized,
               authorized: verification.authorized,
-              ssid: verification.ssid,
+              networkType: verification.networkType,
               networkSummary: verification.networkSummary,
               reason: verification.reason,
               state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
               stage: verification.stage,
               timestamp: verification.timestamp,
+              ipv4: verification.ipv4,
+              gateway: verification.gateway,
+              dnsServers: verification.dnsServers,
+              ipv4Subnet: verification.ipv4Subnet,
             };
 
             res.setHeader("Content-Type", "application/json");
@@ -97,30 +95,20 @@ function apiMiddlewarePlugin(): Plugin {
         }
 
         if (req.url && req.url.startsWith("/api/wifi-status")) {
-          let osStatus = null;
-          if (process.platform === "win32") {
-            osStatus = getWifiStatus();
-          }
-
-          const verification = verifyCampusWifi({
-            ssid: osStatus?.ssid,
-            state: osStatus?.state,
-          });
-
-          const responsePayload = {
-            isSonaWifi: verification.authorized,
-            authorized: verification.authorized,
-            ssid: verification.ssid,
-            networkSummary: verification.networkSummary,
-            reason: verification.reason,
-            state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
-            stage: verification.stage,
-            timestamp: verification.timestamp,
+          const browserPayload = {
+            isSonaWifi: false,
+            authorized: false,
+            networkType: "UNAVAILABLE",
+            networkSummary: "Unable to verify network fingerprint",
+            reason: "Browser cannot access Android network properties. Open via the Android attendance app to verify campus Wi-Fi.",
+            state: "connected",
+            stage: "UNABLE_TO_VERIFY",
+            timestamp: new Date().toISOString(),
           };
 
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-          res.end(JSON.stringify(responsePayload));
+          res.end(JSON.stringify(browserPayload));
           return;
         }
 
