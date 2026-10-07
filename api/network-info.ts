@@ -10,7 +10,96 @@
  * - 115.247.87.98 (Reliance Jio Enterprise - AS55836)
  */
 
-import { getAuthorizedCampusEgressIps, extractTrustedClientIp } from "../src/lib/wifi-config.ts";
+const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
+
+function getAuthorizedCampusEgressIps(): string[] {
+  const envVal =
+    (typeof process !== "undefined" && process.env?.AUTHORIZED_CAMPUS_EGRESS_IPS) ||
+    (typeof process !== "undefined" && process.env?.VITE_AUTHORIZED_CAMPUS_EGRESS_IPS);
+  if (envVal) {
+    const list = envVal
+      .split(",")
+      .map((ip: string) => ip.trim())
+      .filter((ip: string) => ip.length > 0);
+    if (list.length > 0) return list;
+  }
+  return [...VERIFIED_SONA_EGRESS_IPS];
+}
+
+function sanitizeIp(ip?: string | null): string {
+  if (!ip) return "";
+  let clean = String(ip).trim().toLowerCase();
+  if (clean.startsWith("::ffff:")) clean = clean.slice(7);
+  clean = clean.split("%")[0].trim();
+  const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
+  if (portMatch) clean = portMatch[1];
+  return clean;
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("127.") ||
+    ip === "::1" ||
+    ip === "localhost"
+  ) {
+    return true;
+  }
+  const match172 = ip.match(/^172\.(\d{1,3})\./);
+  if (match172) {
+    const octet = parseInt(match172[1], 10);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  return false;
+}
+
+function extractTrustedClientIp(req: any): string {
+  if (!req) return "unknown";
+  const headers = req.headers || {};
+  const getHeader = (name: string): string => {
+    if (typeof headers.get === "function") return headers.get(name) || "";
+    const lower = name.toLowerCase();
+    return headers[name] || headers[lower] || "";
+  };
+
+  const vercelForwarded = getHeader("x-vercel-forwarded-for");
+  if (vercelForwarded) {
+    const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
+    if (ips.length > 0) return ips[0];
+  }
+
+  const realIp = getHeader("x-real-ip");
+  if (realIp) {
+    const clean = sanitizeIp(realIp);
+    if (clean) return clean;
+  }
+
+  const fwd = getHeader("x-forwarded-for");
+  if (fwd) {
+    const ips = fwd.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
+    if (ips.length > 0) {
+      for (let i = ips.length - 1; i >= 0; i--) {
+        const ip = ips[i];
+        if (!isPrivateIp(ip)) return ip;
+      }
+      return ips[0];
+    }
+  }
+
+  const remote =
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    req.info?.remoteAddress ||
+    req.ip ||
+    "";
+  if (remote) {
+    const clean = sanitizeIp(remote);
+    if (clean) return clean;
+  }
+
+  return "unknown";
+}
 
 export default async function handler(req: any, res?: any) {
   const clientIp = extractTrustedClientIp(req);

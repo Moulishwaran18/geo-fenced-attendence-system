@@ -9,9 +9,173 @@
  * - Prevents DevTools / API manipulation from recording attendance outside campus.
  */
 
-import { extractTrustedClientIp, isAuthorizedCampusEgressIp } from "../src/lib/wifi-config.ts";
-import { verifyNetworkAuthToken } from "../src/server/network-auth.ts";
+import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+
+const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
+const TOKEN_SECRET =
+  (typeof process !== "undefined" && (process.env?.CAMPUS_AUTH_SECRET || process.env?.NETWORK_AUTH_SECRET)) ||
+  "sona-campus-wifi-egress-auth-secret-key-2026";
+
+function getAuthorizedCampusEgressIps(): string[] {
+  const envVal =
+    (typeof process !== "undefined" && process.env?.AUTHORIZED_CAMPUS_EGRESS_IPS) ||
+    (typeof process !== "undefined" && process.env?.VITE_AUTHORIZED_CAMPUS_EGRESS_IPS);
+  if (envVal) {
+    const list = envVal
+      .split(",")
+      .map((ip: string) => ip.trim())
+      .filter((ip: string) => ip.length > 0);
+    if (list.length > 0) return list;
+  }
+  return [...VERIFIED_SONA_EGRESS_IPS];
+}
+
+function sanitizeIp(ip?: string | null): string {
+  if (!ip) return "";
+  let clean = String(ip).trim().toLowerCase();
+  if (clean.startsWith("::ffff:")) clean = clean.slice(7);
+  clean = clean.split("%")[0].trim();
+  const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
+  if (portMatch) clean = portMatch[1];
+  return clean;
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("127.") ||
+    ip === "::1" ||
+    ip === "localhost"
+  ) {
+    return true;
+  }
+  const match172 = ip.match(/^172\.(\d{1,3})\./);
+  if (match172) {
+    const octet = parseInt(match172[1], 10);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  return false;
+}
+
+function extractTrustedClientIp(req: any): string {
+  if (!req) return "unknown";
+  const headers = req.headers || {};
+  const getHeader = (name: string): string => {
+    if (typeof headers.get === "function") return headers.get(name) || "";
+    const lower = name.toLowerCase();
+    return headers[name] || headers[lower] || "";
+  };
+
+  const vercelForwarded = getHeader("x-vercel-forwarded-for");
+  if (vercelForwarded) {
+    const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
+    if (ips.length > 0) return ips[0];
+  }
+
+  const realIp = getHeader("x-real-ip");
+  if (realIp) {
+    const clean = sanitizeIp(realIp);
+    if (clean) return clean;
+  }
+
+  const fwd = getHeader("x-forwarded-for");
+  if (fwd) {
+    const ips = fwd.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
+    if (ips.length > 0) {
+      for (let i = ips.length - 1; i >= 0; i--) {
+        const ip = ips[i];
+        if (!isPrivateIp(ip)) return ip;
+      }
+      return ips[0];
+    }
+  }
+
+  const remote =
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    req.info?.remoteAddress ||
+    req.ip ||
+    "";
+  if (remote) {
+    const clean = sanitizeIp(remote);
+    if (clean) return clean;
+  }
+
+  return "unknown";
+}
+
+function isAuthorizedCampusEgressIp(ip?: string | null): {
+  authorized: boolean;
+  matchedIp?: string;
+  reason: string;
+} {
+  const cleanIp = sanitizeIp(ip);
+  if (!cleanIp || cleanIp === "unknown") {
+    return {
+      authorized: false,
+      reason: "No valid incoming public IP could be determined from trusted server infrastructure.",
+    };
+  }
+  const authorizedIps = getAuthorizedCampusEgressIps();
+  if (authorizedIps.includes(cleanIp)) {
+    return {
+      authorized: true,
+      matchedIp: cleanIp,
+      reason: `Verified connection originates from authorized SONA-WIFI campus egress IP (${cleanIp}).`,
+    };
+  }
+  return {
+    authorized: false,
+    reason: `Network verification rejected. Server observed public IP ${cleanIp} does not match authorized campus network egress IPs.`,
+  };
+}
+
+function verifyNetworkAuthToken(token?: string | null): {
+  valid: boolean;
+  payload?: any;
+  error?: string;
+} {
+  if (!token || typeof token !== "string") {
+    return { valid: false, error: "MISSING_TOKEN" };
+  }
+
+  const parts = token.trim().split(".");
+  if (parts.length !== 2) {
+    return { valid: false, error: "INVALID_TOKEN_FORMAT" };
+  }
+
+  const [payloadB64, signature] = parts;
+
+  try {
+    const expectedSig = crypto
+      .createHmac("sha256", TOKEN_SECRET)
+      .update(payloadB64)
+      .digest("base64url");
+
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, error: "INVALID_SIGNATURE" };
+    }
+
+    const payloadStr = Buffer.from(payloadB64, "base64url").toString("utf-8");
+    const payload = JSON.parse(payloadStr);
+
+    if (!payload.expiresAt || typeof payload.expiresAt !== "number") {
+      return { valid: false, error: "MALFORMED_PAYLOAD" };
+    }
+
+    if (Date.now() > payload.expiresAt) {
+      return { valid: false, error: "TOKEN_EXPIRED" };
+    }
+
+    return { valid: true, payload };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || "TOKEN_DECODE_FAILED" };
+  }
+}
 
 function getCookie(req: any, name: string): string | null {
   const cookieHeader =
@@ -132,11 +296,14 @@ export default async function handler(req: any, res?: any) {
   let attendanceId = `ATT-${dateKey}-${String(Math.floor(Math.random() * 900) + 100)}`;
 
   // Record in Supabase if configured
-  const supabaseUrl = process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"];
+  const supabaseUrl =
+    (typeof process !== "undefined" && (process.env?.SUPABASE_URL || process.env?.VITE_SUPABASE_URL)) || "";
   const supabaseKey =
-    process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
-    process.env["SUPABASE_ANON_KEY"] ||
-    process.env["VITE_SUPABASE_ANON_KEY"];
+    (typeof process !== "undefined" &&
+      (process.env?.SUPABASE_SERVICE_ROLE_KEY ||
+        process.env?.SUPABASE_ANON_KEY ||
+        process.env?.VITE_SUPABASE_ANON_KEY)) ||
+    "";
 
   if (supabaseUrl && supabaseKey) {
     try {
@@ -154,18 +321,16 @@ export default async function handler(req: any, res?: any) {
           verification: "Verified (SONA-WIFI)",
           latitude: body.latitude,
           longitude: body.longitude,
+          photo_url: body.photoUrl || null,
         })
-        .select("id")
+        .select()
         .single();
 
-      if (data?.id) {
-        attendanceId = `ATT-${data.id.slice(0, 8).toUpperCase()}`;
-      }
-      if (error) {
-        console.warn("[api/attendance] Supabase insert notice:", error.message);
+      if (!error && data?.id) {
+        attendanceId = data.id;
       }
     } catch (dbErr) {
-      console.warn("[api/attendance] Supabase connection notice:", dbErr);
+      console.warn("[api/attendance] Supabase recording warning (fallback to generated ID):", dbErr);
     }
   }
 

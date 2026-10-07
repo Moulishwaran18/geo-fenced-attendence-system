@@ -15,13 +15,167 @@
  * - 115.247.87.98 (Reliance Jio Enterprise - AS55836)
  */
 
-import {
-  extractTrustedClientIp,
-  isAuthorizedCampusEgressIp,
-  parseIpv4,
-  isIpInSubnet,
-} from "../src/lib/wifi-config.ts";
-import { createNetworkAuthToken } from "../src/server/network-auth.ts";
+import crypto from "node:crypto";
+
+const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
+const TOKEN_SECRET =
+  (typeof process !== "undefined" && (process.env?.CAMPUS_AUTH_SECRET || process.env?.NETWORK_AUTH_SECRET)) ||
+  "sona-campus-wifi-egress-auth-secret-key-2026";
+const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getAuthorizedCampusEgressIps(): string[] {
+  const envVal =
+    (typeof process !== "undefined" && process.env?.AUTHORIZED_CAMPUS_EGRESS_IPS) ||
+    (typeof process !== "undefined" && process.env?.VITE_AUTHORIZED_CAMPUS_EGRESS_IPS);
+  if (envVal) {
+    const list = envVal
+      .split(",")
+      .map((ip: string) => ip.trim())
+      .filter((ip: string) => ip.length > 0);
+    if (list.length > 0) return list;
+  }
+  return [...VERIFIED_SONA_EGRESS_IPS];
+}
+
+function sanitizeIp(ip?: string | null): string {
+  if (!ip) return "";
+  let clean = String(ip).trim().toLowerCase();
+  if (clean.startsWith("::ffff:")) clean = clean.slice(7);
+  clean = clean.split("%")[0].trim();
+  const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
+  if (portMatch) clean = portMatch[1];
+  return clean;
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("127.") ||
+    ip === "::1" ||
+    ip === "localhost"
+  ) {
+    return true;
+  }
+  const match172 = ip.match(/^172\.(\d{1,3})\./);
+  if (match172) {
+    const octet = parseInt(match172[1], 10);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  return false;
+}
+
+function extractTrustedClientIp(req: any): string {
+  if (!req) return "unknown";
+  const headers = req.headers || {};
+  const getHeader = (name: string): string => {
+    if (typeof headers.get === "function") return headers.get(name) || "";
+    const lower = name.toLowerCase();
+    return headers[name] || headers[lower] || "";
+  };
+
+  const vercelForwarded = getHeader("x-vercel-forwarded-for");
+  if (vercelForwarded) {
+    const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
+    if (ips.length > 0) return ips[0];
+  }
+
+  const realIp = getHeader("x-real-ip");
+  if (realIp) {
+    const clean = sanitizeIp(realIp);
+    if (clean) return clean;
+  }
+
+  const fwd = getHeader("x-forwarded-for");
+  if (fwd) {
+    const ips = fwd.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
+    if (ips.length > 0) {
+      for (let i = ips.length - 1; i >= 0; i--) {
+        const ip = ips[i];
+        if (!isPrivateIp(ip)) return ip;
+      }
+      return ips[0];
+    }
+  }
+
+  const remote =
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    req.info?.remoteAddress ||
+    req.ip ||
+    "";
+  if (remote) {
+    const clean = sanitizeIp(remote);
+    if (clean) return clean;
+  }
+
+  return "unknown";
+}
+
+function isAuthorizedCampusEgressIp(ip?: string | null): {
+  authorized: boolean;
+  matchedIp?: string;
+  reason: string;
+} {
+  const cleanIp = sanitizeIp(ip);
+  if (!cleanIp || cleanIp === "unknown") {
+    return {
+      authorized: false,
+      reason: "No valid incoming public IP could be determined from trusted server infrastructure.",
+    };
+  }
+  const authorizedIps = getAuthorizedCampusEgressIps();
+  if (authorizedIps.includes(cleanIp)) {
+    return {
+      authorized: true,
+      matchedIp: cleanIp,
+      reason: `Verified connection originates from authorized SONA-WIFI campus egress IP (${cleanIp}).`,
+    };
+  }
+  return {
+    authorized: false,
+    reason: `Network verification rejected. Server observed public IP ${cleanIp} does not match authorized campus network egress IPs.`,
+  };
+}
+
+function parseIpv4(ip: string): number | null {
+  const parts = ip.trim().split(".");
+  if (parts.length !== 4) return null;
+  let num = 0;
+  for (const part of parts) {
+    const n = parseInt(part, 10);
+    if (isNaN(n) || n < 0 || n > 255) return null;
+    num = (num << 8) | n;
+  }
+  return num >>> 0;
+}
+
+function isIpInSubnet(ip: string, cidr: string): boolean {
+  if (!ip || !cidr) return false;
+  const [subnetIp, maskBitsStr] = cidr.split("/");
+  if (!subnetIp || !maskBitsStr) return false;
+  const maskBits = parseInt(maskBitsStr, 10);
+  if (isNaN(maskBits) || maskBits < 0 || maskBits > 32) return false;
+  const ipNum = parseIpv4(ip);
+  const subnetNum = parseIpv4(subnetIp);
+  if (ipNum === null || subnetNum === null) return false;
+  if (maskBits === 0) return true;
+  const mask = ((0xffffffff << (32 - maskBits)) >>> 0);
+  return (ipNum & mask) === (subnetNum & mask);
+}
+
+function createNetworkAuthToken(verifiedIp: string): string {
+  const payload = {
+    verifiedIp,
+    issuedAt: Date.now(),
+    expiresAt: Date.now() + TOKEN_TTL_MS,
+    network: "SONA Campus Network",
+  };
+  const payloadStr = JSON.stringify(payload);
+  const payloadB64 = Buffer.from(payloadStr, "utf-8").toString("base64url");
+  const signature = crypto.createHmac("sha256", TOKEN_SECRET).update(payloadB64).digest("base64url");
+  return `${payloadB64}.${signature}`;
+}
 
 interface FingerprintEvaluation {
   authorized: boolean;
@@ -35,7 +189,6 @@ function evaluateNetworkFingerprint(payload: any): FingerprintEvaluation {
   const transport = String(payload?.transport || "").toLowerCase();
   const isWifi = payload?.isWifi === true || transport === "wifi";
 
-  // Check 1: Hardware Wi-Fi transport check
   if (!isWifi || transport === "cellular" || transport === "none") {
     if (transport === "cellular") {
       return {
@@ -74,7 +227,6 @@ function evaluateNetworkFingerprint(payload: any): FingerprintEvaluation {
   const dnsServers = rawDns.map((d: any) => String(d).trim().toLowerCase());
   const ipv4Subnet = String(payload?.ipv4Subnet || "").trim();
 
-  // If no network details are available
   if (!ipv4 && !gateway && dnsServers.length === 0) {
     return {
       authorized: false,
