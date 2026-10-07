@@ -50,30 +50,37 @@ export function WifiStatusCard({
         ? "Disconnected"
         : "Unknown";
 
-  // 2. Authorization: CHECKING / AUTHORIZED / FAILED
-  const authorizationStatus: "CHECKING" | "AUTHORIZED" | "FAILED" = isChecking || (isLoading && !status && !isMockScenario)
+  // 2. Authorization: CHECKING / VERIFIED / FAILED
+  const authorizationStatus: "CHECKING" | "VERIFIED" | "FAILED" = isChecking || (isLoading && !status && !isMockScenario)
     ? "CHECKING"
     : wifiAuthorized
-      ? "AUTHORIZED"
+      ? "VERIFIED"
       : "FAILED";
 
   // Visual tones
   const authBadgeStyle =
-    authorizationStatus === "AUTHORIZED"
+    authorizationStatus === "VERIFIED"
       ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 font-bold"
       : authorizationStatus === "CHECKING"
         ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10 font-bold"
         : "border-destructive/40 text-destructive bg-destructive/10 font-bold";
 
-  // Subnet / IP display
-  const displaySubnet = isChecking
+  // Egress IP display
+  const displayIp = isChecking
     ? "Checking…"
-    : status?.ipv4Subnet || (status?.ipv4 ? `${status.ipv4}/24` : "Unavailable");
+    : status?.verifiedIp || status?.publicIp || (wifiAuthorized ? "Server Verified" : "Unverified");
 
   // Network display
   const displayNetwork = isChecking
     ? "Verifying network…"
-    : status?.networkSummary || (wifiAuthorized ? "Authorized Campus Network" : "Unable to verify network fingerprint");
+    : status?.network || status?.networkSummary || (wifiAuthorized ? "SONA Campus Network" : "Unauthorized Network");
+
+  // Verification method display
+  const displayVerification = isChecking
+    ? "Verifying…"
+    : status?.verificationMethod === "NATIVE_BRIDGE"
+      ? "Native Android Bridge"
+      : "Server Verified";
 
   return (
     <div
@@ -94,14 +101,14 @@ export function WifiStatusCard({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-foreground">
-                Institutional Wi-Fi Verification
+                Campus Network Authorization
               </h3>
               <span className="rounded bg-primary/10 px-1.5 py-0.2 text-[10px] font-semibold text-primary">
                 Factor 1 of 3
               </span>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Campus Wi-Fi fingerprint authorization · Real-time connectivity check
+              Server-verified campus network authorization · Real-time network check
             </p>
           </div>
         </div>
@@ -110,7 +117,7 @@ export function WifiStatusCard({
           <Badge variant="outline" className={`text-[11px] px-2.5 py-0.5 tracking-wide ${authBadgeStyle}`}>
             <span
               className={`size-1.5 rounded-full mr-1.5 ${
-                authorizationStatus === "AUTHORIZED"
+                authorizationStatus === "VERIFIED"
                   ? "bg-emerald-500"
                   : authorizationStatus === "CHECKING"
                     ? "bg-amber-500"
@@ -128,7 +135,7 @@ export function WifiStatusCard({
             className="h-7 text-xs gap-1.5"
           >
             <RefreshCw className={`size-3.5 ${isChecking ? "animate-spin" : ""}`} />
-            Recheck Wi-Fi
+            Recheck Network
           </Button>
         </div>
       </div>
@@ -139,22 +146,22 @@ export function WifiStatusCard({
           <AlertTriangle className="size-4 shrink-0 mt-0.5" />
           <div className="flex-1 space-y-0.5">
             <p className="font-semibold">
-              Unauthorized Wi-Fi network.
+              Unauthorized Network.
             </p>
             <p className="text-[11px] opacity-90">
               {status?.reason ||
-                "Device must be connected to an authorized campus Wi-Fi network (SONA or M network)."}
+                "Device must be connected to authorized SONA campus Wi-Fi network."}
             </p>
           </div>
         </div>
       )}
 
-      {/* Network Fingerprint Metrics Grid */}
+      {/* Network Metrics Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-border text-xs">
         {/* 1. Status */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Wi-Fi Authorization
+            Network Authorization
           </div>
           <div className="mt-1 flex items-center gap-1.5">
             <Badge variant="outline" className={`text-[11px] font-bold px-2 py-0.5 ${authBadgeStyle}`}>
@@ -162,7 +169,7 @@ export function WifiStatusCard({
             </Badge>
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {authorizationStatus === "AUTHORIZED"
+            {authorizationStatus === "VERIFIED"
               ? "Factor 1 Satisfied"
               : authorizationStatus === "CHECKING"
                 ? "Verifying network…"
@@ -170,27 +177,10 @@ export function WifiStatusCard({
           </div>
         </div>
 
-        {/* 2. Subnet */}
+        {/* 2. Network */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Network Subnet
-          </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={displaySubnet}>
-            {displaySubnet}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {authorizationStatus === "AUTHORIZED"
-              ? "Authorized campus subnet"
-              : authorizationStatus === "CHECKING"
-                ? "Detecting subnet…"
-                : "Unverified subnet"}
-          </div>
-        </div>
-
-        {/* 3. Campus Network */}
-        <div className="p-3">
-          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Campus Network
+            Authorized Network
           </div>
           <div className="mt-1 font-medium text-xs text-foreground truncate" title={displayNetwork}>
             {displayNetwork}
@@ -200,17 +190,30 @@ export function WifiStatusCard({
           </div>
         </div>
 
-        {/* 4. Connection State */}
+        {/* 3. Verification Method */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Connection State
+            Verification
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate">
-            {wifiStatusText}
+          <div className="mt-1 font-semibold text-xs text-foreground truncate">
+            {displayVerification}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground truncate">
+            {wifiAuthorized ? "Egress signature validated" : "Server verification required"}
+          </div>
+        </div>
+
+        {/* 4. Public Egress IP / Link */}
+        <div className="p-3">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            Egress IP / Link
+          </div>
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={displayIp}>
+            {displayIp}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
             {wifiStatusText === "Connected"
-              ? "Wi-Fi link active"
+              ? "Link active"
               : wifiStatusText === "Disconnected"
                 ? "No network connection"
                 : "Awaiting link status"}
@@ -222,7 +225,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Wi-Fi Requirement:</strong> Attendance requires connection to an authorized campus Wi-Fi network (SONA or M) verified via network-level fingerprinting in the Android attendance app.
+          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires connection to the authorized SONA campus Wi-Fi network, verified server-side through authorized campus network egress.
         </p>
       </div>
 
@@ -245,31 +248,27 @@ export function WifiStatusCard({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  IPv4 Subnet:
+                  Server-Verified Egress IP:
                 </span>
-                <span className="font-semibold text-foreground">{status?.ipv4Subnet || status?.ipv4 || "—"}</span>
+                <span className="font-semibold text-foreground">{status?.verifiedIp || status?.publicIp || "—"}</span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Default Gateway:
+                  Verification Method:
                 </span>
-                <span className="font-semibold text-foreground">{status?.gateway || "—"}</span>
+                <span className="font-semibold text-foreground">{status?.verificationMethod || "SERVER_EGRESS_IP"}</span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  DNS Servers:
-                </span>
-                <span className="font-semibold text-foreground">
-                  {status?.dnsServers && status.dnsServers.length > 0
-                    ? status.dnsServers.join(", ")
-                    : "—"}
-                </span>
-              </div>
-              <div className="rounded border border-border bg-card p-2 text-[11px]">
-                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Network Classification:
+                  Authorized Network:
                 </span>
                 <span className="font-semibold text-foreground">{displayNetwork}</span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Subnet / LAN (Native Only):
+                </span>
+                <span className="font-semibold text-foreground">{status?.ipv4Subnet || status?.ipv4 || "Protected (Browser Sandbox)"}</span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">

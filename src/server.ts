@@ -3,6 +3,9 @@ import "./lib/error-capture";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { verifyCampusWifi } from "./lib/wifi-config";
+import handleWifiStatus from "../api/wifi-status";
+import handleAttendance from "../api/attendance";
+import handleNetworkInfo from "../api/network-info";
 import { handleStaffApi } from "./server/api/staff-handler";
 import { handleFaceVerifyApi } from "./server/api/face-search-handler";
 import { handleFaceDetectionLogApi } from "./server/api/audit-log-handler";
@@ -56,59 +59,16 @@ export default {
         return await handleFaceVerifyApi(request);
       }
 
-      if (url.pathname === "/api/wifi/verify" || (url.pathname === "/api/wifi-status" && request.method === "POST")) {
-        let body: any = {};
-        try {
-          body = await request.json();
-        } catch {
-          body = {};
-        }
-
-        const verification = verifyCampusWifi(body);
-
-        const responsePayload = {
-          isSonaWifi: verification.authorized,
-          authorized: verification.authorized,
-          networkType: verification.networkType,
-          networkSummary: verification.networkSummary,
-          reason: verification.reason,
-          state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
-          stage: verification.stage,
-          timestamp: verification.timestamp,
-          ipv4: verification.ipv4,
-          gateway: verification.gateway,
-          dnsServers: verification.dnsServers,
-          ipv4Subnet: verification.ipv4Subnet,
-        };
-
-        return new Response(JSON.stringify(responsePayload), {
-          status: 200,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store, no-cache, must-revalidate",
-          },
-        });
+      if (url.pathname === "/api/network-info") {
+        return await handleNetworkInfo(request);
       }
 
-      if (url.pathname === "/api/wifi-status") {
-        const browserPayload = {
-          isSonaWifi: false,
-          authorized: false,
-          networkType: "UNAVAILABLE",
-          networkSummary: "Unable to verify network fingerprint",
-          reason: "Browser cannot access Android network properties. Open via the Android attendance app to verify campus Wi-Fi.",
-          state: "connected",
-          stage: "UNABLE_TO_VERIFY",
-          timestamp: new Date().toISOString(),
-        };
+      if (url.pathname === "/api/wifi/verify" || url.pathname === "/api/wifi-status") {
+        return await handleWifiStatus(request);
+      }
 
-        return new Response(JSON.stringify(browserPayload), {
-          status: 200,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store, no-cache, must-revalidate",
-          },
-        });
+      if (url.pathname === "/api/attendance" || url.pathname === "/api/mark-attendance") {
+        return await handleAttendance(request);
       }
 
       const response = await defaultHandler(request);

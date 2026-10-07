@@ -13,6 +13,9 @@ import {
 } from "./src/lib/wifi-config.ts";
 import { handleFaceVerifyApi } from "./src/server/api/face-search-handler.ts";
 import { handleFaceDetectionLogApi } from "./src/server/api/audit-log-handler.ts";
+import wifiStatusHandler from "./api/wifi-status.ts";
+import attendanceHandler from "./api/attendance.ts";
+import networkInfoHandler from "./api/network-info.ts";
 
 function apiMiddlewarePlugin(): Plugin {
   return {
@@ -20,95 +23,23 @@ function apiMiddlewarePlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         if (req.url && req.url.startsWith("/api/network-info")) {
-          res.setHeader("Content-Type", "application/json");
-          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-          res.end(
-            JSON.stringify({
-              authModel: "PURE_SSID_NAME_AUTHENTICATION",
-              message:
-                "All IP, CIDR, gateway, DNS, and BSSID-based verification has been removed. Campus authorization uses ONLY SSID name-based verification from the Android native bridge (exact 'M' or containing 'SONA').",
-              timestamp: new Date().toISOString(),
-            })
-          );
+          await networkInfoHandler(req, res);
           return;
         }
 
         if (
           req.url &&
-          (req.url.startsWith("/api/wifi/verify") ||
-            (req.url.startsWith("/api/wifi-status") && req.method === "POST"))
+          (req.url.startsWith("/api/wifi/verify") || req.url.startsWith("/api/wifi-status"))
         ) {
-          const handleVerify = (bodyStr: string) => {
-            let body: any = {};
-            try {
-              body = bodyStr ? JSON.parse(bodyStr) : {};
-            } catch {
-              body = {};
-            }
-
-            const verification = verifyCampusWifi(body);
-
-            const responsePayload = {
-              isSonaWifi: verification.authorized,
-              authorized: verification.authorized,
-              networkType: verification.networkType,
-              networkSummary: verification.networkSummary,
-              reason: verification.reason,
-              state: verification.stage === "DISCONNECTED" ? "disconnected" : "connected",
-              stage: verification.stage,
-              timestamp: verification.timestamp,
-              ipv4: verification.ipv4,
-              gateway: verification.gateway,
-              dnsServers: verification.dnsServers,
-              ipv4Subnet: verification.ipv4Subnet,
-            };
-
-            res.setHeader("Content-Type", "application/json");
-            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-            res.end(JSON.stringify(responsePayload));
-          };
-
-          if ((req as any).body) {
-            const bodyStr =
-              typeof (req as any).body === "string"
-                ? (req as any).body
-                : JSON.stringify((req as any).body);
-            handleVerify(bodyStr);
-            return;
-          }
-
-          const chunks: Buffer[] = [];
-          req.on("data", (chunk) => {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-          });
-          req.on("end", () => {
-            const bodyStr = Buffer.concat(chunks).toString("utf-8");
-            handleVerify(bodyStr);
-          });
-          req.on("error", (err) => {
-            console.error("[apiMiddlewarePlugin] Stream error in wifi verify:", err);
-            res.statusCode = 500;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ error: "Stream error" }));
-          });
+          await wifiStatusHandler(req, res);
           return;
         }
 
-        if (req.url && req.url.startsWith("/api/wifi-status")) {
-          const browserPayload = {
-            isSonaWifi: false,
-            authorized: false,
-            networkType: "UNAVAILABLE",
-            networkSummary: "Unable to verify network fingerprint",
-            reason: "Browser cannot access Android network properties. Open via the Android attendance app to verify campus Wi-Fi.",
-            state: "connected",
-            stage: "UNABLE_TO_VERIFY",
-            timestamp: new Date().toISOString(),
-          };
-
-          res.setHeader("Content-Type", "application/json");
-          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-          res.end(JSON.stringify(browserPayload));
+        if (
+          req.url &&
+          (req.url.startsWith("/api/attendance") || req.url.startsWith("/api/mark-attendance"))
+        ) {
+          await attendanceHandler(req, res);
           return;
         }
 

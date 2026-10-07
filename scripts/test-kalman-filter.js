@@ -42,7 +42,7 @@ const testPoints = [
   AUTHORIZED_GEOFENCE_POLYGON[1], // C2
   AUTHORIZED_GEOFENCE_POLYGON[4], // C5
   AUTHORIZED_GEOFENCE_POLYGON[11], // C12
-  AUTHORIZED_GEOFENCE_POLYGON[17], // C18
+  AUTHORIZED_GEOFENCE_POLYGON[12], // C13
   { lat: 11.685000, lng: 78.125300 }, // North Highway
 ];
 
@@ -216,9 +216,9 @@ console.log("\n7. TESTING INSIDE GEOFENCE POINTS:");
 
 const filter7 = new GpsKalmanFilter(DEFAULT_GEOFENCE_ORIGIN);
 const insideSamples = [
-  { lat: 11.677100, lng: 78.125300, accuracy: 6.0, timestamp: 1000 },
-  { lat: 11.677105, lng: 78.125305, accuracy: 6.2, timestamp: 2000 },
-  { lat: 11.677102, lng: 78.125302, accuracy: 5.8, timestamp: 3000 },
+  { lat: DEFAULT_GEOFENCE_ORIGIN.lat, lng: DEFAULT_GEOFENCE_ORIGIN.lng, accuracy: 6.0, timestamp: 1000 },
+  { lat: DEFAULT_GEOFENCE_ORIGIN.lat + 0.000005, lng: DEFAULT_GEOFENCE_ORIGIN.lng + 0.000005, accuracy: 6.2, timestamp: 2000 },
+  { lat: DEFAULT_GEOFENCE_ORIGIN.lat - 0.000002, lng: DEFAULT_GEOFENCE_ORIGIN.lng - 0.000002, accuracy: 5.8, timestamp: 3000 },
 ];
 
 let inResult = null;

@@ -199,14 +199,59 @@ export interface MarkAttendanceParams {
   latitude?: number | null | undefined;
   longitude?: number | null | undefined;
   verification?: "Verified" | "Failed" | "Manual" | undefined;
+  networkAuthToken?: string | undefined;
 }
 
 export async function markAttendance(params?: MarkAttendanceParams): Promise<AttendanceReceipt> {
   const now = new Date();
   const timeStr = formatIndiaTime(now);
   const dateStr = formatIndiaDate(now, false);
-  const dayStr = now.toLocaleDateString("en-US", { weekday: "long" });
 
+  // 1. Call Server-Side Attendance Verification Endpoint
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/attendance", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...(params?.networkAuthToken ? { "x-network-auth-token": params.networkAuthToken } : {}),
+        },
+        body: JSON.stringify(params || {}),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          errorData.message ||
+            errorData.error ||
+            `Attendance rejected by server (Status ${res.status}). Ensure device is connected to SONA-WIFI.`
+        );
+      }
+
+      const data = await res.json();
+      if (data?.receipt) {
+        window.dispatchEvent(
+          new CustomEvent("campusattend:attendance-marked", {
+            detail: data.receipt,
+          }),
+        );
+        return data.receipt;
+      }
+    } catch (apiErr: any) {
+      if (
+        apiErr?.message?.includes("Attendance rejected") ||
+        apiErr?.message?.includes("SONA-WIFI") ||
+        apiErr?.message?.includes("CAMPUS_NETWORK_UNAUTHORIZED")
+      ) {
+        throw apiErr;
+      }
+      console.warn("[attendance-service] Server attendance API notice:", apiErr);
+    }
+  }
+
+  // 2. Direct Supabase record fallback for offline/local simulation
+  const dayStr = now.toLocaleDateString("en-US", { weekday: "long" });
   const staffCode = params?.staffCode || "SCT-2417";
   const staffName = params?.staffName || "Dr. Priya Ramanathan";
   const department = params?.department || "Computer Science & Engineering";

@@ -1,39 +1,45 @@
 /**
  * Vercel Serverless Function: GET /api/network-info
  *
- * Notice: Wi-Fi authentication uses PURE NETWORK-DETAIL FINGERPRINTING.
- * SSID name, MAC address, BSSID, and client IP matching are completely prohibited.
+ * Notice: SONA-WIFI Campus Network Authorization uses SERVER-SIDE DUAL-EGRESS
+ * VERIFICATION (Option B) for normal Android Chrome and desktop browsers, alongside
+ * native Android bridge compatibility for the existing APK.
  *
- * Fingerprints verified:
- * - SONA: Gateway/DNS 172.16.16.16 + Subnet 172.16.0.0/12
- * - M: DNS 10.220.86.133 + Subnet 10.220.86.0/24 (or 10.220.0.0/16)
+ * Authorized SONA-WIFI Egress IPs:
+ * - 111.92.42.18 (Asianet Broadband - Dynamic lease)
+ * - 115.247.87.98 (Reliance Jio Enterprise - AS55836)
  */
 
+import { getAuthorizedCampusEgressIps, extractTrustedClientIp } from "../src/lib/wifi-config.ts";
+
 export default async function handler(req: any, res?: any) {
+  const clientIp = extractTrustedClientIp(req);
+  const authorizedIps = getAuthorizedCampusEgressIps();
+  const isMatch = authorizedIps.includes(clientIp);
+
   const payload = {
-    authModel: "NETWORK_DETAIL_FINGERPRINT_AUTHENTICATION",
+    authModel: "SONA_CAMPUS_DUAL_EGRESS_IP_AUTHENTICATION",
+    network: "SONA-WIFI",
+    targetBrowsers: "Android Chrome, Laptop/Desktop Chrome, Edge, Safari",
+    clientPublicIp: clientIp !== "unknown" ? clientIp : undefined,
+    isAuthorized: isMatch,
+    authorizedEgressIps: authorizedIps,
     message:
-      "Wi-Fi authentication verifies stable network-level properties (transport, subnet, gateway, DNS servers) obtained by Android native bridge and validated on Vercel.",
-    rules: {
-      sona: {
-        gateway: "172.16.16.16",
-        dns: "172.16.16.16",
-        subnet: "172.16.0.0/12",
-      },
-      m: {
-        dns: "10.220.86.133",
-        ipv6Dns: "2409:40f4:311d:b23a::52",
-        subnet: "10.220.86.0/24 or 10.220.0.0/16",
-      },
-      source: "Android ConnectivityManager & LinkProperties via AndroidWifiBridge.kt",
-    },
+      "Normal Android Chrome connects directly without APK or native bridge. Vercel independently inspects the real incoming public egress IP.",
+    dynamicIpNotice:
+      "111.92.42.18 is dynamic Asianet and SONA-WIFI uses Multi-WAN load-balancing. IPs are configurable via AUTHORIZED_CAMPUS_EGRESS_IPS environment variable.",
     timestamp: new Date().toISOString(),
   };
 
   if (res && typeof res.setHeader === "function") {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    return res.status(200).json(payload);
+    if (typeof res.status === "function" && typeof res.json === "function") {
+      return res.status(200).json(payload);
+    }
+    res.statusCode = 200;
+    res.end(JSON.stringify(payload));
+    return;
   }
 
   return new Response(JSON.stringify(payload), {

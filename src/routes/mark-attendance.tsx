@@ -79,7 +79,7 @@ const icons = {
 } as const;
 
 const titles = {
-  wifi: "1. WI-FI AUTHORIZATION",
+  wifi: "1. CAMPUS NETWORK AUTHORIZATION",
   location: "2. GPS POLYGON GEOFENCE",
   identity: "3. FACE RECOGNITION",
   decision: "4. ATTENDANCE DECISION",
@@ -292,43 +292,40 @@ function MarkAttendancePage() {
     detail: React.ReactNode;
     state: "verified" | "warning" | "error" | "pending";
   }> => {
-    // 1. WI-FI AUTHORIZATION (SSID-ONLY)
-    const rawSsid = wifiStatus?.ssid?.trim() || "";
-    const displaySsid =
-      wifiCardStatus === "CHECKING"
-        ? "Checking…"
-        : rawSsid && rawSsid !== "Unavailable" && rawSsid !== "Unknown"
-          ? rawSsid
-          : wifiAuthorized
-            ? "M"
-            : rawSsid || "Unavailable";
-
+    // 1. CAMPUS NETWORK AUTHORIZATION
     const displayNetwork =
       wifiCardStatus === "VERIFIED"
-        ? "Authorized campus Wi-Fi"
+        ? (wifiStatus?.network || wifiStatus?.networkSummary || "SONA Campus Network")
         : wifiCardStatus === "CHECKING"
-          ? "Verifying network…"
-          : "Unauthorized Wi-Fi network";
+          ? "Verifying campus network…"
+          : (wifiStatus?.network || "Unauthorized Network");
+
+    const displayVerification =
+      wifiCardStatus === "VERIFIED"
+        ? (wifiStatus?.verificationMethod === "NATIVE_BRIDGE" ? "Native Bridge Verified" : "Server Verified")
+        : wifiCardStatus === "CHECKING"
+          ? "Verifying…"
+          : "Server Rejected";
 
     const wifiSignal = {
       key: "wifi" as const,
-      value: `Status: ${wifiCardStatus === "VERIFIED" ? "AUTHORIZED" : wifiCardStatus}`,
+      value: `Status: ${wifiCardStatus === "VERIFIED" ? "VERIFIED" : wifiCardStatus}`,
       detail: (
         <div className="mt-1 space-y-0.5 font-mono text-[11px] text-muted-foreground">
           <div>
             <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">
-              SSID:
+              Network:
             </span>{" "}
             <span className="font-semibold text-foreground">
-              {displaySsid}
+              {displayNetwork}
             </span>
           </div>
           <div className="truncate">
             <span className="font-sans font-medium uppercase text-[10px] text-foreground/70">
-              Network:
+              Verification:
             </span>{" "}
             <span>
-              {displayNetwork}
+              {displayVerification}
             </span>
           </div>
         </div>
@@ -435,20 +432,28 @@ function MarkAttendancePage() {
     }
 
     setStatus("verifying");
-    const result = await markAttendance({
-      staffCode: faceResult?.staffId || "SCT-2417",
-      staffName: faceResult?.staffName || "Dr. Priya Ramanathan",
-      department: "Computer Science & Engineering",
-      location: "Main Campus, Sona College",
-      latitude: geofence.coords?.lat ?? undefined,
-      longitude: geofence.coords?.lng ?? undefined,
-      verification: "Verified",
-    });
-    setReceipt(result);
-    setStatus("success");
-    toast.success("Attendance Recorded Successfully!", {
-      description: `${faceResult?.staffName || "Staff"} · ${result.time} · ${result.date}`,
-    });
+    try {
+      const result = await markAttendance({
+        staffCode: faceResult?.staffId || "SCT-2417",
+        staffName: faceResult?.staffName || "Dr. Priya Ramanathan",
+        department: "Computer Science & Engineering",
+        location: "Main Campus, Sona College",
+        latitude: geofence.coords?.lat ?? undefined,
+        longitude: geofence.coords?.lng ?? undefined,
+        verification: "Verified",
+        networkAuthToken: wifiStatus?.networkAuthToken,
+      });
+      setReceipt(result);
+      setStatus("success");
+      toast.success("Attendance Recorded Successfully!", {
+        description: `${faceResult?.staffName || "Staff"} · ${result.time} · ${result.date}`,
+      });
+    } catch (err: any) {
+      setStatus("idle");
+      toast.error("Attendance Rejected by Server", {
+        description: err?.message || "Server rejected attendance verification.",
+      });
+    }
   };
 
   return (

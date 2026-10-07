@@ -153,22 +153,62 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       }
 
       // ==============================================================
-      // 2. WEB BROWSER FALLBACK (Mobile Chrome on Android or Desktop)
-      // Normal mobile Chrome cannot access Android network properties.
-      // Fingerprint = unavailable -> Wi-Fi Authorization = FAILED.
-      // This is intentional and NOT bypassed.
+      // 2. NORMAL ANDROID CHROME & DESKTOP BROWSER VERIFICATION
+      // Normal Android Chrome does not use the APK native bridge.
+      // The browser calls /api/wifi-status and Vercel determines
+      // campus network authorization from the real incoming public egress IP.
+      // ZERO CLIENT TRUST: The client provides NO authorization flag or spoofed IP.
       // ==============================================================
       const isOnline = typeof navigator !== "undefined" && navigator.onLine;
+
+      if (!isOnline) {
+        const offlineStatus: WifiStatus = {
+          isSonaWifi: false,
+          authorized: false,
+          network: "Disconnected",
+          networkType: "UNAVAILABLE",
+          state: "disconnected",
+          reason: "Device is offline. Connect to Wi-Fi to verify campus network.",
+          networkSummary: "Disconnected",
+          stage: "DISCONNECTED",
+          timestamp: new Date().toISOString(),
+          isNativeBridge: false,
+        };
+        setStatus(offlineStatus);
+        setLastChecked(new Date());
+        return offlineStatus;
+      }
+
+      try {
+        const res = await fetch("/api/wifi-status", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({}),
+          cache: "no-store",
+        });
+
+        if (res.ok) {
+          const serverStatus: WifiStatus = await res.json();
+          serverStatus.isNativeBridge = false;
+          setStatus(serverStatus);
+          setLastChecked(new Date());
+          return serverStatus;
+        }
+      } catch (networkErr) {
+        console.warn("[useWifiStatus] Network check fetch error:", networkErr);
+      }
 
       const browserFallback: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
-        networkType: "UNAVAILABLE",
-        state: isOnline ? "connected" : "disconnected",
-        reason: isOnline
-          ? "Browser cannot access Android network properties. Open via the Android attendance app to verify campus Wi-Fi."
-          : "Device is offline. Connect to Wi-Fi using the Android attendance app.",
-        networkSummary: "Unable to verify network fingerprint",
+        network: "Unauthorized Network",
+        networkType: "UNAUTHORIZED",
+        state: "connected",
+        reason: "Unable to verify campus network connection with verification server.",
+        networkSummary: "Unable to verify network egress",
         stage: "UNABLE_TO_VERIFY",
         timestamp: new Date().toISOString(),
         isNativeBridge: false,
@@ -181,11 +221,12 @@ export function useWifiStatus(pollIntervalMs = 8000): UseWifiStatusReturn {
       const errorStatus: WifiStatus = {
         isSonaWifi: false,
         authorized: false,
+        network: "Unauthorized Network",
         networkType: "UNAVAILABLE",
         state: "unknown",
-        reason: "Browser cannot access Android network properties. Open via the Android attendance app to verify campus Wi-Fi.",
+        reason: "Unable to verify campus network. Please check network connection.",
         timestamp: new Date().toISOString(),
-        networkSummary: "Unable to verify network fingerprint",
+        networkSummary: "Unable to verify network egress",
         stage: "UNABLE_TO_VERIFY",
         isNativeBridge: false,
       };

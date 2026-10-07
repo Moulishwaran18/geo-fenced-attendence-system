@@ -25,6 +25,163 @@
 
 export const AUTHORIZED_SSIDS = ["M", "SONA-WIFI"] as const;
 
+/**
+ * Currently verified public egress IPs for SONA-WIFI campus network.
+ *
+ * CRITICAL NETWORKING DOCUMENTATION:
+ * SONA-WIFI operates Multi-WAN load-balancing across multiple ISPs:
+ * - 111.92.42.18: Asianet Broadband (Reverse DNS: 111092dynamic042018.asianet.co.in)
+ *   DYNAMIC IP WARNING: This is an Asianet dynamic pool lease. If the connection renews
+ *   or the router restarts, the egress IP may change, requiring an environment variable update.
+ * - 115.247.87.98: Reliance Jio Enterprise (AS55836)
+ *
+ * SECURITY RESTRICTION:
+ * DO NOT authorize broad Jio or Asianet CIDR/ASN ranges, as that would inadvertently
+ * authorize ordinary cellular mobile data users across India.
+ * Only exact verified campus egress IPs are accepted.
+ */
+export const VERIFIED_SONA_EGRESS_IPS = [
+  "111.92.42.18",
+  "115.247.87.98",
+] as const;
+
+/**
+ * Resolves the active list of authorized campus egress IPs from environment variables
+ * with fallback to verified default constants.
+ */
+export function getAuthorizedCampusEgressIps(): string[] {
+  const envVal =
+    (typeof process !== "undefined" &&
+      (process.env["AUTHORIZED_CAMPUS_EGRESS_IPS"] ||
+        process.env["VITE_AUTHORIZED_CAMPUS_EGRESS_IPS"])) ||
+    "";
+
+  if (envVal.trim()) {
+    return envVal
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  return [...VERIFIED_SONA_EGRESS_IPS];
+}
+
+/**
+ * Sanitizes and cleans an IPv4 or IPv6 string.
+ */
+export function sanitizeIp(raw?: string | null | undefined): string {
+  if (!raw) return "";
+  let clean = String(raw).trim().toLowerCase();
+  clean = clean.replace(/^::ffff:/, ""); // strip IPv4-mapped IPv6
+  if (/^[0-9.]+:[0-9]+$/.test(clean)) {
+    clean = clean.split(":")[0] ?? clean;
+  }
+  return clean;
+}
+
+/**
+ * Validates a client public IP against authorized campus egress IPs.
+ */
+export function isAuthorizedCampusEgressIp(clientIp?: string | null | undefined): {
+  authorized: boolean;
+  network: string;
+  matchedIp: string | null;
+  reason: string;
+} {
+  const cleanIp = sanitizeIp(clientIp);
+  if (!cleanIp || cleanIp === "unknown") {
+    return {
+      authorized: false,
+      network: "Unauthorized Network",
+      matchedIp: null,
+      reason: "Client public IP could not be determined by server.",
+    };
+  }
+
+  const authorizedIps = getAuthorizedCampusEgressIps();
+  for (const authIp of authorizedIps) {
+    const cleanAuth = sanitizeIp(authIp);
+    if (cleanIp === cleanAuth) {
+      return {
+        authorized: true,
+        network: "SONA Campus Network",
+        matchedIp: authIp,
+        reason: `Verified via authorized campus network egress IP (${authIp}).`,
+      };
+    }
+  }
+
+  return {
+    authorized: false,
+    network: "Unauthorized Network",
+    matchedIp: null,
+    reason: `Unauthorized network. Observed egress IP (${cleanIp}) does not match authorized SONA campus network egress signatures.`,
+  };
+}
+
+/**
+ * Safely extracts the trusted client IP from Vercel / server request headers.
+ * Anti-spoofing:
+ * - Prefers `x-vercel-forwarded-for` (injected by Vercel edge, untrusted headers stripped).
+ * - Multi-hop `x-forwarded-for`: Picks right-most hop before trusted proxy to defeat spoofed client headers.
+ * - `x-real-ip`: Overwritten by Vercel edge proxy.
+ */
+export function extractTrustedClientIp(req: any): string {
+  const getHeader = (name: string): string => {
+    if (!req) return "";
+    if (req.headers && typeof req.headers.get === "function") {
+      return req.headers.get(name) || "";
+    }
+    if (req.headers) {
+      const val = req.headers[name.toLowerCase()] ?? req.headers[name];
+      if (Array.isArray(val)) return val[0] || "";
+      if (typeof val === "string") return val;
+    }
+    return "";
+  };
+
+  // 1. Vercel-authenticated edge header (cannot be forged through Vercel Edge)
+  const vercelForwarded = getHeader("x-vercel-forwarded-for");
+  if (vercelForwarded) {
+    const first = sanitizeIp(vercelForwarded.split(",")[0]);
+    if (first) return first;
+  }
+
+  // 2. Vercel / Cloudflare edge peer IP
+  const realIp = getHeader("x-real-ip");
+  const cfIp = getHeader("cf-connecting-ip");
+  const xForwardedFor = getHeader("x-forwarded-for");
+
+  // Multi-hop X-Forwarded-For anti-spoofing:
+  // If an attacker sends `X-Forwarded-For: 111.92.42.18`, reverse proxies append the real IP:
+  // `x-forwarded-for: 111.92.42.18, <actual-client-ip>`.
+  // Taking the first entry naively allows header spoofing!
+  // Taking the last entry or matching against x-real-ip ensures the real peer is selected.
+  if (xForwardedFor) {
+    const hops = xForwardedFor.split(",").map((s) => sanitizeIp(s)).filter(Boolean);
+    if (hops.length > 1) {
+      return hops[hops.length - 1] ?? "unknown";
+    }
+  }
+
+  if (realIp) {
+    return sanitizeIp(realIp);
+  }
+
+  if (cfIp) {
+    return sanitizeIp(cfIp);
+  }
+
+  if (xForwardedFor) {
+    const first = sanitizeIp(xForwardedFor.split(",")[0]);
+    if (first) return first;
+  }
+
+  // Socket address (local development / testing fallback)
+  const socketAddress = req?.socket?.remoteAddress || req?.connection?.remoteAddress || "";
+  return sanitizeIp(socketAddress) || "unknown";
+}
+
 export interface NetworkFingerprintPayload {
   transport?: "wifi" | "cellular" | "none" | "other" | "unknown" | string | null | undefined;
   isWifi?: boolean | null | undefined;
@@ -36,6 +193,7 @@ export interface NetworkFingerprintPayload {
   hasInternet?: boolean | null | undefined;
   notVpn?: boolean | null | undefined;
   state?: "connected" | "disconnected" | "unknown" | undefined;
+  clientPublicIp?: string | null | undefined;
   // Legacy compatibility fields
   ssid?: string | null | undefined;
   auth?: string | null | undefined;
@@ -47,9 +205,12 @@ export interface WifiVerificationResult {
   authorized: boolean;
   networkType: "SONA" | "M" | "UNAUTHORIZED" | "UNAVAILABLE";
   networkSummary: string;
+  network?: string;
   reason: string;
   stage: "DISCONNECTED" | "FINGERPRINT_CHECK_FAILED" | "UNABLE_TO_VERIFY" | "VERIFIED";
   timestamp: string;
+  verificationMethod?: "SERVER_EGRESS_IP" | "NATIVE_BRIDGE" | "SIMULATION";
+  verifiedIp?: string;
   ipv4?: string | undefined;
   gateway?: string | undefined;
   dnsServers?: string[] | undefined;
@@ -63,11 +224,16 @@ export interface WifiVerificationResult {
 export interface WifiStatus {
   isSonaWifi: boolean;
   authorized: boolean;
+  network?: string;
   networkType?: "SONA" | "M" | "UNAUTHORIZED" | "UNAVAILABLE" | undefined;
   networkSummary: string;
   state: "connected" | "disconnected" | "unknown";
   reason: string;
   timestamp: string;
+  verificationMethod?: "SERVER_EGRESS_IP" | "NATIVE_BRIDGE" | "SIMULATION";
+  verifiedIp?: string;
+  networkAuthToken?: string;
+  publicIp?: string;
   stage?: WifiVerificationResult["stage"] | undefined;
   ipv4?: string | undefined;
   gateway?: string | undefined;
@@ -261,6 +427,43 @@ export function matchNetworkFingerprint(fp: NetworkFingerprintPayload): CampusNe
  */
 export function verifyCampusWifi(payload: NetworkFingerprintPayload): WifiVerificationResult {
   const timestamp = new Date().toISOString();
+
+  // 1. Direct Server-Side Public Egress IP Verification (Android Chrome & Desktop)
+  if (payload.clientPublicIp) {
+    const ipMatch = isAuthorizedCampusEgressIp(payload.clientPublicIp);
+    if (ipMatch.authorized) {
+      return {
+        authorized: true,
+        networkType: "SONA",
+        networkSummary: ipMatch.network,
+        network: ipMatch.network,
+        reason: ipMatch.reason,
+        verificationMethod: "SERVER_EGRESS_IP",
+        verifiedIp: ipMatch.matchedIp || payload.clientPublicIp,
+        stage: "VERIFIED",
+        timestamp,
+        ssid: "SONA Campus Network",
+      };
+    }
+
+    // If only public IP was provided and it failed
+    if (!payload.transport && !payload.gateway && (!payload.dnsServers || payload.dnsServers.length === 0)) {
+      return {
+        authorized: false,
+        networkType: "UNAUTHORIZED",
+        networkSummary: "Unauthorized Network",
+        network: "Unauthorized Network",
+        reason: ipMatch.reason,
+        verificationMethod: "SERVER_EGRESS_IP",
+        verifiedIp: payload.clientPublicIp,
+        stage: "FINGERPRINT_CHECK_FAILED",
+        timestamp,
+        ssid: "Unauthorized Network",
+      };
+    }
+  }
+
+  // 2. Native Android Bridge Network Fingerprint Verification
   const match = matchNetworkFingerprint(payload);
 
   if (match.matched) {
