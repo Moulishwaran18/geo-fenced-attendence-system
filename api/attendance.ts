@@ -14,13 +14,15 @@ import { createClient } from "@supabase/supabase-js";
 
 const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
 const TOKEN_SECRET =
-  (typeof process !== "undefined" && (process.env?.CAMPUS_AUTH_SECRET || process.env?.NETWORK_AUTH_SECRET)) ||
+  (typeof process !== "undefined" &&
+    (process.env["CAMPUS_AUTH_SECRET"] || process.env["NETWORK_AUTH_SECRET"])) ||
   "sona-campus-wifi-egress-auth-secret-key-2026";
 
 function getAuthorizedCampusEgressIps(): string[] {
   const envVal =
-    (typeof process !== "undefined" && process.env?.AUTHORIZED_CAMPUS_EGRESS_IPS) ||
-    (typeof process !== "undefined" && process.env?.VITE_AUTHORIZED_CAMPUS_EGRESS_IPS);
+    (typeof process !== "undefined" &&
+      (process.env["AUTHORIZED_CAMPUS_EGRESS_IPS"] || process.env["VITE_AUTHORIZED_CAMPUS_EGRESS_IPS"])) ||
+    "";
   if (envVal) {
     const list = envVal
       .split(",")
@@ -35,9 +37,10 @@ function sanitizeIp(ip?: string | null): string {
   if (!ip) return "";
   let clean = String(ip).trim().toLowerCase();
   if (clean.startsWith("::ffff:")) clean = clean.slice(7);
-  clean = clean.split("%")[0].trim();
+  const split0 = clean.split("%")[0];
+  if (split0) clean = split0.trim();
   const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
-  if (portMatch) clean = portMatch[1];
+  if (portMatch && portMatch[1]) clean = portMatch[1];
   return clean;
 }
 
@@ -52,7 +55,7 @@ function isPrivateIp(ip: string): boolean {
     return true;
   }
   const match172 = ip.match(/^172\.(\d{1,3})\./);
-  if (match172) {
+  if (match172 && match172[1]) {
     const octet = parseInt(match172[1], 10);
     if (octet >= 16 && octet <= 31) return true;
   }
@@ -71,7 +74,8 @@ function extractTrustedClientIp(req: any): string {
   const vercelForwarded = getHeader("x-vercel-forwarded-for");
   if (vercelForwarded) {
     const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
-    if (ips.length > 0) return ips[0];
+    const firstIp = ips[0];
+    if (firstIp) return firstIp;
   }
 
   const realIp = getHeader("x-real-ip");
@@ -86,9 +90,10 @@ function extractTrustedClientIp(req: any): string {
     if (ips.length > 0) {
       for (let i = ips.length - 1; i >= 0; i--) {
         const ip = ips[i];
-        if (!isPrivateIp(ip)) return ip;
+        if (ip && !isPrivateIp(ip)) return ip;
       }
-      return ips[0];
+      const fallbackIp = ips[0];
+      if (fallbackIp) return fallbackIp;
     }
   }
 
@@ -146,7 +151,12 @@ function verifyNetworkAuthToken(token?: string | null): {
     return { valid: false, error: "INVALID_TOKEN_FORMAT" };
   }
 
-  const [payloadB64, signature] = parts;
+  const payloadB64 = parts[0];
+  const signature = parts[1];
+
+  if (!payloadB64 || !signature) {
+    return { valid: false, error: "INVALID_TOKEN_FORMAT" };
+  }
 
   try {
     const expectedSig = crypto
@@ -182,7 +192,8 @@ function getCookie(req: any, name: string): string | null {
     (req && req.headers && (req.headers["cookie"] || req.headers["Cookie"])) || "";
   if (!cookieHeader) return null;
   const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
+  if (!match || !match[1]) return null;
+  return decodeURIComponent(match[1]);
 }
 
 export default async function handler(req: any, res?: any) {
@@ -297,12 +308,14 @@ export default async function handler(req: any, res?: any) {
 
   // Record in Supabase if configured
   const supabaseUrl =
-    (typeof process !== "undefined" && (process.env?.SUPABASE_URL || process.env?.VITE_SUPABASE_URL)) || "";
+    (typeof process !== "undefined" &&
+      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
+    "";
   const supabaseKey =
     (typeof process !== "undefined" &&
-      (process.env?.SUPABASE_SERVICE_ROLE_KEY ||
-        process.env?.SUPABASE_ANON_KEY ||
-        process.env?.VITE_SUPABASE_ANON_KEY)) ||
+      (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
+        process.env["SUPABASE_ANON_KEY"] ||
+        process.env["VITE_SUPABASE_ANON_KEY"])) ||
     "";
 
   if (supabaseUrl && supabaseKey) {

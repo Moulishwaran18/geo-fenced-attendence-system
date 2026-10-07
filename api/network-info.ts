@@ -14,8 +14,9 @@ const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
 
 function getAuthorizedCampusEgressIps(): string[] {
   const envVal =
-    (typeof process !== "undefined" && process.env?.AUTHORIZED_CAMPUS_EGRESS_IPS) ||
-    (typeof process !== "undefined" && process.env?.VITE_AUTHORIZED_CAMPUS_EGRESS_IPS);
+    (typeof process !== "undefined" &&
+      (process.env["AUTHORIZED_CAMPUS_EGRESS_IPS"] || process.env["VITE_AUTHORIZED_CAMPUS_EGRESS_IPS"])) ||
+    "";
   if (envVal) {
     const list = envVal
       .split(",")
@@ -30,9 +31,10 @@ function sanitizeIp(ip?: string | null): string {
   if (!ip) return "";
   let clean = String(ip).trim().toLowerCase();
   if (clean.startsWith("::ffff:")) clean = clean.slice(7);
-  clean = clean.split("%")[0].trim();
+  const split0 = clean.split("%")[0];
+  if (split0) clean = split0.trim();
   const portMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/);
-  if (portMatch) clean = portMatch[1];
+  if (portMatch && portMatch[1]) clean = portMatch[1];
   return clean;
 }
 
@@ -47,7 +49,7 @@ function isPrivateIp(ip: string): boolean {
     return true;
   }
   const match172 = ip.match(/^172\.(\d{1,3})\./);
-  if (match172) {
+  if (match172 && match172[1]) {
     const octet = parseInt(match172[1], 10);
     if (octet >= 16 && octet <= 31) return true;
   }
@@ -66,7 +68,8 @@ function extractTrustedClientIp(req: any): string {
   const vercelForwarded = getHeader("x-vercel-forwarded-for");
   if (vercelForwarded) {
     const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
-    if (ips.length > 0) return ips[0];
+    const firstIp = ips[0];
+    if (firstIp) return firstIp;
   }
 
   const realIp = getHeader("x-real-ip");
@@ -81,9 +84,10 @@ function extractTrustedClientIp(req: any): string {
     if (ips.length > 0) {
       for (let i = ips.length - 1; i >= 0; i--) {
         const ip = ips[i];
-        if (!isPrivateIp(ip)) return ip;
+        if (ip && !isPrivateIp(ip)) return ip;
       }
-      return ips[0];
+      const fallbackIp = ips[0];
+      if (fallbackIp) return fallbackIp;
     }
   }
 
