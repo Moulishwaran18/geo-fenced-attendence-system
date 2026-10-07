@@ -15,6 +15,7 @@ export function LiveGpsPanel() {
     readingsHistory,
     maxAcquisitionSeconds,
     readingsCollected,
+    bestAccuracy,
     kalmanEstimatedAccuracy,
     rawCoords,
     filteredCoords,
@@ -46,16 +47,21 @@ export function LiveGpsPanel() {
   const acquisitionStatus = useMemo(() => {
     if (!latestSample) return "Acquiring GPS...";
     const acc = latestSample.accuracy;
-    if (acc <= 10 && positionStability === "STABLE") return "✓ 10 m TARGET ACHIEVED";
-    if (acc <= 20) return "✓ ACCEPTABLE — ABOVE 10 m TARGET";
-    return "Acquiring GPS...";
+    if (acc <= 15 && positionStability === "STABLE") return "GPS ACCURACY EXCELLENT (≤15m)";
+    if (acc <= 20) return "GPS ACCURACY ACCEPTED (≤20m)";
+    return "GPS ACCURACY INSUFFICIENT (>20m) — Acquiring a better GPS fix...";
   }, [latestSample, positionStability]);
 
   return (
     <div className="space-y-6 rounded-lg border p-4 bg-muted/20">
       <h2 className="text-xl font-semibold">GPS Acquisition</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-mono bg-muted/40 p-2 rounded border border-border">
+        <div>GPS readings collected: <span className="font-bold">{readingsCollected}</span></div>
+        <div>Best accuracy: <span className="font-bold">{bestAccuracy !== null ? `±${bestAccuracy.toFixed(1)}m` : "—"}</span></div>
+        <div>Target accuracy: <span className="font-bold text-emerald-600 dark:text-emerald-400">&lt;=15m</span></div>
+      </div>
       <div className="text-sm text-muted-foreground">
-        {acquisitionStatus} (Sample {readingsCollected} / {maxAcquisitionSeconds})
+        {acquisitionStatus} (Sample {readingsCollected} / {maxAcquisitionSeconds}s)
       </div>
 
       {/* Table of latest sample */}

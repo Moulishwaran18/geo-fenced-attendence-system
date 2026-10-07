@@ -181,7 +181,7 @@ function MarkAttendancePage() {
       return {
         label: `REJECTED (GPS Accuracy Insufficient: ±${geofence.accuracy.toFixed(1)}m)`,
         tone: "error" as const,
-        detail: `GPS accuracy insufficient — Current accuracy: ±${geofence.accuracy.toFixed(1)}m. Move to open sky / enable Precise Location.`,
+        detail: `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy.toFixed(1)}m. Acquiring a better GPS fix...`,
       };
     }
     if (!gpsInsideGeofence) {
@@ -248,10 +248,10 @@ function MarkAttendancePage() {
       const isTarget = acc <= 15;
       return {
         key: "location",
-        value: "Inside Campus Polygon",
+        value: isTarget ? "GPS ACCURACY EXCELLENT" : "GPS ACCURACY ACCEPTED",
         detail: isTarget
-          ? `GPS accuracy excellent — Current accuracy: ±${acc.toFixed(1)}m`
-          : `GPS accuracy accepted — Current accuracy: ±${acc.toFixed(1)}m · Improving toward ±15m...`,
+          ? `Current accuracy: ±${acc.toFixed(1)}m`
+          : `Current accuracy: ±${acc.toFixed(1)}m · Improving GPS accuracy toward ±15m...`,
         state: "verified",
       };
     }
@@ -276,8 +276,8 @@ function MarkAttendancePage() {
 
     return {
       key: "location",
-      value: "GPS accuracy insufficient",
-      detail: `GPS accuracy insufficient — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m · Acquiring better GPS fix...`,
+      value: "GPS ACCURACY INSUFFICIENT",
+      detail: `Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m · Acquiring a better GPS fix...`,
       state: "warning",
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
@@ -421,7 +421,7 @@ function MarkAttendancePage() {
       toast.error("GPS Geofence Verification Failed", {
         description:
           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-            ? `GPS accuracy insufficient — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Move to open sky / enable Precise Location.`
+            ? `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Acquiring a better GPS fix...`
             : "Your device GPS position is outside the authoritative 5-point campus polygon.",
       });
       return;

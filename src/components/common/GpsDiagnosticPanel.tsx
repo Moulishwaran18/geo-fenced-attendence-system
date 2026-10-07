@@ -279,24 +279,31 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                 : "text-amber-600 dark:text-amber-400"
           }`} />
           <div className="flex-1 space-y-0.5">
-            <p className="font-semibold">
+            <div className="font-bold uppercase tracking-wider text-xs">
               {displayAccuracy !== null && displayAccuracy > 20
-                ? `GPS accuracy insufficient — Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                ? "GPS ACCURACY INSUFFICIENT"
                 : displayAccuracy !== null && displayAccuracy <= 15
-                  ? `GPS accuracy excellent — Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                  ? "GPS ACCURACY EXCELLENT"
                   : displayAccuracy !== null && displayAccuracy <= 20
-                    ? `GPS accuracy accepted — Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                    ? "GPS ACCURACY ACCEPTED"
                     : statusMessage}
-            </p>
-            <p className="text-[11px] opacity-90">
-              {displayAccuracy !== null && displayAccuracy > 20
-                ? "Acquiring better GPS fix..."
-                : displayAccuracy !== null && displayAccuracy <= 15
-                  ? "Preferred accuracy target reached (≤15m)"
-                  : displayAccuracy !== null && displayAccuracy <= 20
-                    ? "Improving GPS accuracy toward ±15m..."
-                    : (instructionMessage || "Move to open sky / enable Precise Location")}
-            </p>
+            </div>
+            <div className="font-mono text-xs font-semibold">
+              {displayAccuracy !== null
+                ? `Current accuracy: ±${displayAccuracy.toFixed(1)}m`
+                : statusMessage}
+            </div>
+            <div className="text-[11px] opacity-90">
+              {instructionMessage
+                ? instructionMessage
+                : displayAccuracy !== null && displayAccuracy > 20
+                  ? "Acquiring a better GPS fix..."
+                  : displayAccuracy !== null && displayAccuracy <= 15
+                    ? null
+                    : displayAccuracy !== null && displayAccuracy <= 20
+                      ? "Improving GPS accuracy toward ±15m..."
+                      : "Move to open sky / enable Precise Location"}
+            </div>
           </div>
           {geofence.openLocationSettings && (status === "position_unavailable" || status === "permission_denied") && (
             <Button
@@ -316,6 +323,27 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           )}
         </div>
       )}
+
+      {/* Dedicated Acquisition Progress Indicator */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/25 px-4 py-2 text-xs font-mono">
+        <div className="flex items-center gap-1.5">
+          <Database className="size-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">GPS readings collected:</span>
+          <span className="font-bold text-foreground">{readingsCollected}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Activity className="size-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">Best accuracy:</span>
+          <span className="font-bold text-foreground">
+            {bestAccuracy !== null ? `±${bestAccuracy.toFixed(1)}m` : "—"}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Satellite className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span className="text-muted-foreground">Target accuracy:</span>
+          <span className="font-bold text-emerald-600 dark:text-emerald-400">&lt;=15m</span>
+        </div>
+      </div>
 
       {/* Primary Telemetry Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-border text-xs">
@@ -427,7 +455,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           </div>
           <div className="text-[10px] text-muted-foreground">
             {gpsQuality === "EXCELLENT"
-              ? "≤10m Preferred Fix"
+              ? "≤15m Preferred Fix"
               : gpsQuality === "GOOD"
                 ? "≤20m Acceptable Fix"
                 : gpsQuality === "ACQUIRING / WAIT"
