@@ -11,6 +11,7 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { fetchDevServerPublicEgressIp, isVercelOrProduction } from "./wifi-status.ts";
 
 const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
 const TOKEN_SECRET =
@@ -76,6 +77,22 @@ function extractTrustedClientIp(req: any): string {
     const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
     const firstIp = ips[0];
     if (firstIp) return firstIp;
+  }
+
+  // In local development (NOT Vercel / production), do NOT trust client x-real-ip or x-forwarded-for.
+  // Instead, treat the socket peer IP directly.
+  if (!isVercelOrProduction(req)) {
+    const remote =
+      req.socket?.remoteAddress ||
+      req.connection?.remoteAddress ||
+      req.info?.remoteAddress ||
+      req.ip ||
+      "";
+    if (remote) {
+      const clean = sanitizeIp(remote);
+      if (clean) return clean;
+    }
+    return "127.0.0.1";
   }
 
   const realIp = getHeader("x-real-ip");
@@ -245,7 +262,20 @@ export default async function handler(req: any, res?: any) {
 
   // 3. Independent Cryptographic & Network Verification
   const tokenCheck = verifyNetworkAuthToken(networkToken);
-  const ipCheck = isAuthorizedCampusEgressIp(clientIp);
+  let ipCheck = isAuthorizedCampusEgressIp(clientIp);
+
+  // Local Development Fallback for direct attendance connections:
+  // If on localhost/private IP in development mode (NEVER in production/Vercel),
+  // check the local server's own verified public egress IP.
+  if (!ipCheck.authorized && !isVercelOrProduction(req) && isPrivateIp(clientIp)) {
+    const devEgressIp = await fetchDevServerPublicEgressIp();
+    if (devEgressIp) {
+      const devCheck = isAuthorizedCampusEgressIp(devEgressIp);
+      if (devCheck.authorized) {
+        ipCheck = devCheck;
+      }
+    }
+  }
 
   // ZERO CLIENT TRUST GATE:
   // Must have a valid, cryptographically unexpired server token OR current connection from authorized egress IP

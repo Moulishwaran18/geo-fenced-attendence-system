@@ -19,9 +19,18 @@ export type GpsStatus =
   | "insufficient_accuracy"
   | "low_accuracy"
   | "permission_denied"
+  | "permission_prompt"
+  | "location_services_off"
   | "position_unavailable"
   | "timeout"
   | "unsupported";
+
+export type GpsPermissionState =
+  | "granted"
+  | "prompt"
+  | "denied"
+  | "services_off"
+  | "unknown";
 
 export type GpsQuality = "EXCELLENT" | "GOOD" | "ACQUIRING / WAIT" | "UNRELIABLE" | "UNKNOWN";
 export type PositionStability = "STABLE" | "UNSTABLE" | "MEASURING";
@@ -74,6 +83,10 @@ export interface UseGeofenceResult {
   status: GpsStatus;
   statusMessage: string;
   instructionMessage: string | null;
+  permissionState: GpsPermissionState;
+  isPermissionPrompt: boolean;
+  isPermissionDenied: boolean;
+  isLocationServicesOff: boolean;
   isChecking: boolean;
   accuracy: number | null;
   rawAccuracy: number | null;
@@ -94,6 +107,7 @@ export interface UseGeofenceResult {
   error: string | null;
   refreshLocation: () => Promise<GeofenceEvaluation | null>;
   checkLocation: (fresh?: boolean) => Promise<GeofenceEvaluation | null>;
+  requestPermission: () => Promise<boolean>;
   openLocationSettings?: () => void;
   rmsPositionDeviation: number | null;
   polygon: LatLng[];
@@ -278,6 +292,7 @@ export function useGeofence(
   const [status, setStatus] = useState<GpsStatus>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("Waiting for accurate GPS location...");
   const [instructionMessage, setInstructionMessage] = useState<string | null>("Move to open sky if possible.");
+  const [permissionState, setPermissionState] = useState<GpsPermissionState>("unknown");
   const [isChecking, setIsChecking] = useState<boolean>(false);
   const [readingsCollected, setReadingsCollected] = useState<number>(0);
   const [readingsHistory, setReadingsHistory] = useState<GpsReading[]>([]);
@@ -546,14 +561,21 @@ export function useGeofence(
       let message = "Unable to determine location.";
       let instruction: string | null = "Move to open sky / enable Precise Location";
 
+      const isServicesOff =
+        err.code === 2 ||
+        (typeof err.message === "string" &&
+          /location.*(disabled|turned off|off|unavailable)/i.test(err.message));
+
       if (err.code === 1) {
         newStatus = "permission_denied";
-        message = "GPS permission denied. Please allow location access in settings.";
-        instruction = "Enable location permissions in device / browser settings.";
-      } else if (err.code === 2) {
-        newStatus = "position_unavailable";
-        message = "GPS position unavailable. Ensure device location is turned on.";
-        instruction = "Turn on device location (GPS) and Precise Location.";
+        message = "Location permission denied";
+        instruction = "Enable location permission for Chrome and try again.";
+        setPermissionState("denied");
+      } else if (isServicesOff) {
+        newStatus = "location_services_off";
+        message = "Location services are OFF";
+        instruction = "Turn on Android Location and try again.";
+        setPermissionState("services_off");
       } else if (err.code === 3) {
         newStatus = "timeout";
         message = "GPS request timed out.";
@@ -591,9 +613,6 @@ export function useGeofence(
     setAcquisitionTimer(0);
     setIsChecking(true);
     isAcquiringRef.current = true;
-    setStatus("acquiring");
-    setStatusMessage("Waiting for accurate GPS location...");
-    setInstructionMessage("Move to open sky if possible.");
     setError(null);
 
     return new Promise<GeofenceEvaluation | null>(async (resolve) => {
@@ -641,7 +660,7 @@ export function useGeofence(
           if (!payload) return;
 
           if (payload.status === "LOCATION_DISABLED") {
-            handlePositionError({ code: 2, message: "Location is turned off" });
+            handlePositionError({ code: 2, message: "Location services are OFF" });
             resolve(null);
             return;
           }
@@ -653,6 +672,7 @@ export function useGeofence(
           }
 
           if (payload.latitude !== undefined && payload.longitude !== undefined && payload.accuracy !== undefined) {
+            setPermissionState("granted");
             handlePositionReading({
               coords: {
                 latitude: payload.latitude,
@@ -675,32 +695,86 @@ export function useGeofence(
           console.warn("Native location bridge start failed:", e);
         }
       } else {
-        // ── 2. WEB BROWSER FALLBACK PATH ──
+        // ── 2. WEB BROWSER PATH (ANDROID CHROME & DESKTOP) ──
         if (typeof window === "undefined" || !navigator.geolocation) {
           setStatus("unsupported");
           setStatusMessage("Geolocation is not supported by this browser.");
           setInstructionMessage(null);
           setError("Geolocation unsupported");
+          setIsChecking(false);
+          isAcquiringRef.current = false;
           resolve(null);
           return;
         }
 
+        // Check readiness & permission state via Permissions API
+        let initialPermState: PermissionState | "unknown" = "unknown";
         if (typeof window !== "undefined" && typeof navigator !== "undefined" && navigator.permissions?.query) {
           try {
             const perm = await navigator.permissions.query({ name: "geolocation" as PermissionName });
-            if (perm.state === "denied") {
-              handlePositionError({ code: 1, message: "Location permission denied" });
-              resolve(null);
-              return;
-            }
+            initialPermState = perm.state;
+            setPermissionState(
+              perm.state === "granted" ? "granted" : perm.state === "denied" ? "denied" : "prompt"
+            );
+
+            perm.onchange = () => {
+              if (perm.state === "granted") {
+                setPermissionState("granted");
+                void startAcquisition();
+              } else if (perm.state === "denied") {
+                setPermissionState("denied");
+                setStatus("permission_denied");
+                setStatusMessage("Location permission denied");
+                setInstructionMessage("Enable location permission for Chrome and try again.");
+                setError("Location permission denied");
+                stopActiveAcquisition();
+              } else if (perm.state === "prompt") {
+                setPermissionState("prompt");
+                setStatus("permission_prompt");
+                setStatusMessage("Location permission required");
+                setInstructionMessage("Please allow location access to continue.");
+              }
+            };
           } catch {
-            // Permissions query not supported on some platforms; proceed to watchPosition
+            initialPermState = "unknown";
           }
         }
 
+        // PERMISSION DENIED:
+        // Show instructions to enable in Android Settings; do NOT repeatedly trigger requests.
+        if (initialPermState === "denied") {
+          setStatus("permission_denied");
+          setStatusMessage("Location permission denied");
+          setInstructionMessage("Enable location permission for Chrome and try again.");
+          setError("Location permission denied");
+          setPermissionState("denied");
+          setIsChecking(false);
+          isAcquiringRef.current = false;
+          resolve(null);
+          return;
+        }
+
+        // PERMISSION PROMPT / UNKNOWN:
+        // Set prompt notification and explicitly trigger Geolocation API
+        if (initialPermState === "prompt" || initialPermState === "unknown") {
+          setStatus("permission_prompt");
+          setStatusMessage("Location permission required");
+          setInstructionMessage("Please allow location access to continue.");
+          setPermissionState("prompt");
+        } else {
+          // PERMISSION GRANTED:
+          // Start automatic GPS acquisition immediately
+          setStatus("acquiring");
+          setStatusMessage("Waiting for accurate GPS location...");
+          setInstructionMessage("Move to open sky if possible.");
+          setPermissionState("granted");
+        }
+
+        // Explicitly initiate the browser Geolocation API using ONE centralized watchPosition flow
         try {
           watchIdRef.current = navigator.geolocation.watchPosition(
             (pos) => {
+              setPermissionState("granted");
               handlePositionReading(pos);
             },
             (err) => {
@@ -742,6 +816,11 @@ export function useGeofence(
     [startAcquisition],
   );
 
+  const requestPermission = useCallback(async (): Promise<boolean> => {
+    const res = await startAcquisition();
+    return res !== null;
+  }, [startAcquisition]);
+
   const openLocationSettings = useCallback(() => {
     if (typeof window !== "undefined" && (window as any).AndroidLocationBridge?.openLocationSettings) {
       try {
@@ -749,8 +828,10 @@ export function useGeofence(
       } catch (e) {
         console.warn("openLocationSettings bridge failed:", e);
       }
+    } else {
+      void startAcquisition();
     }
-  }, []);
+  }, [startAcquisition]);
 
   useEffect(() => {
     if (autoWatch) {
@@ -761,6 +842,30 @@ export function useGeofence(
       stopActiveAcquisition();
     };
   }, [autoWatch, startAcquisition, stopActiveAcquisition]);
+
+  // Listen to visibility changes (e.g. user toggles Android Location in Quick Settings or Settings)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        if (
+          status === "location_services_off" ||
+          status === "position_unavailable" ||
+          status === "permission_prompt"
+        ) {
+          void startAcquisition();
+        }
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+    };
+  }, [status, startAcquisition]);
 
   const currentRawAccuracy = coords ? coords.accuracy : null;
   const gpsQuality = getGpsQuality(currentRawAccuracy);
@@ -779,6 +884,10 @@ export function useGeofence(
     isInsidePolygonRaw === true &&
     (status === "inside" || isAcceptableAccuracy);
 
+  const isPermissionPrompt = status === "permission_prompt" || permissionState === "prompt";
+  const isPermissionDenied = status === "permission_denied" || permissionState === "denied";
+  const isLocationServicesOff = status === "location_services_off" || permissionState === "services_off";
+
   return {
     locationSource,
     coords,
@@ -796,6 +905,10 @@ export function useGeofence(
     status,
     statusMessage,
     instructionMessage,
+    permissionState,
+    isPermissionPrompt,
+    isPermissionDenied,
+    isLocationServicesOff,
     isChecking,
     accuracy: currentRawAccuracy,
     rawAccuracy: currentRawAccuracy,
@@ -816,6 +929,7 @@ export function useGeofence(
     error,
     refreshLocation,
     checkLocation,
+    requestPermission,
     openLocationSettings,
     // Expose RMS deviation from the latest reading (if available)
     rmsPositionDeviation: readingsHistory.length > 0 ? (readingsHistory[readingsHistory.length - 1]?.rmsPositionDeviation ?? null) : null,

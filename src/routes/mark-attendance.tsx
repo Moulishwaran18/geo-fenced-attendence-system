@@ -120,8 +120,8 @@ function MarkAttendancePage() {
     ? mockSnapshot.signals.find((s) => s.key === "wifi")?.state === "verified"
     : Boolean(wifiStatus?.authorized ?? wifiStatus?.isSonaWifi);
 
-  // High-accuracy live GPS geofence tracker: strictly NOT started until Wi-Fi succeeds
-  const geofence = useGeofence(wifiAuthorized);
+  // High-accuracy live GPS geofence tracker & readiness check: explicitly initiated when entering Mark Attendance
+  const geofence = useGeofence(true);
 
   const gpsInsideGeofence = isUsingMockScenario
     ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
@@ -163,6 +163,27 @@ function MarkAttendancePage() {
         label: "REJECTED (Wi-Fi Unauthorized)",
         tone: "error" as const,
         detail: "Device must be connected to authorized institutional Wi-Fi network",
+      };
+    }
+    if (!isUsingMockScenario && (geofence.status === "location_services_off" || geofence.status === "position_unavailable")) {
+      return {
+        label: "REJECTED (Location Services OFF)",
+        tone: "error" as const,
+        detail: "Turn on Android Location and try again.",
+      };
+    }
+    if (!isUsingMockScenario && geofence.status === "permission_prompt") {
+      return {
+        label: "REJECTED (Location Permission Required)",
+        tone: "warning" as const,
+        detail: "Please allow location access to continue.",
+      };
+    }
+    if (!isUsingMockScenario && geofence.status === "permission_denied") {
+      return {
+        label: "REJECTED (Location Permission Denied)",
+        tone: "error" as const,
+        detail: "Enable location permission for Chrome and try again.",
       };
     }
     if (!isUsingMockScenario && geofence.status === "acquiring" && !geofence.isAcceptableAccuracy) {
@@ -216,6 +237,33 @@ function MarkAttendancePage() {
       };
     }
 
+    if (geofence.status === "location_services_off" || geofence.status === "position_unavailable") {
+      return {
+        key: "location",
+        value: "Location services are OFF",
+        detail: "Turn on Android Location and try again.",
+        state: "error",
+      };
+    }
+
+    if (geofence.status === "permission_prompt") {
+      return {
+        key: "location",
+        value: "Location permission required",
+        detail: "Please allow location access to continue.",
+        state: "warning",
+      };
+    }
+
+    if (geofence.status === "permission_denied") {
+      return {
+        key: "location",
+        value: "Location permission denied",
+        detail: "Enable location permission for Chrome and try again.",
+        state: "error",
+      };
+    }
+
     if (geofence.status === "acquiring") {
       return {
         key: "location",
@@ -225,19 +273,10 @@ function MarkAttendancePage() {
       };
     }
 
-    if (geofence.status === "permission_denied") {
+    if (geofence.status === "timeout") {
       return {
         key: "location",
-        value: "Permission Denied",
-        detail: "Enable location in settings",
-        state: "error",
-      };
-    }
-
-    if (geofence.status === "position_unavailable" || geofence.status === "timeout") {
-      return {
-        key: "location",
-        value: geofence.status === "timeout" ? "GPS Request Timed Out" : "GPS Unavailable",
+        value: "GPS Request Timed Out",
         detail: "Move to open sky / enable Precise Location",
         state: "error",
       };
@@ -376,6 +415,27 @@ function MarkAttendancePage() {
         value: "REJECTED",
         detail: "Factor 1 (Wi-Fi) Failed: Unauthorized Wi-Fi network",
         state: "error",
+      };
+    } else if (geofence.status === "location_services_off" || geofence.status === "position_unavailable") {
+      decisionSignal = {
+        key: "decision",
+        value: "REJECTED",
+        detail: "Factor 2 (GPS) Blocked: Location services are OFF",
+        state: "error",
+      };
+    } else if (geofence.status === "permission_denied") {
+      decisionSignal = {
+        key: "decision",
+        value: "REJECTED",
+        detail: "Factor 2 (GPS) Blocked: Location permission denied",
+        state: "error",
+      };
+    } else if (geofence.status === "permission_prompt") {
+      decisionSignal = {
+        key: "decision",
+        value: "LOCKED",
+        detail: "Factor 2 (GPS) Pending: Location permission required",
+        state: "warning",
       };
     } else if (wifiCardStatus === "CHECKING" || !gpsInsideGeofence || !faceAuthenticated) {
       decisionSignal = {
@@ -577,7 +637,58 @@ function MarkAttendancePage() {
       ) : (
         <div className="space-y-6">
           {/* Conditional Status Banners */}
-          {!wifiAuthorized ? (
+          {!isUsingMockScenario && (geofence.status === "location_services_off" || geofence.status === "position_unavailable") ? (
+            <AlertBanner
+              tone="error"
+              icon={MapPin}
+              title="Location services are OFF"
+              description="Turn on Android Location and try again. Enable device location services in quick settings or Android Settings to acquire GPS coordinates."
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void geofence.refreshLocation()}
+                  className="mt-2 h-8 gap-1.5"
+                >
+                  <RefreshCw className="size-3.5" /> Retry Location
+                </Button>
+              }
+            />
+          ) : !isUsingMockScenario && geofence.status === "permission_prompt" ? (
+            <AlertBanner
+              tone="warning"
+              icon={MapPin}
+              title="Location permission required"
+              description="Please allow location access to continue. Tap 'Allow' on the Chrome location permission prompt."
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void geofence.refreshLocation()}
+                  className="mt-2 h-8 gap-1.5"
+                >
+                  <Compass className="size-3.5" /> Request Location Access
+                </Button>
+              }
+            />
+          ) : !isUsingMockScenario && geofence.status === "permission_denied" ? (
+            <AlertBanner
+              tone="error"
+              icon={ShieldAlert}
+              title="Location permission denied"
+              description="Enable location permission for Chrome and try again. Check Chrome Site Settings or Android Settings > Apps > Chrome > Permissions."
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void geofence.refreshLocation()}
+                  className="mt-2 h-8 gap-1.5"
+                >
+                  <RefreshCw className="size-3.5" /> Check Permission Again
+                </Button>
+              }
+            />
+          ) : !wifiAuthorized ? (
             <AlertBanner
               tone="error"
               icon={Wifi}
@@ -805,9 +916,15 @@ function MarkAttendancePage() {
                       >
                         {gpsInsideGeofence
                           ? "INSIDE CAMPUS POLYGON"
-                          : geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-                            ? "BLOCKED (ACCURACY INSUFFICIENT)"
-                            : "OUTSIDE CAMPUS POLYGON"}
+                          : geofence.status === "location_services_off" || geofence.status === "position_unavailable"
+                            ? "LOCATION SERVICES OFF"
+                            : geofence.status === "permission_prompt"
+                              ? "PERMISSION REQUIRED"
+                              : geofence.status === "permission_denied"
+                                ? "PERMISSION DENIED"
+                                : geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+                                  ? "BLOCKED (ACCURACY INSUFFICIENT)"
+                                  : "OUTSIDE CAMPUS POLYGON"}
                       </Badge>
                     </dd>
                   </div>
@@ -972,10 +1089,42 @@ function MarkAttendancePage() {
                   className="w-full"
                   disabled={
                     status === "verifying" ||
-                    (!wifiAuthorized && !canMarkAttendance) ||
-                    (!gpsInsideGeofence && !canMarkAttendance)
+                    (!wifiAuthorized &&
+                      !canMarkAttendance &&
+                      geofence.status !== "location_services_off" &&
+                      geofence.status !== "position_unavailable" &&
+                      geofence.status !== "permission_prompt" &&
+                      geofence.status !== "permission_denied") ||
+                    (!gpsInsideGeofence &&
+                      !canMarkAttendance &&
+                      geofence.status !== "location_services_off" &&
+                      geofence.status !== "position_unavailable" &&
+                      geofence.status !== "permission_prompt" &&
+                      geofence.status !== "permission_denied" &&
+                      !wifiAuthorized)
                   }
                   onClick={() => {
+                    if (geofence.status === "location_services_off" || geofence.status === "position_unavailable") {
+                      toast.error("Location services are OFF", {
+                        description: "Turn on Android Location and try again.",
+                      });
+                      void geofence.refreshLocation();
+                      return;
+                    }
+                    if (geofence.status === "permission_prompt") {
+                      toast.info("Location permission required", {
+                        description: "Please allow location access to continue.",
+                      });
+                      void geofence.refreshLocation();
+                      return;
+                    }
+                    if (geofence.status === "permission_denied") {
+                      toast.error("Location permission denied", {
+                        description: "Enable location permission for Chrome and try again.",
+                      });
+                      void geofence.refreshLocation();
+                      return;
+                    }
                     if (!wifiAuthorized) {
                       toast.error("Wi-Fi Verification Blocked", {
                         description: "You must be connected to an authorized campus Wi-Fi network.",
@@ -1001,6 +1150,18 @@ function MarkAttendancePage() {
                   {status === "verifying" ? (
                     <>
                       <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
+                    </>
+                  ) : geofence.status === "location_services_off" || geofence.status === "position_unavailable" ? (
+                    <>
+                      <AlertTriangle className="mr-2 size-5" /> Location Services OFF — Turn on Location
+                    </>
+                  ) : geofence.status === "permission_prompt" ? (
+                    <>
+                      <MapPin className="mr-2 size-5" /> Location Permission Required — Allow Access
+                    </>
+                  ) : geofence.status === "permission_denied" ? (
+                    <>
+                      <ShieldAlert className="mr-2 size-5" /> Location Permission Denied — Enable in Settings
                     </>
                   ) : !wifiAuthorized ? (
                     <>

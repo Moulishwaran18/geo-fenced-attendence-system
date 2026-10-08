@@ -104,6 +104,18 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           color: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30",
           dot: "bg-amber-500",
         };
+      case "location_services_off":
+        return {
+          label: "LOCATION SERVICES OFF",
+          color: "bg-destructive/15 text-destructive border-destructive/30",
+          dot: "bg-destructive",
+        };
+      case "permission_prompt":
+        return {
+          label: "PERMISSION REQUIRED",
+          color: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30",
+          dot: "bg-amber-500",
+        };
       case "permission_denied":
         return {
           label: "PERMISSION DENIED",
@@ -305,7 +317,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                       : "Move to open sky / enable Precise Location"}
             </div>
           </div>
-          {geofence.openLocationSettings && (status === "position_unavailable" || status === "permission_denied") && (
+          {geofence.openLocationSettings && (status === "location_services_off" || status === "position_unavailable" || status === "permission_denied") && (
             <Button
               variant="default"
               size="sm"

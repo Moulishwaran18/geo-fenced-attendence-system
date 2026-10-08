@@ -88,6 +88,10 @@ function DashboardPage() {
       ? "Outside Campus"
       : geofence.status === "acquiring"
       ? "Acquiring GPS…"
+      : geofence.status === "location_services_off"
+      ? "Location Services OFF"
+      : geofence.status === "permission_prompt"
+      ? "Permission Required"
       : geofence.status === "permission_denied"
       ? "GPS Denied"
       : geofence.status === "insufficient_accuracy" ||

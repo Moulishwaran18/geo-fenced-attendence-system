@@ -68,6 +68,111 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
+export function isVercelOrProduction(req?: any): boolean {
+  if (typeof process !== "undefined") {
+    if (
+      process.env["VERCEL"] === "1" ||
+      process.env["VERCEL"] === "true" ||
+      Boolean(process.env["VERCEL_ENV"])
+    ) {
+      return true;
+    }
+    if (process.env["NODE_ENV"] === "production") {
+      return true;
+    }
+  }
+
+  if (req) {
+    const headers = req.headers || {};
+    const getHeader = (name: string): string => {
+      if (typeof headers.get === "function") return headers.get(name) || "";
+      const lower = name.toLowerCase();
+      return headers[name] || headers[lower] || "";
+    };
+
+    if (
+      getHeader("x-vercel-forwarded-for") ||
+      getHeader("x-vercel-id") ||
+      getHeader("x-vercel-deployment-url")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+let devServerPublicIpOverrideForTesting: string | null = null;
+let cachedDevEgressIp: { ip: string; timestamp: number } | null = null;
+const DEV_EGRESS_CACHE_TTL_MS = 15000;
+
+export function setDevServerPublicIpForTesting(ip: string | null) {
+  devServerPublicIpOverrideForTesting = ip;
+}
+
+export async function fetchDevServerPublicEgressIp(): Promise<string | null> {
+  // STRICT GUARD: Must NEVER execute in production or Vercel environment
+  if (isVercelOrProduction()) {
+    return null;
+  }
+
+  if (devServerPublicIpOverrideForTesting !== null) {
+    return devServerPublicIpOverrideForTesting;
+  }
+
+  const now = Date.now();
+  if (cachedDevEgressIp && now - cachedDevEgressIp.timestamp < DEV_EGRESS_CACHE_TTL_MS) {
+    return cachedDevEgressIp.ip;
+  }
+
+  const endpoints = [
+    {
+      url: "https://api.ipify.org?format=json",
+      parse: (text: string) => {
+        try {
+          const json = JSON.parse(text);
+          return json?.ip ? String(json.ip).trim() : null;
+        } catch {
+          return null;
+        }
+      },
+    },
+    {
+      url: "https://icanhazip.com",
+      parse: (text: string) => text.trim(),
+    },
+    {
+      url: "https://checkip.amazonaws.com",
+      parse: (text: string) => text.trim(),
+    },
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await fetch(endpoint.url, {
+        signal: controller.signal,
+        headers: { "User-Agent": "SONA-Campus-Attendance-Dev/1.0" },
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const text = await res.text();
+        const extracted = sanitizeIp(endpoint.parse(text));
+        if (extracted && /^(\d{1,3}\.){3}\d{1,3}$/.test(extracted)) {
+          cachedDevEgressIp = { ip: extracted, timestamp: now };
+          return extracted;
+        }
+      }
+    } catch {
+      // Continue to next reflector endpoint
+    }
+  }
+
+  return null;
+}
+
 function extractTrustedClientIp(req: any): string {
   if (!req) return "unknown";
   const headers = req.headers || {};
@@ -82,6 +187,22 @@ function extractTrustedClientIp(req: any): string {
     const ips = vercelForwarded.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
     const firstIp = ips[0];
     if (firstIp) return firstIp;
+  }
+
+  // In local development (NOT Vercel / production), do NOT trust client x-real-ip or x-forwarded-for.
+  // Instead, treat the socket peer IP directly.
+  if (!isVercelOrProduction(req)) {
+    const remote =
+      req.socket?.remoteAddress ||
+      req.connection?.remoteAddress ||
+      req.info?.remoteAddress ||
+      req.ip ||
+      "";
+    if (remote) {
+      const clean = sanitizeIp(remote);
+      if (clean) return clean;
+    }
+    return "127.0.0.1";
   }
 
   const realIp = getHeader("x-real-ip");
@@ -169,8 +290,9 @@ function isIpInSubnet(ip: string, cidr: string): boolean {
   return (ipNum & mask) === (subnetNum & mask);
 }
 
-function createNetworkAuthToken(verifiedIp: string): string {
+export function createNetworkAuthToken(verifiedIp: string): string {
   const payload = {
+    authorized: true,
     verifiedIp,
     issuedAt: Date.now(),
     expiresAt: Date.now() + TOKEN_TTL_MS,
@@ -406,6 +528,97 @@ export default async function handler(req: any, res?: any) {
         "set-cookie": `sona_network_auth=${networkAuthToken}; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=300`,
       },
     });
+  }
+
+  // 3. Local Development Egress Verification:
+  // When running locally on developer machine (NOT on Vercel / production),
+  // incoming client connection is loopback/private (127.0.0.1, localhost, private IP).
+  // The local Node server determines its own real public Internet egress IP server-side.
+  // NEVER authorize simply because the request is 127.0.0.1 / localhost / private IP.
+  // Compare the server-observed public IP ONLY against 111.92.42.18 & 115.247.87.98.
+  if (!egressResult.authorized && !isVercelOrProduction(req) && isPrivateIp(clientIp)) {
+    const devServerPublicIp = await fetchDevServerPublicEgressIp();
+    const devEgressResult = isAuthorizedCampusEgressIp(devServerPublicIp);
+
+    if (devEgressResult.authorized && devServerPublicIp) {
+      const verifiedIp = devEgressResult.matchedIp || devServerPublicIp;
+      const networkAuthToken = createNetworkAuthToken(verifiedIp);
+
+      const devAuthorizedPayload = {
+        authorized: true,
+        network: "SONA Campus Network",
+        verificationMethod: "SERVER_DEV_EGRESS_IP",
+        verifiedIp,
+        isSonaWifi: true,
+        networkType: "SONA",
+        networkSummary: "SONA Campus Network",
+        reason: `Verified connection originates from authorized SONA-WIFI campus egress IP (${verifiedIp}) via local dev egress verification.`,
+        state: "connected",
+        stage: "VERIFIED",
+        networkAuthToken,
+        timestamp,
+        isNativeBridge: false,
+      };
+
+      if (res && typeof res.setHeader === "function") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        res.setHeader(
+          "Set-Cookie",
+          `sona_network_auth=${networkAuthToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=300`
+        );
+        if (typeof res.status === "function" && typeof res.json === "function") {
+          return res.status(200).json(devAuthorizedPayload);
+        }
+        res.statusCode = 200;
+        res.end(JSON.stringify(devAuthorizedPayload));
+        return;
+      }
+      return new Response(JSON.stringify(devAuthorizedPayload), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store, no-cache, must-revalidate",
+          "set-cookie": `sona_network_auth=${networkAuthToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=300`,
+        },
+      });
+    } else {
+      // Local dev egress IP does not match authorized campus IPs, or could not be determined
+      const devUnauthorizedPayload = {
+        authorized: false,
+        network: "Unauthorized Network",
+        verificationMethod: "SERVER_DEV_EGRESS_IP",
+        verifiedIp: devServerPublicIp || clientIp,
+        isSonaWifi: false,
+        networkType: "UNAUTHORIZED",
+        networkSummary: "Unauthorized Network",
+        reason: devServerPublicIp
+          ? `Network verification rejected. Server observed public IP ${devServerPublicIp} does not match authorized campus network egress IPs.`
+          : `Network verification rejected. Local dev server could not determine public egress IP, and local client IP ${clientIp} is not an authorized campus egress IP.`,
+        state: "connected",
+        stage: "FINGERPRINT_CHECK_FAILED",
+        timestamp,
+        isNativeBridge: false,
+      };
+
+      if (res && typeof res.setHeader === "function") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+        if (typeof res.status === "function" && typeof res.json === "function") {
+          return res.status(200).json(devUnauthorizedPayload);
+        }
+        res.statusCode = 200;
+        res.end(JSON.stringify(devUnauthorizedPayload));
+        return;
+      }
+      return new Response(JSON.stringify(devUnauthorizedPayload), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store, no-cache, must-revalidate",
+        },
+      });
+    }
   }
 
   // Unauthorized Network Response

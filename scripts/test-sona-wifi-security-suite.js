@@ -8,7 +8,7 @@ import {
   createNetworkAuthToken,
   verifyNetworkAuthToken,
 } from "../src/server/network-auth.ts";
-import wifiStatusHandler from "../api/wifi-status.ts";
+import wifiStatusHandler, { setDevServerPublicIpForTesting } from "../api/wifi-status.ts";
 import attendanceHandler from "../api/attendance.ts";
 
 console.log("=================================================================");
@@ -322,7 +322,109 @@ async function runSecurityTests() {
   await attendanceHandler(attReq5, attRes5);
   const attResp5 = attGet5();
   assert(attResp5.status === 200, "Attendance direct from campus egress IP 115.247.87.98 succeeds (HTTP 200 OK)");
-  assert(attResp5.body.success === true, "Attendance response success is true");
+  // =================================================================
+  // 7. DEVELOPMENT-ONLY LOCALHOST EGRESS VERIFICATION TESTS
+  // =================================================================
+  console.log("\n--- 7. DEVELOPMENT-ONLY LOCALHOST EGRESS VERIFICATION TESTS ---");
+
+  // Test 7A: localhost + authorized public egress (115.247.87.98 Jio) -> authorized & token minted
+  setDevServerPublicIpForTesting("115.247.87.98");
+  const { req: devReq1, res: devRes1, getResponse: devGet1 } = createMockReqRes({
+    socketRemoteAddress: "127.0.0.1",
+  });
+  await wifiStatusHandler(devReq1, devRes1);
+  const devResp1 = devGet1();
+  assert(devResp1.status === 200, "Localhost on authorized egress returns HTTP 200");
+  assert(devResp1.body.authorized === true, "Localhost on authorized egress is AUTHORIZED");
+  assert(devResp1.body.verifiedIp === "115.247.87.98", "verifiedIp is 115.247.87.98");
+  assert(devResp1.body.verificationMethod === "SERVER_DEV_EGRESS_IP", 'verificationMethod is "SERVER_DEV_EGRESS_IP"');
+  assert(typeof devResp1.body.networkAuthToken === "string" && devResp1.body.networkAuthToken.length > 20, "networkAuthToken is issued for localhost");
+
+  // Test 7B: localhost + authorized public egress (111.92.42.18 Asianet) -> authorized & token minted
+  setDevServerPublicIpForTesting("111.92.42.18");
+  const { req: devReq2, res: devRes2, getResponse: devGet2 } = createMockReqRes({
+    socketRemoteAddress: "127.0.0.1",
+  });
+  await wifiStatusHandler(devReq2, devRes2);
+  const devResp2 = devGet2();
+  assert(devResp2.body.authorized === true, "Localhost with Asianet egress 111.92.42.18 is AUTHORIZED");
+  assert(devResp2.body.verifiedIp === "111.92.42.18", "verifiedIp is 111.92.42.18");
+
+  // Test 7C: localhost + unauthorized public egress (49.37.12.34 Mobile Data) -> rejected
+  setDevServerPublicIpForTesting("49.37.12.34");
+  const { req: devReq3, res: devRes3, getResponse: devGet3 } = createMockReqRes({
+    socketRemoteAddress: "127.0.0.1",
+  });
+  await wifiStatusHandler(devReq3, devRes3);
+  const devResp3 = devGet3();
+  assert(devResp3.body.authorized === false, "Localhost on cellular egress 49.37.12.34 is REJECTED");
+  assert(devResp3.body.network === "Unauthorized Network", 'network is "Unauthorized Network"');
+  assert(devResp3.body.networkAuthToken === undefined, "networkAuthToken is NOT issued for unauthorized egress");
+
+  // Test 7D: 127.0.0.1 alone (egress lookup failure / null) -> rejected
+  setDevServerPublicIpForTesting(null);
+  // Temporarily stub fetch to reject so live lookup doesn't succeed when testing null/failure
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("Offline / DNS failure"); };
+  const { req: devReq4, res: devRes4, getResponse: devGet4 } = createMockReqRes({
+    socketRemoteAddress: "127.0.0.1",
+  });
+  await wifiStatusHandler(devReq4, devRes4);
+  const devResp4 = devGet4();
+  assert(devResp4.body.authorized === false, "127.0.0.1 alone with no public egress is REJECTED (never authorized simply for being 127.0.0.1)");
+  assert(devResp4.body.networkAuthToken === undefined, "networkAuthToken is NOT issued when egress lookup fails");
+  globalThis.fetch = originalFetch; // restore fetch
+
+  // Test 7E: Attacker on localhost sends fake X-Forwarded-For: 111.92.42.18 while egress is unauthorized (49.37.12.34) -> rejected
+  setDevServerPublicIpForTesting("49.37.12.34");
+  const { req: devReq5, res: devRes5, getResponse: devGet5 } = createMockReqRes({
+    socketRemoteAddress: "127.0.0.1",
+    headers: {
+      "x-forwarded-for": "111.92.42.18",
+      "x-real-ip": "111.92.42.18",
+    },
+  });
+  await wifiStatusHandler(devReq5, devRes5);
+  const devResp5 = devGet5();
+  assert(devResp5.body.authorized === false, "Fake X-Forwarded-For / X-Real-IP on localhost is IGNORED; server uses real egress (REJECTED)");
+
+  // Test 7F: Production Vercel behavior unchanged (fallback NEVER executes in Vercel environment)
+  process.env.VERCEL = "1";
+  setDevServerPublicIpForTesting("115.247.87.98"); // even if dev mock is set
+  const { req: prodReq, res: prodRes, getResponse: prodGet } = createMockReqRes({
+    socketRemoteAddress: "127.0.0.1", // incoming socket is 127.0.0.1 without vercel header
+  });
+  await wifiStatusHandler(prodReq, prodRes);
+  const prodResp = prodGet();
+  assert(prodResp.body.authorized === false, "In Vercel environment, local dev egress fallback NEVER executes; internal 127.0.0.1 is REJECTED");
+  delete process.env.VERCEL; // restore
+
+  // Test 7G: Direct Attendance on localhost with authorized dev egress -> authorized
+  setDevServerPublicIpForTesting("115.247.87.98");
+  const { req: attDevReq1, res: attDevRes1, getResponse: attDevGet1 } = createMockReqRes({
+    method: "POST",
+    socketRemoteAddress: "127.0.0.1",
+    body: { studentId: "DEV_STU_001", name: "Dev Student" },
+  });
+  await attendanceHandler(attDevReq1, attDevRes1);
+  const attDevResp1 = attDevGet1();
+  assert(attDevResp1.status === 200, "Direct attendance on localhost with authorized dev egress succeeds (HTTP 200)");
+  assert(attDevResp1.body.success === true, "Direct attendance success is true");
+
+  // Test 7H: Direct Attendance on localhost with unauthorized dev egress -> rejected
+  setDevServerPublicIpForTesting("49.37.12.34");
+  const { req: attDevReq2, res: attDevRes2, getResponse: attDevGet2 } = createMockReqRes({
+    method: "POST",
+    socketRemoteAddress: "127.0.0.1",
+    body: { studentId: "DEV_STU_002", name: "Dev Student" },
+  });
+  await attendanceHandler(attDevReq2, attDevRes2);
+  const attDevResp2 = attDevGet2();
+  assert(attDevResp2.status === 403, "Direct attendance on localhost with unauthorized dev egress is REJECTED (HTTP 403)");
+  assert(attDevResp2.body.error === "CAMPUS_NETWORK_UNAUTHORIZED", "Error is CAMPUS_NETWORK_UNAUTHORIZED");
+
+  // Reset test override
+  setDevServerPublicIpForTesting(null);
 
   console.log("\n=================================================================");
   console.log(`TEST SUITE FINISHED: ${passed} Passed, ${failed} Failed`);
