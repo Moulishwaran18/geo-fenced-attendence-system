@@ -321,13 +321,13 @@ function MarkAttendancePage() {
 
     if (geofence.isInside === true || (geofence.accuracy !== null && geofence.accuracy <= 20 && geofence.isInsidePolygon === true)) {
       const acc = geofence.accuracy ?? 0;
-      const isTarget = acc <= 15;
+      const isTarget = acc < 10;
       return {
         key: "location",
         value: isTarget ? "GPS ACCURACY EXCELLENT" : "GPS ACCURACY ACCEPTED",
         detail: isTarget
           ? `Current accuracy: ±${acc.toFixed(1)}m`
-          : `Current accuracy: ±${acc.toFixed(1)}m · Improving GPS accuracy toward ±15m...`,
+          : `Current accuracy: ±${acc.toFixed(1)}m · Improving GPS accuracy toward <10m...`,
         state: "verified",
       };
     }
@@ -580,9 +580,9 @@ function MarkAttendancePage() {
         staffName: loggedInStaff.name,
         department: loggedInStaff.department,
         location: "Main Campus, Sona College",
-        latitude: geofence.coords?.lat ?? undefined,
-        longitude: geofence.coords?.lng ?? undefined,
-        accuracy: geofence.accuracy ?? undefined,
+        latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
+        longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
+        accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
         verification: "Verified",
         networkAuthToken: wifiStatus?.networkAuthToken,
         faceVerified: true,
@@ -641,9 +641,9 @@ function MarkAttendancePage() {
                 staffName: result.staffName || loggedInStaff.name,
                 department: loggedInStaff.department,
                 location: "Main Campus, Sona College",
-                latitude: geofence.coords?.lat ?? undefined,
-                longitude: geofence.coords?.lng ?? undefined,
-                accuracy: geofence.accuracy ?? undefined,
+                latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
+                longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
+                accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
                 verification: "Verified",
                 networkAuthToken: wifiStatus?.networkAuthToken,
                 faceVerified: true,
@@ -920,7 +920,7 @@ function MarkAttendancePage() {
                       {geofence.accuracy !== null ? (
                         <span
                           className={
-                            geofence.accuracy <= 15
+                            geofence.accuracy < 10
                               ? "text-emerald-600 dark:text-emerald-400"
                               : geofence.accuracy <= 20
                                 ? "text-blue-600 dark:text-blue-400"

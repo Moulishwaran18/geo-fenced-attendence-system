@@ -117,11 +117,12 @@ export interface UseGeofenceResult {
  * GPS Accuracy Constants:
  * 1. GPS ACCEPTANCE THRESHOLD = 20 meters:
  *    Hard acceptance threshold. If accuracy <= 20m, geofence verification is allowed to proceed.
- * 2. GPS TARGET/BEST-ACCURACY GOAL = 15 meters:
- *    Preferred accuracy target. NOT a hard gate.
+ * 2. GPS TARGET/OPTIMIZATION ACCURACY GOAL = 10 meters (< 10m):
+ *    Desired optimization target, NOT an acceptance requirement.
+ *    Continuous acquisition attempts to improve toward <10m.
  */
 export const GPS_ACCEPTANCE_THRESHOLD_METERS = 20;
-export const GPS_TARGET_ACCURACY_METERS = 15;
+export const GPS_TARGET_ACCURACY_METERS = 10;
 
 export interface GpsAccuracyTierInfo {
   isAccepted: boolean;
@@ -136,10 +137,10 @@ export interface GpsAccuracyTierInfo {
 
 /**
  * Evaluates GPS reading accuracy against the 20m acceptance threshold
- * and 15m best-accuracy target goal:
- * - accuracy > 20m: NOT ACCEPTED ("GPS ACCURACY INSUFFICIENT", "Current accuracy: ±...m", "Acquiring a better GPS fix...")
- * - accuracy <= 20m and > 15m: ACCEPTED ("GPS ACCURACY ACCEPTED", "Current accuracy: ±...m", "Improving GPS accuracy toward ±15m...")
- * - accuracy <= 15m: EXCELLENT / PREFERRED ("GPS ACCURACY EXCELLENT", "Current accuracy: ±...m", instruction: null)
+ * and <10m target optimization goal:
+ * - accuracy > 20m: reject and continue acquiring ("GPS ACCURACY INSUFFICIENT", "Current accuracy: ±...m", "Acquiring a better GPS fix...")
+ * - 10m < accuracy <= 20m: accept as a valid GPS fix, but continue attempting to improve toward <10m ("GPS ACCURACY ACCEPTED", "Current accuracy: ±...m", "Improving GPS accuracy toward <10m...")
+ * - accuracy < 10m: mark as target/excellent accuracy and use this best reading ("GPS ACCURACY EXCELLENT", "Current accuracy: ±...m", instruction: null)
  */
 export function evaluateGpsAccuracy(accuracy: number | null | undefined): GpsAccuracyTierInfo {
   if (accuracy === null || accuracy === undefined || isNaN(accuracy)) {
@@ -157,7 +158,7 @@ export function evaluateGpsAccuracy(accuracy: number | null | undefined): GpsAcc
 
   const accStr = accuracy.toFixed(1);
 
-  if (accuracy <= GPS_TARGET_ACCURACY_METERS) {
+  if (accuracy < GPS_TARGET_ACCURACY_METERS) {
     return {
       isAccepted: true,
       isTargetReached: true,
@@ -179,7 +180,7 @@ export function evaluateGpsAccuracy(accuracy: number | null | undefined): GpsAcc
       accuracyText: `Current accuracy: ±${accStr}m`,
       tier: "ACCEPTED",
       statusText: `GPS ACCURACY ACCEPTED — Current accuracy: ±${accStr}m`,
-      instructionText: "Improving GPS accuracy toward ±15m...",
+      instructionText: "Improving GPS accuracy toward <10m...",
     };
   }
 
@@ -197,8 +198,8 @@ export function evaluateGpsAccuracy(accuracy: number | null | undefined): GpsAcc
 
 /**
  * Determines GPS Quality tier based on exact reported raw accuracy:
- * accuracy <= 15 m: EXCELLENT (Preferred target goal reached)
- * accuracy > 15 m && <= 20 m: GOOD (Accepted fix, improving toward 15m)
+ * accuracy < 10 m: EXCELLENT (Optimization target goal reached)
+ * accuracy >= 10 m && <= 20 m: GOOD (Accepted fix, improving toward <10m)
  * accuracy > 20 m && <= 50 m: ACQUIRING / WAIT (Insufficient accuracy)
  * accuracy > 50 m: UNRELIABLE
  */
@@ -206,7 +207,7 @@ export function getGpsQuality(accuracy: number | null | undefined): GpsQuality {
   if (accuracy === null || accuracy === undefined || isNaN(accuracy)) {
     return "UNKNOWN";
   }
-  if (accuracy <= GPS_TARGET_ACCURACY_METERS) return "EXCELLENT";
+  if (accuracy < GPS_TARGET_ACCURACY_METERS) return "EXCELLENT";
   if (accuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS) return "GOOD";
   if (accuracy <= 50) return "ACQUIRING / WAIT";
   return "UNRELIABLE";
@@ -341,13 +342,23 @@ export function useGeofence(
 
   const evaluateAndFinalize = useCallback(
     (reading: GpsReading, stability: StabilityEvaluation) => {
-      // Evaluate against authoritative campus polygon using the Kalman-filtered position
+      // Evaluate against authoritative campus polygon using the Kalman-filtered position of best accepted location
       const evalResult = evaluateGeofence(
         { lat: reading.filteredLat, lng: reading.filteredLng, accuracy: reading.accuracy },
         AUTHORIZED_GEOFENCE_POLYGON,
       );
 
       setCoords(reading);
+      setFilteredCoords({
+        lat: reading.filteredLat,
+        lng: reading.filteredLng,
+        accuracy: reading.accuracy,
+        altitude: reading.altitude,
+        altitudeAccuracy: reading.altitudeAccuracy,
+        heading: reading.heading,
+        speed: reading.speed,
+        timestamp: reading.timestamp,
+      });
       setEvaluation(evalResult);
       setLastUpdated(new Date(reading.timestamp));
       setError(null);
@@ -361,7 +372,7 @@ export function useGeofence(
         if (evalResult.isInside) {
           setStatus("inside");
           setStatusMessage(accInfo.statusText);
-          setInstructionMessage(accInfo.instructionText);
+          setInstructionMessage(accInfo.isTargetReached ? null : "Target <10m acquisition completed. Best valid fix accepted.");
         } else {
           setStatus("outside");
           setStatusMessage(`Outside Authorized Region (${evalResult.distanceToBoundaryMeters}m from perimeter · ±${reading.accuracy.toFixed(1)}m raw accuracy)`);
@@ -496,6 +507,7 @@ export function useGeofence(
       setReadingsCollected(updatedHistory.length);
 
       // Track best reading based on smallest reported raw accuracy
+      // Maintain the best accuracy obtained and never replace a better reading with a worse one
       let currentBest = bestReadingRef.current;
       if (!currentBest || reading.accuracy < currentBest.accuracy) {
         currentBest = reading;
@@ -511,42 +523,59 @@ export function useGeofence(
       setConsecutiveGoodCount(stability.consecutiveGoodCount);
       setPositionStability(stability.status);
 
-      // Evaluate geofence with best available reading for continuous diagnostics
-      const evalReading = currentBest || reading;
+      // Best accepted reading: maintain the best accuracy obtained and never replace a better reading with a worse one
+      const bestAcceptedReading =
+        currentBest && currentBest.accuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS
+          ? currentBest
+          : (reading.accuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS ? reading : (currentBest || reading));
+
+      // The final geofence calculation must use the best genuine accepted location
       const evalResult = evaluateGeofence(
-        { lat: evalReading.filteredLat, lng: evalReading.filteredLng, accuracy: evalReading.accuracy },
+        { lat: bestAcceptedReading.filteredLat, lng: bestAcceptedReading.filteredLng, accuracy: bestAcceptedReading.accuracy },
         AUTHORIZED_GEOFENCE_POLYGON,
       );
       setEvaluation(evalResult);
 
-      // Accuracy Evaluation against 20m Acceptance Threshold and 15m Target Goal
-      const accInfo = evaluateGpsAccuracy(reading.accuracy);
+      // If an accepted fix exists, ensure coords and filteredCoords retain the best genuine accepted fix
+      if (bestAcceptedReading.accuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS) {
+        setCoords(bestAcceptedReading);
+        setFilteredCoords({
+          lat: bestAcceptedReading.filteredLat,
+          lng: bestAcceptedReading.filteredLng,
+          accuracy: bestAcceptedReading.accuracy,
+          altitude: bestAcceptedReading.altitude,
+          altitudeAccuracy: bestAcceptedReading.altitudeAccuracy,
+          heading: bestAcceptedReading.heading,
+          speed: bestAcceptedReading.speed,
+          timestamp: bestAcceptedReading.timestamp,
+        });
+      }
 
-      // Deterministic Decision:
-      // accuracy <= 20m: ACCEPTED -> Geofence verification proceeds immediately!
-      // accuracy > 20m: NOT ACCEPTED -> Continue acquiring fresh GPS readings.
-      if (accInfo.isAccepted) {
+      // Accuracy Evaluation against 20m Acceptance Threshold and <10m Target Goal:
+      // - accuracy > 20m: reject and continue acquiring.
+      // - 10m < accuracy <= 20m: accept as a valid GPS fix, but continue attempting to improve toward <10m.
+      // - accuracy < 10m: mark as target/excellent accuracy and use this best reading.
+      if (bestAcceptedReading.accuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS) {
+        const bestAccInfo = evaluateGpsAccuracy(bestAcceptedReading.accuracy);
         if (evalResult.isInside) {
           setStatus("inside");
         } else {
           setStatus("outside");
         }
-        setStatusMessage(accInfo.statusText);
-        setInstructionMessage(accInfo.instructionText);
+        setStatusMessage(bestAccInfo.statusText);
+        setInstructionMessage(bestAccInfo.instructionText);
       } else {
-        // If an earlier reading already qualified as accepted, don't revert to insufficient
-        if (!currentBest || currentBest.accuracy > GPS_ACCEPTANCE_THRESHOLD_METERS) {
-          setStatus("insufficient_accuracy");
-        }
+        const accInfo = evaluateGpsAccuracy(reading.accuracy);
+        setStatus("insufficient_accuracy");
         setStatusMessage(accInfo.statusText);
         setInstructionMessage(accInfo.instructionText);
       }
 
       // Early stop / target settling:
-      // If accuracy <= 15m (preferred goal) AND stable fix attained -> settle immediately
-      if (reading.accuracy <= GPS_TARGET_ACCURACY_METERS && stability.isStable) {
+      // If accuracy < 10m (target/excellent accuracy goal achieved) AND stable fix attained -> settle immediately
+      if (bestAcceptedReading.accuracy < GPS_TARGET_ACCURACY_METERS && stability.isStable) {
         stopActiveAcquisition();
-        evaluateAndFinalize(currentBest || reading, stability);
+        evaluateAndFinalize(bestAcceptedReading, stability);
         return;
       }
     },
@@ -633,7 +662,7 @@ export function useGeofence(
           if (allReadings.length === 0 || !best) {
             setStatus("timeout");
             setStatusMessage("GPS ACCURACY INSUFFICIENT — Current accuracy: ±—m");
-            setInstructionMessage("Unable to obtain GPS accuracy <=15m");
+            setInstructionMessage("Move to open sky / enable Precise Location");
             resolve(null);
             return;
           }
@@ -643,11 +672,19 @@ export function useGeofence(
           setConsecutiveGoodCount(stability.consecutiveGoodCount);
           setPositionStability(stability.status);
 
-          const evalResult = evaluateAndFinalize(best, stability);
-          if (best.accuracy > GPS_TARGET_ACCURACY_METERS) {
-            setInstructionMessage("Unable to obtain GPS accuracy <=15m");
+          // If <10m cannot be achieved within the acquisition timeout but a genuine <=20m reading exists,
+          // proceed using the best <=20m reading. Do not block attendance solely because <10m was not achieved.
+          if (best.accuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS) {
+            const evalResult = evaluateAndFinalize(best, stability);
+            resolve(evalResult);
+            return;
           }
-          resolve(evalResult);
+
+          // If no genuine <=20m reading exists, report insufficient accuracy
+          setStatus("timeout");
+          setStatusMessage(`GPS ACCURACY INSUFFICIENT — Current accuracy: ±${best.accuracy.toFixed(1)}m`);
+          setInstructionMessage("Acquiring a better GPS fix...");
+          resolve(null);
         }
       }, 1000);
 
@@ -876,7 +913,7 @@ export function useGeofence(
     effectiveAccuracy <= GPS_ACCEPTANCE_THRESHOLD_METERS;
   const isTargetAccuracy =
     effectiveAccuracy !== null &&
-    effectiveAccuracy <= GPS_TARGET_ACCURACY_METERS;
+    effectiveAccuracy < GPS_TARGET_ACCURACY_METERS;
 
   const isInsidePolygonRaw = evaluation ? evaluation.isInside : null;
   // Inside decision requires point inside authoritative polygon AND passed accuracy gate

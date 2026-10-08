@@ -310,10 +310,10 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
                 ? instructionMessage
                 : displayAccuracy !== null && displayAccuracy > 20
                   ? "Acquiring a better GPS fix..."
-                  : displayAccuracy !== null && displayAccuracy <= 15
+                  : displayAccuracy !== null && displayAccuracy < 10
                     ? null
                     : displayAccuracy !== null && displayAccuracy <= 20
-                      ? "Improving GPS accuracy toward ±15m..."
+                      ? "Improving GPS accuracy toward <10m..."
                       : "Move to open sky / enable Precise Location"}
             </div>
           </div>
@@ -353,7 +353,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
         <div className="flex items-center gap-1.5">
           <Satellite className="size-3.5 text-emerald-600 dark:text-emerald-400" />
           <span className="text-muted-foreground">Target accuracy:</span>
-          <span className="font-bold text-emerald-600 dark:text-emerald-400">&lt;=15m</span>
+          <span className="font-bold text-emerald-600 dark:text-emerald-400">&lt;10m</span>
         </div>
       </div>
 
@@ -467,7 +467,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           </div>
           <div className="text-[10px] text-muted-foreground">
             {gpsQuality === "EXCELLENT"
-              ? "≤15m Preferred Fix"
+              ? "<10m Target Fix"
               : gpsQuality === "GOOD"
                 ? "≤20m Acceptable Fix"
                 : gpsQuality === "ACQUIRING / WAIT"

@@ -622,9 +622,13 @@ class NativeLocationService(private val context: Context) {
         Log.d(TAG, "Incoming GNSS Fix [${loc.provider}]: lat=${loc.latitude}, lng=${loc.longitude}, acc=±${loc.accuracy}m, best=±${bestReading?.rawAccuracyMeters}m, status=${state.status}")
         onStateUpdate(state)
 
-        // Stop updates if quality/stability gate passes and we have collected enough samples, or if reached max
-        if (readingsHistory.size >= targetMaxSamples || (state.isAttendanceAllowed && readingsHistory.size >= MIN_SAMPLES)) {
-            Log.i(TAG, "Acquisition target satisfied (readings=${readingsHistory.size}, status=${state.status}). Stopping listeners.")
+        // Stop updates if:
+        // 1. Target accuracy (<10m) reached AND attendance is allowed AND collected minimum samples
+        // 2. OR max samples window (timeout) reached -> proceed using the best <=20m reading if one exists
+        // 3. Otherwise (10m < accuracy <= 20m), continue attempting to improve toward <10m
+        val targetAchieved = (bestReading?.rawAccuracyMeters ?: 999f) < 10f
+        if (readingsHistory.size >= targetMaxSamples || (targetAchieved && state.isAttendanceAllowed && readingsHistory.size >= MIN_SAMPLES)) {
+            Log.i(TAG, "Acquisition target satisfied (readings=${readingsHistory.size}, targetAchieved=$targetAchieved, status=${state.status}). Stopping listeners.")
             stopLocationUpdates()
         }
     }
@@ -756,8 +760,17 @@ class NativeLocationService(private val context: Context) {
         val recentGood = recentWindow.count { it.rawAccuracyMeters <= 20f }
         val totalGood = readingsHistory.count { it.rawAccuracyMeters <= 20f }
 
-        // Require the recent fix to be accurate (do NOT rely solely on ancient bestReading)
-        val isAccurate = lastReading.rawAccuracyMeters <= 20f || (recentGood >= 3 && (best?.rawAccuracyMeters ?: 999f) <= 20f)
+        // Find best genuine accepted reading (accuracy <= 20m)
+        // Maintain the best accuracy obtained and never replace a better reading with a worse one
+        val bestAccepted = readingsHistory
+            .filter { it.rawAccuracyMeters <= 20f }
+            .minByOrNull { it.rawAccuracyMeters } ?: if ((best?.rawAccuracyMeters ?: 999f) <= 20f) best else null
+
+        // The final geofence calculation must use the best genuine accepted location
+        val authoritativeReading = bestAccepted ?: lastReading
+
+        val hasAcceptedFix = authoritativeReading.rawAccuracyMeters <= 20f
+        val isTargetReached = authoritativeReading.rawAccuracyMeters < 10f
 
         var maxDisp = 0.0
         if (readingsHistory.size >= 2) {
@@ -786,9 +799,9 @@ class NativeLocationService(private val context: Context) {
         }
         val rmsDev = sqrt(sumDev2 / readingsHistory.size.coerceAtLeast(1))
 
-        // Diagnostic reasoning: Why accuracy is poor
+        // Diagnostic reasoning
         val reasons = mutableListOf<String>()
-        if (lastReading.rawAccuracyMeters > 20f) {
+        if (authoritativeReading.rawAccuracyMeters > 20f) {
             if (gnss.satellitesUsedInFix in 1..3) {
                 reasons.add("Insufficient satellites locked (<4) for 3D trilateration")
             }
@@ -807,21 +820,25 @@ class NativeLocationService(private val context: Context) {
             if (reasons.isEmpty()) {
                 reasons.add("Indoor environment / obstructed line-of-sight to GNSS constellation")
             }
+        } else if (!isTargetReached) {
+            reasons.add("Accepted valid GPS fix (±${authoritativeReading.rawAccuracyMeters}m). Attempting to optimize toward <10m...")
         }
 
-        val passesQualityGate = isAccurate && (recentGood >= 2 || totalGood >= 2) && isStable
-        val containment = lastReading.containmentStatus
-        val isInsidePolygon = lastReading.isInsidePolygon
+        // Quality gate passes if authoritative fix <= 20m and either stable or minimal sample count
+        val passesQualityGate = hasAcceptedFix && (recentGood >= 1 || totalGood >= 1) && (isStable || readingsHistory.size <= 2)
+        val containment = authoritativeReading.containmentStatus
+        val isInsidePolygon = authoritativeReading.isInsidePolygon
 
         val status = when {
             containment == "UNCERTAIN" && passesQualityGate -> "UNCERTAIN_BOUNDARY"
             passesQualityGate && isInsidePolygon -> "INSIDE"
             passesQualityGate && !isInsidePolygon -> "OUTSIDE"
-            lastReading.rawAccuracyMeters > 50f && (best?.rawAccuracyMeters ?: 100f) > 20f -> "INSUFFICIENT_ACCURACY"
+            !hasAcceptedFix && lastReading.rawAccuracyMeters > 20f -> "INSUFFICIENT_ACCURACY"
             else -> "ACQUIRING"
         }
 
-        // Attendance allowed ONLY when strictly INSIDE (not uncertain, not outside) and quality gate passes
+        // Attendance allowed ONLY when strictly INSIDE and quality gate passes (<=20m genuine accepted fix)
+        // Do not block attendance solely because <10m was not achieved
         val isAllowed = status == "INSIDE" && passesQualityGate
 
         return NativeLocationSessionState(
@@ -834,15 +851,15 @@ class NativeLocationService(private val context: Context) {
             isInsideGeofence = if (passesQualityGate) isInsidePolygon else null,
             isAttendanceAllowed = isAllowed,
             currentReading = lastReading,
-            bestReading = best,
+            bestReading = authoritativeReading,
             readingsHistory = readingsHistory.toList(),
             deviceCapabilities = caps,
             gnssTelemetry = gnss,
             whyAccuracyIsPoor = reasons,
             containmentStatus = containment,
-            distanceToBoundaryMeters = lastReading.distanceToBoundaryMeters,
-            filteredLatitude = lastReading.filteredLatitude,
-            filteredLongitude = lastReading.filteredLongitude,
+            distanceToBoundaryMeters = authoritativeReading.distanceToBoundaryMeters,
+            filteredLatitude = authoritativeReading.filteredLatitude,
+            filteredLongitude = authoritativeReading.filteredLongitude,
             outliersRejectedCount = outliersRejectedCount,
             rmsPositionDeviation = rmsDev
         )

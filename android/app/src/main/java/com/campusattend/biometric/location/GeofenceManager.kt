@@ -113,14 +113,14 @@ object GeofenceManager {
 
     /**
      * Quality Policy:
-     * <= 10m: EXCELLENT
-     * <= 20m: GOOD
+     * < 10m: EXCELLENT (Optimization target goal reached)
+     * <= 20m: GOOD (Accepted fix, improving toward <10m)
      * <= 50m: ACQUIRING / WAIT
      * > 50m: UNRELIABLE
      */
     fun getGpsQuality(accuracyMeters: Float): String {
         return when {
-            accuracyMeters <= 10f -> "EXCELLENT"
+            accuracyMeters < 10f -> "EXCELLENT"
             accuracyMeters <= 20f -> "GOOD"
             accuracyMeters <= 50f -> "ACQUIRING / WAIT"
             else -> "UNRELIABLE"

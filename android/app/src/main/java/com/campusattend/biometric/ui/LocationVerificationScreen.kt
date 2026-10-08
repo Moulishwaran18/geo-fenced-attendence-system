@@ -288,7 +288,7 @@ fun LocationVerificationScreen(
                                 fontFamily = FontFamily.Monospace
                             )
                             Badge(
-                                containerColor = if (r.rawAccuracyMeters <= 10f) Color(0xFF2E7D32) else if (r.rawAccuracyMeters <= 20f) Color(0xFF1565C0) else Color(0xFFC62828)
+                                containerColor = if (r.rawAccuracyMeters < 10f) Color(0xFF2E7D32) else if (r.rawAccuracyMeters <= 20f) Color(0xFF1565C0) else Color(0xFFC62828)
                             ) {
                                 Text("±%.1fm (${r.quality})".format(r.rawAccuracyMeters), color = Color.White, fontSize = 10.sp)
                             }
