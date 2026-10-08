@@ -295,9 +295,17 @@ async function runSecurityTests() {
     },
     body: {
       studentId: "STU001",
+      staffCode: "STU001",
       name: "Test Student",
       confidence: 0.95,
       liveConfidence: 0.98,
+      latitude: 11.676557,
+      longitude: 78.122724,
+      accuracy: 12.0,
+      faceVerified: true,
+      recognizedStaffCode: "STU001",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
     },
   });
   await attendanceHandler(attReq4, attRes4);
@@ -314,9 +322,17 @@ async function runSecurityTests() {
     },
     body: {
       studentId: "STU002",
+      staffCode: "STU002",
       name: "Test Student 2",
       confidence: 0.94,
       liveConfidence: 0.96,
+      latitude: 11.676557,
+      longitude: 78.122724,
+      accuracy: 12.0,
+      faceVerified: true,
+      recognizedStaffCode: "STU002",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
     },
   });
   await attendanceHandler(attReq5, attRes5);
@@ -404,7 +420,18 @@ async function runSecurityTests() {
   const { req: attDevReq1, res: attDevRes1, getResponse: attDevGet1 } = createMockReqRes({
     method: "POST",
     socketRemoteAddress: "127.0.0.1",
-    body: { studentId: "DEV_STU_001", name: "Dev Student" },
+    body: {
+      studentId: "DEV_STU_001",
+      staffCode: "DEV_STU_001",
+      name: "Dev Student",
+      latitude: 11.676557,
+      longitude: 78.122724,
+      accuracy: 12.0,
+      faceVerified: true,
+      recognizedStaffCode: "DEV_STU_001",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
   });
   await attendanceHandler(attDevReq1, attDevRes1);
   const attDevResp1 = attDevGet1();
@@ -425,6 +452,223 @@ async function runSecurityTests() {
 
   // Reset test override
   setDevServerPublicIpForTesting(null);
+
+  // =================================================================
+  // 8. MANDATORY 3-FACTOR SECURITY & IDENTITY GATING SUITE (CASES 1 - 7)
+  // =================================================================
+  console.log("\n--- 8. MANDATORY 3-FACTOR SECURITY & IDENTITY GATING SUITE (CASES 1-7) ---");
+
+  const validNetworkToken = createNetworkAuthToken("111.92.42.18");
+  const validCampusCoords = { latitude: 11.676557, longitude: 78.122724, accuracy: 12.0 };
+  const outsideCampusCoords = { latitude: 11.685000, longitude: 78.130000, accuracy: 10.0 };
+  const poorAccuracyCoords = { latitude: 11.676557, longitude: 78.122724, accuracy: 35.0 };
+
+  // CASE 1: Wi-Fi PASS + GPS PASS + Face PASS -> ATTENDANCE ALLOWED (HTTP 200)
+  const { req: c1Req, res: c1Res, getResponse: c1Get } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...validCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c1Req, c1Res);
+  const c1Resp = c1Get();
+  assert(c1Resp.status === 200, "CASE 1: Wi-Fi PASS + GPS PASS + Face PASS -> ATTENDANCE ALLOWED (HTTP 200)");
+  assert(c1Resp.body.success === true, "CASE 1: Attendance record created successfully");
+
+  // CASE 2: Wi-Fi FAIL + GPS PASS + Face PASS -> ATTENDANCE REJECTED (HTTP 403)
+  const { req: c2Req, res: c2Res, getResponse: c2Get } = createMockReqRes({
+    method: "POST",
+    headers: { "x-vercel-forwarded-for": "49.37.12.34" }, // Unauthorized cellular IP, no token
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...validCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c2Req, c2Res);
+  const c2Resp = c2Get();
+  assert(c2Resp.status === 403, "CASE 2: Wi-Fi FAIL + GPS PASS + Face PASS -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c2Resp.body.error === "CAMPUS_NETWORK_UNAUTHORIZED", "CASE 2: Error is CAMPUS_NETWORK_UNAUTHORIZED");
+
+  // CASE 3A: Wi-Fi PASS + GPS FAIL (Outside Polygon) + Face PASS -> ATTENDANCE REJECTED (HTTP 403)
+  const { req: c3aReq, res: c3aRes, getResponse: c3aGet } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...outsideCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c3aReq, c3aRes);
+  const c3aResp = c3aGet();
+  assert(c3aResp.status === 403, "CASE 3A: Wi-Fi PASS + GPS OUTSIDE + Face PASS -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c3aResp.body.error === "GPS_OUTSIDE_CAMPUS", "CASE 3A: Error is GPS_OUTSIDE_CAMPUS");
+
+  // CASE 3B: Wi-Fi PASS + GPS FAIL (Accuracy > 20m) + Face PASS -> ATTENDANCE REJECTED (HTTP 403)
+  const { req: c3bReq, res: c3bRes, getResponse: c3bGet } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...poorAccuracyCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c3bReq, c3bRes);
+  const c3bResp = c3bGet();
+  assert(c3bResp.status === 403, "CASE 3B: Wi-Fi PASS + GPS ACCURACY > 20m + Face PASS -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c3bResp.body.error === "GPS_ACCURACY_INSUFFICIENT", "CASE 3B: Error is GPS_ACCURACY_INSUFFICIENT");
+
+  // CASE 3C: Wi-Fi PASS + GPS FAIL (Missing Coordinates) + Face PASS -> ATTENDANCE REJECTED (HTTP 403)
+  const { req: c3cReq, res: c3cRes, getResponse: c3cGet } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c3cReq, c3cRes);
+  const c3cResp = c3cGet();
+  assert(c3cResp.status === 403, "CASE 3C: Wi-Fi PASS + Missing GPS Coordinates + Face PASS -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c3cResp.body.error === "GPS_COORDINATES_MISSING", "CASE 3C: Error is GPS_COORDINATES_MISSING");
+
+  // CASE 4A: Wi-Fi PASS + GPS PASS + Face FAIL (Distance > 0.45) -> ATTENDANCE REJECTED (HTTP 403)
+  const { req: c4aReq, res: c4aRes, getResponse: c4aGet } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...validCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.58, // exceeds 0.45
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c4aReq, c4aRes);
+  const c4aResp = c4aGet();
+  assert(c4aResp.status === 403, "CASE 4A: Wi-Fi PASS + GPS PASS + Face Distance > 0.45 -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c4aResp.body.error === "FACE_BIOMETRIC_UNAUTHORIZED", "CASE 4A: Error is FACE_BIOMETRIC_UNAUTHORIZED");
+
+  // CASE 4B: Wi-Fi PASS + GPS PASS + Face FAIL (Liveness Failed) -> ATTENDANCE REJECTED (HTTP 403)
+  const { req: c4bReq, res: c4bRes, getResponse: c4bGet } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...validCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: false, // anti-spoof fail
+    },
+  });
+  await attendanceHandler(c4bReq, c4bRes);
+  const c4bResp = c4bGet();
+  assert(c4bResp.status === 403, "CASE 4B: Wi-Fi PASS + GPS PASS + Liveness FAIL -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c4bResp.body.error === "LIVENESS_FAILED", "CASE 4B: Error is LIVENESS_FAILED");
+
+  // CASE 5: Wi-Fi FAIL + GPS FAIL + Face PASS -> Face UI works independently, ATTENDANCE REJECTED (HTTP 403)
+  const { req: c5Req, res: c5Res, getResponse: c5Get } = createMockReqRes({
+    method: "POST",
+    headers: { "x-vercel-forwarded-for": "49.37.12.34" }, // Wi-Fi FAIL
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...outsideCampusCoords, // GPS FAIL
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2417",
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c5Req, c5Res);
+  const c5Resp = c5Get();
+  assert(c5Resp.status === 403, "CASE 5: Wi-Fi FAIL + GPS FAIL + Face PASS -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c5Resp.body.error === "CAMPUS_NETWORK_UNAUTHORIZED", "CASE 5: Rejection reason enforced (Wi-Fi)");
+
+  // CASE 6: Wi-Fi PASS + GPS PASS + Face PASS but WRONG PERSON'S IDENTITY -> ATTENDANCE REJECTED (HTTP 403)
+  // Person A (SCT-2417) logged in, but Person B (SCT-2418) face presented
+  const { req: c6Req, res: c6Res, getResponse: c6Get } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417", // Target authenticated staff
+      name: "Dr. Priya Ramanathan",
+      ...validCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "SCT-2418", // Different individual (Person B)
+      faceMatchDistance: 0.28,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c6Req, c6Res);
+  const c6Resp = c6Get();
+  assert(c6Resp.status === 403, "CASE 6: Wi-Fi PASS + GPS PASS + Wrong Person's Face -> ATTENDANCE REJECTED (HTTP 403)");
+  assert(c6Resp.body.error === "IDENTITY_MISMATCH", "CASE 6: Error is IDENTITY_MISMATCH");
+
+  // CASE 7: Wi-Fi PASS + GPS PASS + Face PASS + Liveness PASS + Correct Identity -> ATTENDANCE ALLOWED (HTTP 200)
+  // Person A (SCT-2417) verified with matching biometric alias PERSON_001
+  const { req: c7Req, res: c7Res, getResponse: c7Get } = createMockReqRes({
+    method: "POST",
+    headers: { "x-network-auth-token": validNetworkToken },
+    body: {
+      staffCode: "SCT-2417",
+      name: "Dr. Priya Ramanathan",
+      ...validCampusCoords,
+      faceVerified: true,
+      recognizedStaffCode: "PERSON_001", // Standard biometric alias for SCT-2417
+      faceMatchDistance: 0.24,
+      livenessPassed: true,
+    },
+  });
+  await attendanceHandler(c7Req, c7Res);
+  const c7Resp = c7Get();
+  assert(c7Resp.status === 200, "CASE 7: Wi-Fi PASS + GPS PASS + Face PASS + Correct Identity -> ATTENDANCE ALLOWED (HTTP 200)");
+  assert(c7Resp.body.success === true, "CASE 7: All 3 factors for same individual confirmed");
+
+  // ANTI-SPOOFING: Client-Side Claims (wifiAuthorized: true, gpsVerified: true, faceVerified: true) are IGNORED
+  const { req: spoofReq, res: spoofRes, getResponse: spoofGet } = createMockReqRes({
+    method: "POST",
+    headers: { "x-vercel-forwarded-for": "49.37.12.34" }, // cellular IP
+    body: {
+      wifiAuthorized: true,
+      gpsVerified: true,
+      faceVerified: true,
+      ssid: "SONA-WIFI",
+      staffCode: "SCT-2417",
+    },
+  });
+  await attendanceHandler(spoofReq, spoofRes);
+  const spoofResp = spoofGet();
+  assert(spoofResp.status === 403, "Anti-spoofing: Client-side boolean claims are IGNORED; server independently enforces security (HTTP 403)");
 
   console.log("\n=================================================================");
   console.log(`TEST SUITE FINISHED: ${passed} Passed, ${failed} Failed`);

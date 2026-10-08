@@ -198,8 +198,14 @@ export interface MarkAttendanceParams {
   location?: string | undefined;
   latitude?: number | null | undefined;
   longitude?: number | null | undefined;
+  accuracy?: number | null | undefined;
   verification?: "Verified" | "Failed" | "Manual" | undefined;
   networkAuthToken?: string | undefined;
+  faceVerified?: boolean | undefined;
+  recognizedStaffCode?: string | undefined;
+  faceMatchDistance?: number | undefined;
+  livenessPassed?: boolean | undefined;
+  auditId?: string | undefined;
 }
 
 export async function markAttendance(params?: MarkAttendanceParams): Promise<AttendanceReceipt> {

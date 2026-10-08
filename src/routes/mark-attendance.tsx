@@ -50,6 +50,7 @@ import {
   type VerificationScenario,
   type VerificationSignal,
 } from "@/mocks/attendance-service";
+import { currentStaff } from "@/mocks/data";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
@@ -84,6 +85,17 @@ const titles = {
   identity: "3. FACE RECOGNITION",
   decision: "4. ATTENDANCE DECISION",
 } as const;
+
+function isSameIndividual(expectedStaffCode: string, recognizedStaffCode?: string | null): boolean {
+  if (!recognizedStaffCode) return false;
+  const exp = expectedStaffCode.trim().toUpperCase();
+  const rec = recognizedStaffCode.trim().toUpperCase();
+  if (exp === rec) return true;
+  if ((exp === "SCT-2417" || exp === "PERSON_001") && (rec === "PERSON_001" || rec === "SCT-2417")) return true;
+  if ((exp === "SCT-2418" || exp === "PERSON_002") && (rec === "PERSON_002" || rec === "SCT-2418")) return true;
+  if ((exp === "SCT-2419" || exp === "PERSON_003") && (rec === "PERSON_003" || rec === "SCT-2419")) return true;
+  return false;
+}
 
 function MarkAttendancePage() {
   const [scenario, setScenario] = useState<VerificationScenario>("ready");
@@ -127,18 +139,29 @@ function MarkAttendancePage() {
     ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
     : geofence.isInside === true;
 
+  const loggedInStaff = currentStaff;
+
+  // Identity match check: recognized face must match the authenticated individual
+  const isIdentityMatched = Boolean(
+    faceResult?.verified &&
+    isSameIndividual(loggedInStaff.staffId, faceResult.staffCode || faceResult.staffId)
+  );
+
+  const isWrongPerson = Boolean(
+    faceResult?.verified && !isIdentityMatched
+  );
+
   const faceAuthenticated = Boolean(
     faceResult &&
       faceResult.verified &&
-      (faceResult.staffCode === "PERSON_001" ||
-        faceResult.staffCode === "PERSON_002" ||
-        faceResult.staffId) &&
+      isIdentityMatched &&
       faceResult.distance !== undefined &&
-      faceResult.distance <= FACE_CONFIG.MATCH_THRESHOLD,
+      faceResult.distance <= FACE_CONFIG.MATCH_THRESHOLD &&
+      faceResult.livenessCompleted !== false,
   );
 
   // FINAL DECISION RULE:
-  // wifiAuthorized && gpsInsideGeofence && faceAuthenticated -> ALLOWED
+  // wifiAuthorized && gpsInsideGeofence && faceAuthenticated (which guarantees same individual match) -> ALLOWED
   // otherwise -> REJECTED
   const canMarkAttendance = wifiAuthorized && gpsInsideGeofence && faceAuthenticated;
 
@@ -156,6 +179,20 @@ function MarkAttendancePage() {
         label: "ALLOWED",
         tone: "success" as const,
         detail: "All 3 Security Factors (Wi-Fi, Campus Geofence Polygon, Face Recognition) Passed",
+      };
+    }
+    if (isWrongPerson) {
+      return {
+        label: "REJECTED (Identity Mismatch)",
+        tone: "error" as const,
+        detail: `Recognized identity (${faceResult?.staffCode || faceResult?.staffId}) does not match authenticated user (${loggedInStaff.staffId}).`,
+      };
+    }
+    if (!wifiAuthorized && !gpsInsideGeofence) {
+      return {
+        label: "REJECTED",
+        tone: "error" as const,
+        detail: "Attendance requires Wi-Fi + GPS + Face verification.",
       };
     }
     if (!wifiAuthorized) {
@@ -224,7 +261,7 @@ function MarkAttendancePage() {
       tone: "warning" as const,
       detail: "Live face recognition required to complete 3-factor verification",
     };
-  }, [status, receipt, canMarkAttendance, wifiAuthorized, isUsingMockScenario, geofence, gpsInsideGeofence, faceResult, faceAuthenticated]);
+  }, [status, receipt, canMarkAttendance, isWrongPerson, wifiAuthorized, isUsingMockScenario, geofence, gpsInsideGeofence, faceResult, faceAuthenticated, loggedInStaff.staffId]);
 
   // Live Location Signal computation
   const liveLocationSignal = useMemo((): VerificationSignal => {
@@ -379,26 +416,34 @@ function MarkAttendancePage() {
     // 2. GPS POLYGON GEOFENCE (Visible for diagnostics even if Wi-Fi fails)
     const locationSignal = {
       key: "location" as const,
-      value: liveLocationSignal.value,
+      value: gpsInsideGeofence ? liveLocationSignal.value : "NOT VERIFIED",
       detail: liveLocationSignal.detail,
       state: liveLocationSignal.state,
     };
 
-    // 3. FACE RECOGNITION (Visible for diagnostics even if Wi-Fi fails)
+    // 3. FACE RECOGNITION (Available for independent testing even if Wi-Fi or GPS fails)
     const identitySignal = {
       key: "identity" as const,
       value: faceAuthenticated
         ? `Verified · ${faceResult?.staffName || faceResult?.staffCode || "Staff"}`
-        : faceResult
-          ? "Unknown Face"
-          : "Live Face Scan",
+        : isWrongPerson
+          ? `Mismatch · ${faceResult?.staffCode || "Other Person"}`
+          : faceResult
+            ? "Unknown Face"
+            : "READY / AVAILABLE",
       detail:
         faceAuthenticated && faceResult?.distance !== undefined
           ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
-          : faceResult
-            ? "Biometric match rejected"
-            : "ArcFace Biometrics Required",
-      state: (faceAuthenticated ? "verified" : faceResult ? "error" : "pending") as "verified" | "error" | "pending",
+          : isWrongPerson
+            ? `Face does not match ${loggedInStaff.staffId}`
+            : faceResult
+              ? "Biometric match rejected"
+              : "Camera & ArcFace ready — Click Scan to test",
+      state: (faceAuthenticated
+        ? "verified"
+        : isWrongPerson || (faceResult && !faceResult.verified)
+          ? "error"
+          : "pending") as "verified" | "error" | "pending",
     };
 
     // 4. ATTENDANCE DECISION
@@ -409,7 +454,28 @@ function MarkAttendancePage() {
       state: "verified" | "warning" | "error" | "pending";
     };
 
-    if (wifiCardStatus === "FAILED") {
+    if (canMarkAttendance || (status === "success" && receipt)) {
+      decisionSignal = {
+        key: "decision",
+        value: status === "success" ? "RECORDED" : "ALLOWED",
+        detail: status === "success" ? `Recorded at ${receipt?.time}` : "All 3 Security Factors Passed",
+        state: "verified",
+      };
+    } else if (isWrongPerson) {
+      decisionSignal = {
+        key: "decision",
+        value: "REJECTED",
+        detail: "Identity Mismatch: Recognized face does not match authenticated staff member",
+        state: "error",
+      };
+    } else if (wifiCardStatus === "FAILED" && !gpsInsideGeofence) {
+      decisionSignal = {
+        key: "decision",
+        value: "REJECTED",
+        detail: "Attendance requires Wi-Fi + GPS + Face verification.",
+        state: "error",
+      };
+    } else if (wifiCardStatus === "FAILED") {
       decisionSignal = {
         key: "decision",
         value: "REJECTED",
@@ -437,23 +503,28 @@ function MarkAttendancePage() {
         detail: "Factor 2 (GPS) Pending: Location permission required",
         state: "warning",
       };
-    } else if (wifiCardStatus === "CHECKING" || !gpsInsideGeofence || !faceAuthenticated) {
+    } else if (!gpsInsideGeofence) {
       decisionSignal = {
         key: "decision",
-        value: canMarkAttendance ? "ALLOWED" : status === "success" ? "RECORDED" : "LOCKED",
-        detail: canMarkAttendance
-          ? "All 3 Security Factors Passed"
-          : "Status: LOCKED until all required verification succeeds",
-        state: canMarkAttendance || status === "success" ? "verified" : "pending",
+        value: "REJECTED",
+        detail: "Factor 2 (GPS) Failed: Device is outside campus polygon",
+        state: "error",
+      };
+    } else if (!faceAuthenticated) {
+      decisionSignal = {
+        key: "decision",
+        value: faceResult ? "REJECTED" : "LOCKED",
+        detail: faceResult
+          ? "Factor 3 (Face) Failed: Face verification rejected"
+          : "Factor 3 (Face) Pending: Scan face to complete 3-factor verification",
+        state: faceResult ? "error" : "pending",
       };
     } else {
       decisionSignal = {
         key: "decision",
-        value: canMarkAttendance ? "ALLOWED" : status === "success" ? "RECORDED" : "REJECTED",
-        detail: canMarkAttendance
-          ? "All 3 Security Factors Passed"
-          : "Verification incomplete",
-        state: canMarkAttendance || status === "success" ? "verified" : "error",
+        value: "REJECTED",
+        detail: "Attendance requires Wi-Fi + GPS + Face verification.",
+        state: "error",
       };
     }
 
@@ -487,6 +558,13 @@ function MarkAttendancePage() {
       return;
     }
 
+    if (isWrongPerson) {
+      toast.error("Identity Mismatch", {
+        description: `Recognized identity (${faceResult?.staffCode || faceResult?.staffId}) does not match authenticated staff (${loggedInStaff.staffId}). Attendance rejected.`,
+      });
+      return;
+    }
+
     if (!faceAuthenticated) {
       toast.error("Identity Verification Required", {
         description: "Please complete face recognition first.",
@@ -498,19 +576,25 @@ function MarkAttendancePage() {
     setStatus("verifying");
     try {
       const result = await markAttendance({
-        staffCode: faceResult?.staffId || "SCT-2417",
-        staffName: faceResult?.staffName || "Dr. Priya Ramanathan",
-        department: "Computer Science & Engineering",
+        staffCode: loggedInStaff.staffId,
+        staffName: loggedInStaff.name,
+        department: loggedInStaff.department,
         location: "Main Campus, Sona College",
         latitude: geofence.coords?.lat ?? undefined,
         longitude: geofence.coords?.lng ?? undefined,
+        accuracy: geofence.accuracy ?? undefined,
         verification: "Verified",
         networkAuthToken: wifiStatus?.networkAuthToken,
+        faceVerified: true,
+        recognizedStaffCode: faceResult?.staffCode || faceResult?.staffId || loggedInStaff.staffId,
+        faceMatchDistance: faceResult?.distance,
+        livenessPassed: faceResult?.livenessCompleted ?? true,
+        auditId: faceResult?.auditId || faceResult?.verification?.auditId,
       });
       setReceipt(result);
       setStatus("success");
       toast.success("Attendance Recorded Successfully!", {
-        description: `${faceResult?.staffName || "Staff"} · ${result.time} · ${result.date}`,
+        description: `${faceResult?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
       });
     } catch (err: any) {
       setStatus("idle");
@@ -536,37 +620,55 @@ function MarkAttendancePage() {
             return;
           }
 
+          const matchedIdentity = isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId);
+          if (!matchedIdentity) {
+            toast.error("Identity Mismatch", {
+              description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff.staffId}). Attendance rejected.`,
+            });
+            return;
+          }
+
           toast.success("Face Recognized", {
             description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
           });
 
-          // If Wi-Fi and GPS are both authorized, automatically mark attendance
+          // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
           if (wifiAuthorized && gpsInsideGeofence) {
             setStatus("verifying");
-            const attendanceReceipt = await markAttendance({
-              staffCode: result.staffId || "SCT-2417",
-              staffName: result.staffName || "Dr. Priya Ramanathan",
-              department: "Computer Science & Engineering",
-              location: "Main Campus, Sona College",
-              latitude: geofence.coords?.lat ?? undefined,
-              longitude: geofence.coords?.lng ?? undefined,
-              verification: "Verified",
-            });
-            setReceipt(attendanceReceipt);
-            setStatus("success");
-            toast.success(`Attendance Marked Successfully!`, {
-              description: `${result.staffName || "Staff"} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
-            });
-          } else if (!wifiAuthorized) {
-            toast.warning("Wi-Fi Not Authorized", {
-              description: "Face verified, but device must be connected to authorized campus Wi-Fi.",
-            });
-          } else if (!gpsInsideGeofence) {
-            toast.warning("GPS Not Verified", {
-              description:
-                geofence.status === "insufficient_accuracy"
-                  ? `Face verified, but GPS accuracy (±${Math.round(geofence.accuracy || 0)}m) is insufficient. Move to open sky.`
-                  : "Face verified, but GPS location must be inside the 5-point campus polygon to mark attendance.",
+            try {
+              const attendanceReceipt = await markAttendance({
+                staffCode: loggedInStaff.staffId,
+                staffName: result.staffName || loggedInStaff.name,
+                department: loggedInStaff.department,
+                location: "Main Campus, Sona College",
+                latitude: geofence.coords?.lat ?? undefined,
+                longitude: geofence.coords?.lng ?? undefined,
+                accuracy: geofence.accuracy ?? undefined,
+                verification: "Verified",
+                networkAuthToken: wifiStatus?.networkAuthToken,
+                faceVerified: true,
+                recognizedStaffCode: result.staffCode || result.staffId || loggedInStaff.staffId,
+                faceMatchDistance: result.distance,
+                livenessPassed: result.livenessCompleted ?? true,
+                auditId: result.auditId || result.verification?.auditId,
+              });
+              setReceipt(attendanceReceipt);
+              setStatus("success");
+              toast.success(`Attendance Marked Successfully!`, {
+                description: `${result.staffName || loggedInStaff.name} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
+              });
+            } catch (err: any) {
+              setStatus("idle");
+              toast.error("Attendance Rejected by Server", {
+                description: err?.message || "Server rejected attendance verification.",
+              });
+            }
+          } else {
+            const reasons: string[] = [];
+            if (!wifiAuthorized) reasons.push("Authorized Campus Wi-Fi");
+            if (!gpsInsideGeofence) reasons.push("GPS Polygon Containment");
+            toast.warning("Attendance Blocked: Required Factors Not Satisfied", {
+              description: `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`,
             });
           }
         }}
@@ -1035,22 +1137,7 @@ function MarkAttendancePage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!wifiAuthorized || !gpsInsideGeofence}
                       onClick={() => {
-                        if (!wifiAuthorized) {
-                          toast.error("Wi-Fi Verification Required", {
-                            description:
-                              "Unauthorized Wi-Fi network. Connect to an authorized campus Wi-Fi network (M or SONA-WIFI) before scanning face.",
-                          });
-                          return;
-                        }
-                        if (!gpsInsideGeofence) {
-                          toast.error("GPS Verification Required", {
-                            description:
-                              "Campus GPS geofence verification must succeed before scanning face.",
-                          });
-                          return;
-                        }
                         setScanOpen(true);
                       }}
                     >
@@ -1089,19 +1176,13 @@ function MarkAttendancePage() {
                   className="w-full"
                   disabled={
                     status === "verifying" ||
-                    (!wifiAuthorized &&
-                      !canMarkAttendance &&
-                      geofence.status !== "location_services_off" &&
-                      geofence.status !== "position_unavailable" &&
-                      geofence.status !== "permission_prompt" &&
-                      geofence.status !== "permission_denied") ||
-                    (!gpsInsideGeofence &&
-                      !canMarkAttendance &&
+                    isWrongPerson ||
+                    (!canMarkAttendance &&
                       geofence.status !== "location_services_off" &&
                       geofence.status !== "position_unavailable" &&
                       geofence.status !== "permission_prompt" &&
                       geofence.status !== "permission_denied" &&
-                      !wifiAuthorized)
+                      !(wifiAuthorized && gpsInsideGeofence && !faceAuthenticated))
                   }
                   onClick={() => {
                     if (geofence.status === "location_services_off" || geofence.status === "position_unavailable") {
@@ -1123,6 +1204,12 @@ function MarkAttendancePage() {
                         description: "Enable location permission for Chrome and try again.",
                       });
                       void geofence.refreshLocation();
+                      return;
+                    }
+                    if (isWrongPerson) {
+                      toast.error("Identity Mismatch", {
+                        description: `Recognized face does not match authenticated user (${loggedInStaff.staffId}). Attendance rejected.`,
+                      });
                       return;
                     }
                     if (!wifiAuthorized) {
@@ -1150,6 +1237,10 @@ function MarkAttendancePage() {
                   {status === "verifying" ? (
                     <>
                       <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
+                    </>
+                  ) : isWrongPerson ? (
+                    <>
+                      <XCircle className="mr-2 size-5" /> Identity Mismatch — Attendance Blocked
                     </>
                   ) : geofence.status === "location_services_off" || geofence.status === "position_unavailable" ? (
                     <>

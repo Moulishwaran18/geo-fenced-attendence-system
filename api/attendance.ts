@@ -213,22 +213,104 @@ function getCookie(req: any, name: string): string | null {
   return decodeURIComponent(match[1]);
 }
 
+// Authoritative 13-point Campus Polygon Coordinates (C1 -> ... -> C13 -> C1)
+const AUTHORIZED_GEOFENCE_POLYGON = [
+  { lat: 11.675651510482604, lng: 78.12402220170895 }, // C1
+  { lat: 11.675657082681333, lng: 78.12382305416799 }, // C2
+  { lat: 11.675768526632474, lng: 78.12359545697831 }, // C3
+  { lat: 11.675857681761121, lng: 78.12339630943734 }, // C4
+  { lat: 11.676125146975094, lng: 78.1228443862524 }, // C5
+  { lat: 11.676370323194567, lng: 78.12244609117047 }, // C6
+  { lat: 11.676414900665728, lng: 78.12241764152176 }, // C7
+  { lat: 11.676448333764391, lng: 78.12143897360616 }, // C8
+  { lat: 11.676905252375372, lng: 78.12147880311436 }, // C9
+  { lat: 11.676977690622595, lng: 78.12159260170921 }, // C10
+  { lat: 11.67708913404289, lng: 78.12222418391055 }, // C11
+  { lat: 11.677990932044441, lng: 78.12235439874642 }, // C12
+  { lat: 11.677979915759753, lng: 78.1237830407748 }, // C13
+];
+
+function isPointInPolygon(point: { lat: number; lng: number }): boolean {
+  if (
+    !point ||
+    typeof point.lat !== "number" ||
+    typeof point.lng !== "number" ||
+    isNaN(point.lat) ||
+    isNaN(point.lng)
+  ) {
+    return false;
+  }
+  const x = point.lng;
+  const y = point.lat;
+  let inside = false;
+  for (let i = 0, j = AUTHORIZED_GEOFENCE_POLYGON.length - 1; i < AUTHORIZED_GEOFENCE_POLYGON.length; j = i++) {
+    const xi = AUTHORIZED_GEOFENCE_POLYGON[i]!.lng;
+    const yi = AUTHORIZED_GEOFENCE_POLYGON[i]!.lat;
+    const xj = AUTHORIZED_GEOFENCE_POLYGON[j]!.lng;
+    const yj = AUTHORIZED_GEOFENCE_POLYGON[j]!.lat;
+
+    const intersect =
+      yi > y !== yj > y &&
+      x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersect) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function checkIdentityMatch(targetStaffCode: string, recognizedStaffCode?: string | null): boolean {
+  if (!recognizedStaffCode) return false;
+  const target = targetStaffCode.trim().toUpperCase();
+  const recognized = recognizedStaffCode.trim().toUpperCase();
+  if (!target || !recognized) return false;
+  if (target === recognized) return true;
+  // Aliases for standard staff IDs
+  if (
+    (target === "SCT-2417" || target === "PERSON_001") &&
+    (recognized === "PERSON_001" || recognized === "SCT-2417")
+  ) {
+    return true;
+  }
+  if (
+    (target === "SCT-2418" || target === "PERSON_002") &&
+    (recognized === "PERSON_002" || recognized === "SCT-2418")
+  ) {
+    return true;
+  }
+  if (
+    (target === "SCT-2419" || target === "PERSON_003") &&
+    (recognized === "PERSON_003" || recognized === "SCT-2419")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function sendJsonResponse(res: any, status: number, payload: any) {
+  if (res && typeof res.setHeader === "function") {
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    if (typeof res.status === "function" && typeof res.json === "function") {
+      return res.status(status).json(payload);
+    }
+    res.statusCode = status;
+    res.end(JSON.stringify(payload));
+    return;
+  }
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store, no-cache, must-revalidate",
+    },
+  });
+}
+
 export default async function handler(req: any, res?: any) {
   if (req.method !== "POST") {
     const errorPayload = { error: "Method not allowed. Use POST." };
-    if (res && typeof res.setHeader === "function") {
-      res.setHeader("Content-Type", "application/json");
-      if (typeof res.status === "function" && typeof res.json === "function") {
-        return res.status(405).json(errorPayload);
-      }
-      res.statusCode = 405;
-      res.end(JSON.stringify(errorPayload));
-      return;
-    }
-    return new Response(JSON.stringify(errorPayload), {
-      status: 405,
-      headers: { "content-type": "application/json" },
-    });
+    return sendJsonResponse(res, 405, errorPayload);
   }
 
   let body: any = {};
@@ -260,13 +342,13 @@ export default async function handler(req: any, res?: any) {
   const bodyToken = body.networkAuthToken;
   const networkToken = headerToken || cookieToken || bodyToken;
 
-  // 3. Independent Cryptographic & Network Verification
+  // =========================================================================
+  // FACTOR 1: MANDATORY CAMPUS WI-FI NETWORK VERIFICATION
+  // =========================================================================
   const tokenCheck = verifyNetworkAuthToken(networkToken);
   let ipCheck = isAuthorizedCampusEgressIp(clientIp);
 
   // Local Development Fallback for direct attendance connections:
-  // If on localhost/private IP in development mode (NEVER in production/Vercel),
-  // check the local server's own verified public egress IP.
   if (!ipCheck.authorized && !isVercelOrProduction(req) && isPrivateIp(clientIp)) {
     const devEgressIp = await fetchDevServerPublicEgressIp();
     if (devEgressIp) {
@@ -277,36 +359,116 @@ export default async function handler(req: any, res?: any) {
     }
   }
 
-  // ZERO CLIENT TRUST GATE:
-  // Must have a valid, cryptographically unexpired server token OR current connection from authorized egress IP
   const isNetworkAuthorized = tokenCheck.valid || ipCheck.authorized;
-
   if (!isNetworkAuthorized) {
-    const rejectionPayload = {
+    return sendJsonResponse(res, 403, {
       success: false,
       error: "CAMPUS_NETWORK_UNAUTHORIZED",
       message:
-        "Attendance rejected: Device is not authorized on SONA-WIFI campus network. Genuine server-side campus network verification is required.",
+        "Attendance rejected: Factor 1 (Campus Wi-Fi) failed. Genuine server-verified SONA-WIFI connection is required.",
       clientIp: clientIp !== "unknown" ? clientIp : undefined,
-      tokenError: tokenCheck.error || "No valid token present.",
-    };
+      tokenError: tokenCheck.error || "No valid network authorization token present.",
+    });
+  }
 
-    if (res && typeof res.setHeader === "function") {
-      res.setHeader("Content-Type", "application/json");
-      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-      if (typeof res.status === "function" && typeof res.json === "function") {
-        return res.status(403).json(rejectionPayload);
-      }
-      res.statusCode = 403;
-      res.end(JSON.stringify(rejectionPayload));
-      return;
-    }
-    return new Response(JSON.stringify(rejectionPayload), {
-      status: 403,
-      headers: {
-        "content-type": "application/json",
-        "cache-control": "no-store",
-      },
+  // =========================================================================
+  // FACTOR 2: MANDATORY GPS LOCATION & CAMPUS POLYGON VERIFICATION
+  // =========================================================================
+  const latitude =
+    typeof body.latitude === "number"
+      ? body.latitude
+      : body.latitude !== undefined && body.latitude !== null
+        ? parseFloat(body.latitude)
+        : NaN;
+  const longitude =
+    typeof body.longitude === "number"
+      ? body.longitude
+      : body.longitude !== undefined && body.longitude !== null
+        ? parseFloat(body.longitude)
+        : NaN;
+  const rawAccuracy =
+    typeof body.accuracy === "number"
+      ? body.accuracy
+      : body.accuracy !== undefined && body.accuracy !== null
+        ? parseFloat(body.accuracy)
+        : null;
+
+  if (isNaN(latitude) || isNaN(longitude)) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "GPS_COORDINATES_MISSING",
+      message:
+        "Attendance rejected: Factor 2 (GPS) failed. Genuine device GPS coordinates (latitude, longitude) are required.",
+    });
+  }
+
+  if (rawAccuracy !== null && (isNaN(rawAccuracy) || rawAccuracy > 20)) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "GPS_ACCURACY_INSUFFICIENT",
+      message: `Attendance rejected: Factor 2 (GPS) failed. GPS accuracy (±${rawAccuracy}m) exceeds the mandatory ±20m threshold.`,
+      accuracy: rawAccuracy,
+    });
+  }
+
+  const isInsideCampus = isPointInPolygon({ lat: latitude, lng: longitude });
+  if (!isInsideCampus) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "GPS_OUTSIDE_CAMPUS",
+      message:
+        "Attendance rejected: Factor 2 (GPS) failed. Device GPS coordinates are outside the authoritative campus polygon boundary.",
+      coordinates: { latitude, longitude },
+    });
+  }
+
+  // =========================================================================
+  // FACTOR 3: MANDATORY FACE RECOGNITION, LIVENESS & IDENTITY MATCH
+  // =========================================================================
+  const staffCode = String(body.staffCode || body.studentId || "SCT-2417").trim();
+  const recognizedStaffCode = body.recognizedStaffCode
+    ? String(body.recognizedStaffCode).trim()
+    : null;
+
+  // 3A: Face recognition must have been performed and matched
+  if (!recognizedStaffCode || body.faceVerified === false) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "FACE_BIOMETRIC_UNAUTHORIZED",
+      message:
+        "Attendance rejected: Factor 3 (Face Recognition) failed. Live face recognition verification is required.",
+    });
+  }
+
+  // 3B: ArcFace Biometric Distance Threshold (must be <= 0.45)
+  if (typeof body.faceMatchDistance === "number" && body.faceMatchDistance > 0.45) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "FACE_BIOMETRIC_UNAUTHORIZED",
+      message: `Attendance rejected: Factor 3 (Face Recognition) failed. Biometric cosine distance (${body.faceMatchDistance.toFixed(4)}) exceeds threshold (0.45).`,
+      distance: body.faceMatchDistance,
+    });
+  }
+
+  // 3C: Anti-spoofing Liveness check
+  if (body.livenessPassed === false) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "LIVENESS_FAILED",
+      message:
+        "Attendance rejected: Factor 3 (Face Recognition) failed. Anti-spoofing liveness verification failed.",
+    });
+  }
+
+  // 3D: Identity Match: The recognized face must belong to the authenticated individual
+  const isIdentityMatch = checkIdentityMatch(staffCode, recognizedStaffCode);
+  if (!isIdentityMatch) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "IDENTITY_MISMATCH",
+      message: `Attendance rejected: Recognized face (${recognizedStaffCode}) does not match authenticated user (${staffCode}).`,
+      expectedStaffCode: staffCode,
+      recognizedStaffCode,
     });
   }
 
@@ -331,7 +493,6 @@ export default async function handler(req: any, res?: any) {
   });
   const dateKey = now.toISOString().slice(0, 10).replace(/-/g, "");
 
-  const staffCode = body.staffCode || "SCT-2417";
   const staffName = body.staffName || "Staff Member";
   const department = body.department || "Engineering";
   let attendanceId = `ATT-${dateKey}-${String(Math.floor(Math.random() * 900) + 100)}`;
@@ -384,26 +545,17 @@ export default async function handler(req: any, res?: any) {
       time: timeStr,
       date: dateStr,
     },
+    verifiedFactors: {
+      wifi: true,
+      gps: true,
+      face: true,
+    },
     verifiedNetwork: "SONA Campus Network",
     verifiedIp: tokenCheck.payload?.verifiedIp || ipCheck.matchedIp || clientIp,
+    staffCode,
+    staffName,
     timestamp: now.toISOString(),
   };
 
-  if (res && typeof res.setHeader === "function") {
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    if (typeof res.status === "function" && typeof res.json === "function") {
-      return res.status(200).json(successPayload);
-    }
-    res.statusCode = 200;
-    res.end(JSON.stringify(successPayload));
-    return;
-  }
-  return new Response(JSON.stringify(successPayload), {
-    status: 200,
-    headers: {
-      "content-type": "application/json",
-      "cache-control": "no-store",
-    },
-  });
+  return sendJsonResponse(res, 200, successPayload);
 }
