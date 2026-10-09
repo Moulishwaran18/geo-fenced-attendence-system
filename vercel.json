@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/admin/staff/:match*",
+      "destination": "/api/admin/staff"
+    }
+  ]
+}
