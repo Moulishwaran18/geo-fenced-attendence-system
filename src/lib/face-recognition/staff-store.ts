@@ -247,6 +247,7 @@ export async function enrollStaffFace(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         embedding: embArray,
+        descriptor: embArray,
         referenceImagePath,
       }),
     });

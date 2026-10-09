@@ -12,6 +12,7 @@ import {
   verifyCampusWifi,
 } from "./src/lib/wifi-config.ts";
 import { handleFaceVerifyApi } from "./src/server/api/face-search-handler.ts";
+import staffHandler from "./src/server/api/staff-handler.ts";
 import { handleFaceDetectionLogApi } from "./src/server/api/audit-log-handler.ts";
 import wifiStatusHandler from "./api/wifi-status.ts";
 import attendanceHandler from "./api/attendance.ts";
@@ -157,6 +158,11 @@ function apiMiddlewarePlugin(): Plugin {
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ error: "Stream error" }));
           });
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/admin/")) {
+          await staffHandler(req, res);
           return;
         }
 
