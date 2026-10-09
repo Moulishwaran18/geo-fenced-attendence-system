@@ -204,6 +204,61 @@ function verifyNetworkAuthToken(token?: string | null): {
   }
 }
 
+/**
+ * Validates a single-use cryptographic biometric attestation minted by the native Android app.
+ */
+function verifyBiometricAttestation(token?: string | null): {
+  valid: boolean;
+  payload?: any;
+  error?: string;
+} {
+  if (!token || typeof token !== "string") {
+    return { valid: false, error: "MISSING_ATTESTATION" };
+  }
+
+  const parts = token.trim().split(".");
+  if (parts.length !== 2) {
+    return { valid: false, error: "INVALID_ATTESTATION_FORMAT" };
+  }
+
+  const payloadB64 = parts[0];
+  const signature = parts[1];
+
+  if (!payloadB64 || !signature) {
+    return { valid: false, error: "MALFORMED_ATTESTATION" };
+  }
+
+  try {
+    const expectedSig = crypto
+      .createHmac("sha256", TOKEN_SECRET)
+      .update(payloadB64)
+      .digest("base64url");
+
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, error: "INVALID_ATTESTATION_SIGNATURE" };
+    }
+
+    const payloadStr = Buffer.from(payloadB64, "base64url").toString("utf-8");
+    const payload = JSON.parse(payloadStr);
+
+    if (!payload.timestamp || typeof payload.timestamp !== "number") {
+      return { valid: false, error: "INVALID_ATTESTATION_TIMESTAMP" };
+    }
+
+    // 120-second validity window to block replay attacks
+    const ageMs = Date.now() - payload.timestamp;
+    if (ageMs > 120_000 || ageMs < -30_000) {
+      return { valid: false, error: "ATTESTATION_EXPIRED" };
+    }
+
+    return { valid: true, payload };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || "ATTESTATION_DECODE_FAILED" };
+  }
+}
+
 function getCookie(req: any, name: string): string | null {
   const cookieHeader =
     (req && req.headers && (req.headers["cookie"] || req.headers["Cookie"])) || "";
@@ -430,46 +485,96 @@ export default async function handler(req: any, res?: any) {
     ? String(body.recognizedStaffCode).trim()
     : null;
 
-  // 3A: Face recognition must have been performed and matched
-  if (!recognizedStaffCode || body.faceVerified === false) {
-    return sendJsonResponse(res, 403, {
-      success: false,
-      error: "FACE_BIOMETRIC_UNAUTHORIZED",
-      message:
-        "Attendance rejected: Factor 3 (Face Recognition) failed. Live face recognition verification is required.",
-    });
-  }
+  let verifiedBiometricMethod = "Server Vector Verification";
+  let boundDeviceId: string | undefined = body.deviceId;
 
-  // 3B: ArcFace Biometric Distance Threshold (must be <= 0.45)
-  if (typeof body.faceMatchDistance === "number" && body.faceMatchDistance > 0.45) {
-    return sendJsonResponse(res, 403, {
-      success: false,
-      error: "FACE_BIOMETRIC_UNAUTHORIZED",
-      message: `Attendance rejected: Factor 3 (Face Recognition) failed. Biometric cosine distance (${body.faceMatchDistance.toFixed(4)}) exceeds threshold (0.45).`,
-      distance: body.faceMatchDistance,
-    });
-  }
+  // 3A. Cryptographic Attestation Verification (for Android Keystore device-local flow)
+  if (body.biometricAttestation) {
+    const attestationCheck = verifyBiometricAttestation(body.biometricAttestation);
+    if (!attestationCheck.valid) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "INVALID_BIOMETRIC_ATTESTATION",
+        message: `Attendance rejected: Device biometric attestation failed verification (${attestationCheck.error}).`,
+      });
+    }
 
-  // 3C: Anti-spoofing Liveness check
-  if (body.livenessPassed === false) {
-    return sendJsonResponse(res, 403, {
-      success: false,
-      error: "LIVENESS_FAILED",
-      message:
-        "Attendance rejected: Factor 3 (Face Recognition) failed. Anti-spoofing liveness verification failed.",
-    });
-  }
+    const attestation = attestationCheck.payload;
 
-  // 3D: Identity Match: The recognized face must belong to the authenticated individual
-  const isIdentityMatch = checkIdentityMatch(staffCode, recognizedStaffCode);
-  if (!isIdentityMatch) {
-    return sendJsonResponse(res, 403, {
-      success: false,
-      error: "IDENTITY_MISMATCH",
-      message: `Attendance rejected: Recognized face (${recognizedStaffCode}) does not match authenticated user (${staffCode}).`,
-      expectedStaffCode: staffCode,
-      recognizedStaffCode,
-    });
+    // Verify attested identity matches authenticated user
+    const isIdentityMatch = checkIdentityMatch(staffCode, attestation.staffId);
+    if (!isIdentityMatch) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "ATTESTATION_IDENTITY_MISMATCH",
+        message: `Attendance rejected: Hardware attestation identity (${attestation.staffId}) does not match authenticated user (${staffCode}).`,
+        expectedStaffCode: staffCode,
+        attestedStaffCode: attestation.staffId,
+      });
+    }
+
+    // Verify attested distance meets threshold
+    if (typeof attestation.distance === "number" && attestation.distance > 0.45) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "ATTESTATION_DISTANCE_EXCEEDED",
+        message: `Attendance rejected: Attested biometric distance (${attestation.distance.toFixed(4)}) exceeds threshold (0.45).`,
+        distance: attestation.distance,
+      });
+    }
+
+    if (attestation.livenessPassed === false) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "LIVENESS_FAILED",
+        message: "Attendance rejected: Attestation reports failed anti-spoofing liveness check.",
+      });
+    }
+
+    verifiedBiometricMethod = "Device-Local ArcFace (Android Keystore)";
+    boundDeviceId = attestation.deviceId || body.deviceId;
+  } else {
+    // 3B. Standard Web Browser Face Verification Gate
+    if (!recognizedStaffCode || body.faceVerified === false) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "FACE_BIOMETRIC_UNAUTHORIZED",
+        message:
+          "Attendance rejected: Factor 3 (Face Recognition) failed. Live face recognition verification is required.",
+      });
+    }
+
+    // ArcFace Biometric Distance Threshold (must be <= 0.45)
+    if (typeof body.faceMatchDistance === "number" && body.faceMatchDistance > 0.45) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "FACE_BIOMETRIC_UNAUTHORIZED",
+        message: `Attendance rejected: Factor 3 (Face Recognition) failed. Biometric cosine distance (${body.faceMatchDistance.toFixed(4)}) exceeds threshold (0.45).`,
+        distance: body.faceMatchDistance,
+      });
+    }
+
+    // Anti-spoofing Liveness check
+    if (body.livenessPassed === false) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "LIVENESS_FAILED",
+        message:
+          "Attendance rejected: Factor 3 (Face Recognition) failed. Anti-spoofing liveness verification failed.",
+      });
+    }
+
+    // Identity Match: The recognized face must belong to the authenticated individual
+    const isIdentityMatch = checkIdentityMatch(staffCode, recognizedStaffCode);
+    if (!isIdentityMatch) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "IDENTITY_MISMATCH",
+        message: `Attendance rejected: Recognized face (${recognizedStaffCode}) does not match authenticated user (${staffCode}).`,
+        expectedStaffCode: staffCode,
+        recognizedStaffCode,
+      });
+    }
   }
 
   // 4. Authorized! Record Attendance in Database
@@ -522,7 +627,7 @@ export default async function handler(req: any, res?: any) {
           time: timeStr,
           status: "Present",
           location: body.location || "Main Campus, Sona College",
-          verification: "Verified (SONA-WIFI)",
+          verification: `${verifiedBiometricMethod} · Verified (SONA-WIFI)`,
           latitude: body.latitude,
           longitude: body.longitude,
           photo_url: body.photoUrl || null,
@@ -554,6 +659,8 @@ export default async function handler(req: any, res?: any) {
     verifiedIp: tokenCheck.payload?.verifiedIp || ipCheck.matchedIp || clientIp,
     staffCode,
     staffName,
+    biometricMethod: verifiedBiometricMethod,
+    deviceId: boundDeviceId,
     timestamp: now.toISOString(),
   };
 

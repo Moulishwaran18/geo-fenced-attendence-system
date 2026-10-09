@@ -26,10 +26,11 @@ import kotlinx.coroutines.launch
     entities = [
         StaffEntity::class,
         FaceEmbeddingEntity::class,
+        EncryptedFaceTemplateEntity::class,
         DeviceSettingsEntity::class,
         VerificationSettingsEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -37,6 +38,7 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun staffDao(): StaffDao
     abstract fun faceEmbeddingDao(): FaceEmbeddingDao
+    abstract fun encryptedFaceTemplateDao(): EncryptedFaceTemplateDao
     abstract fun settingsDao(): SettingsDao
 
     companion object {

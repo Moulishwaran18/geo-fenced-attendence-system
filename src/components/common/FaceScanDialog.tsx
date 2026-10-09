@@ -47,6 +47,12 @@ import {
   type VerifyFaceResponse,
   type DeterministicAuditData,
 } from "@/lib/face-recognition";
+import {
+  isNativeBiometricAvailable,
+  verifyNativeFace,
+  getNativeEnrollmentStatus,
+  getNativeDeviceId,
+} from "@/lib/native-biometric-bridge";
 
 /* ------------------------------------------------------------------ */
 /*  Types & Props                                                      */
@@ -75,6 +81,9 @@ export interface FaceScanResult {
   livenessCompleted?: boolean | undefined;
   snapshot?: string | undefined;
   verification?: VerifyFaceResponse | undefined;
+  biometricAttestation?: string | undefined;
+  deviceId?: string | undefined;
+  biometricMethod?: string | undefined;
 }
 
 interface DiagnosticState {
@@ -119,10 +128,12 @@ export function FaceScanDialog({
   open,
   onOpenChange,
   onVerified,
+  expectedStaffCode = "PERSON_001",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onVerified: (result: FaceScanResult) => void;
+  expectedStaffCode?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -307,26 +318,59 @@ export function FaceScanDialog({
         `[Client Telemetry] Frame ID: ${recognitionFrameId} | Dim: 512 | TensorChecksum: ${aligned.tensorChecksum} | EmbChecksum: ${doubleRes.embeddingChecksumA} | DoubleInferenceDist: ${doubleRes.doubleInferenceDist.toFixed(8)}`,
       );
 
-      // 6. IMMEDIATE DATABASE TEST (Query PostgreSQL pgvector)
-      const verifyRes = await verifyLiveFace(
-        arcFaceDescriptor,
-        true,
-        undefined,
-        verificationSessionId,
-        doubleRes.embeddingChecksumA,
-        {
-          recognitionFrameId,
-          rawFrameDataUrl,
-          aligned112DataUrl: aligned.dataUrl,
-          tensorChecksum: aligned.tensorChecksum,
-          embeddingChecksum: doubleRes.embeddingChecksumA,
-          descriptorB: doubleRes.embeddingB,
-          doubleInferenceDist: doubleRes.doubleInferenceDist,
-          faceBox,
-          landmarks5: aligned.pts5,
-          confidence: liveFace.detection.score,
-        },
-      );
+      // 6. BIOMETRIC MATCHING (Device-Local Android Keystore or Cloud pgvector)
+      let verifyRes: any;
+      if (isNativeBiometricAvailable()) {
+        const targetStaff = expectedStaffCode || "PERSON_001";
+        const nativeVer = await verifyNativeFace(targetStaff, arcFaceDescriptor, verificationSessionId);
+        if (!nativeVer.matched && nativeVer.requiresEnrollment) {
+          setPhase("unrecognized");
+          setErrorMessage(nativeVer.message || `No local biometric template found on this device for ${targetStaff}. Please enroll first.`);
+          isVerifyingRef.current = false;
+          return;
+        }
+
+        const bestDist = nativeVer.distance ?? (nativeVer.matched ? 0.05 : 0.95);
+        verifyRes = {
+          matched: nativeVer.matched,
+          staff: nativeVer.matched
+            ? { id: nativeVer.staffId || targetStaff, staffCode: nativeVer.staffId || targetStaff, name: nativeVer.staffId || targetStaff }
+            : null,
+          distance: bestDist,
+          matchMargin: null,
+          threshold: nativeVer.threshold ?? FACE_CONFIG.MATCH_THRESHOLD,
+          margin: FACE_CONFIG.MIN_MATCH_MARGIN,
+          reason: nativeVer.message || (nativeVer.matched ? "Matched on-device Keystore template" : "Unknown Face"),
+          verificationSessionId,
+          biometricAttestation: nativeVer.biometricAttestation,
+          deviceId: nativeVer.deviceId,
+          bestCandidate: nativeVer.matched
+            ? { staffCode: nativeVer.staffId || targetStaff, name: nativeVer.staffId || targetStaff, distance: bestDist }
+            : null,
+          secondBestCandidate: null,
+          finalResult: nativeVer.matched ? (nativeVer.staffId || targetStaff) : "UNKNOWN",
+        };
+      } else {
+        verifyRes = await verifyLiveFace(
+          arcFaceDescriptor,
+          true,
+          undefined,
+          verificationSessionId,
+          doubleRes.embeddingChecksumA,
+          {
+            recognitionFrameId,
+            rawFrameDataUrl,
+            aligned112DataUrl: aligned.dataUrl,
+            tensorChecksum: aligned.tensorChecksum,
+            embeddingChecksum: doubleRes.embeddingChecksumA,
+            descriptorB: doubleRes.embeddingB,
+            doubleInferenceDist: doubleRes.doubleInferenceDist,
+            faceBox,
+            landmarks5: aligned.pts5,
+            confidence: liveFace.detection.score,
+          },
+        );
+      }
 
       const audit = verifyRes.deterministicAudit;
       const p1Dists = audit?.p001Distances ?? {};
@@ -361,7 +405,7 @@ export function FaceScanDialog({
         threshold: verifyRes.threshold ?? FACE_CONFIG.MATCH_THRESHOLD,
         margin: verifyRes.margin ?? FACE_CONFIG.MIN_MATCH_MARGIN,
         matchMargin: verifyRes.matchMargin ?? null,
-        finalResult: verifyRes.finalResult || (verifyRes.matched ? "PERSON_001" : "UNKNOWN"),
+        finalResult: verifyRes.finalResult || (verifyRes.matched ? (verifyRes.staff?.staffCode || "PERSON_001") : "UNKNOWN"),
       }));
 
       if (!verifyRes.matched || !verifyRes.staff) {
@@ -389,6 +433,11 @@ export function FaceScanDialog({
         livenessCompleted: true,
         snapshot: aligned.dataUrl || originalFramePreview,
         verification: verifyRes,
+        biometricAttestation: verifyRes.biometricAttestation,
+        deviceId: verifyRes.deviceId,
+        biometricMethod: verifyRes.biometricAttestation
+          ? "Device-Local (Android Keystore)"
+          : "Server Vector Search",
       });
     } catch (err) {
       console.error("Single-frame recognition error:", err);

@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.campusattend.biometric.bridge.AndroidBiometricBridge
 import com.campusattend.biometric.location.AndroidLocationBridge
 import com.campusattend.biometric.location.NativeLocationService
 import com.campusattend.biometric.wifi.AndroidWifiBridge
@@ -275,6 +276,10 @@ class MainActivity : ComponentActivity() {
                                         addJavascriptInterface(
                                             AndroidWifiBridge(ctx, this),
                                             "AndroidWifiBridge"
+                                        )
+                                        addJavascriptInterface(
+                                            AndroidBiometricBridge(ctx, this),
+                                            "AndroidBiometricBridge"
                                         )
 
                                         loadUrl(currentUrl)

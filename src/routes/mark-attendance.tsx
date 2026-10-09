@@ -609,6 +609,7 @@ function MarkAttendancePage() {
       <FaceScanDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
+        expectedStaffCode={loggedInStaff.staffId}
         onVerified={async (result) => {
           setFace(result.snapshot ?? null);
           setFaceResult(result);
@@ -651,6 +652,8 @@ function MarkAttendancePage() {
                 faceMatchDistance: result.distance,
                 livenessPassed: result.livenessCompleted ?? true,
                 auditId: result.auditId || result.verification?.auditId,
+                biometricAttestation: result.biometricAttestation,
+                deviceId: result.deviceId,
               });
               setReceipt(attendanceReceipt);
               setStatus("success");

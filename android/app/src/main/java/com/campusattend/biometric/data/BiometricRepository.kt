@@ -14,6 +14,7 @@ class BiometricRepository(private val database: AppDatabase) {
 
     private val staffDao = database.staffDao()
     private val embeddingDao = database.faceEmbeddingDao()
+    private val encryptedTemplateDao = database.encryptedFaceTemplateDao()
     private val settingsDao = database.settingsDao()
 
     // ── Staff Operations ──
@@ -35,7 +36,30 @@ class BiometricRepository(private val database: AppDatabase) {
 
     suspend fun deleteStaff(staffId: String) = staffDao.deleteStaff(staffId)
 
-    // ── Embedding Operations ──
+    // ── Keystore-Encrypted Template Operations ──
+
+    suspend fun getEncryptedTemplatesForStaffAndDevice(
+        staffId: String,
+        deviceId: String
+    ): List<EncryptedFaceTemplateEntity> =
+        encryptedTemplateDao.getTemplatesForStaffAndDevice(staffId, deviceId)
+
+    suspend fun getEncryptedTemplatesForStaff(staffId: String): List<EncryptedFaceTemplateEntity> =
+        encryptedTemplateDao.getTemplatesForStaff(staffId)
+
+    suspend fun getEncryptedTemplateCount(staffId: String, deviceId: String): Int =
+        encryptedTemplateDao.getTemplateCountForStaffAndDevice(staffId, deviceId)
+
+    suspend fun insertEncryptedTemplate(template: EncryptedFaceTemplateEntity): Long =
+        encryptedTemplateDao.insertTemplate(template)
+
+    suspend fun deleteEncryptedTemplatesForStaff(staffId: String): Int =
+        encryptedTemplateDao.deleteAllTemplatesForStaff(staffId)
+
+    suspend fun deleteEncryptedTemplatesForStaffAndDevice(staffId: String, deviceId: String): Int =
+        encryptedTemplateDao.deleteTemplatesForStaffAndDevice(staffId, deviceId)
+
+    // ── Legacy Embedding Operations ──
 
     /**
      * Get all embeddings for active staff members.

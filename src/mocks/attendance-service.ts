@@ -206,6 +206,8 @@ export interface MarkAttendanceParams {
   faceMatchDistance?: number | undefined;
   livenessPassed?: boolean | undefined;
   auditId?: string | undefined;
+  biometricAttestation?: string | undefined;
+  deviceId?: string | undefined;
 }
 
 export async function markAttendance(params?: MarkAttendanceParams): Promise<AttendanceReceipt> {

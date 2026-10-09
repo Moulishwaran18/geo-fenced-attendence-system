@@ -40,6 +40,15 @@ import {
   clearStaffEmbeddings,
 } from "@/lib/face-recognition";
 import {
+  isNativeBiometricAvailable,
+  getNativeDeviceId,
+  getNativeEnrollmentStatus,
+  enrollNativeTemplate,
+  clearNativeTemplates,
+  verifyNativeFace,
+  type NativeEnrollmentStatus,
+} from "@/lib/native-biometric-bridge";
+import {
   fetchAllStaff,
   enrollStaffFace,
   deleteStaffEmbedding,
@@ -81,6 +90,21 @@ function AdminFaceEnrollmentPage() {
   const [staffList, setStaffList] = useState<StaffProfile[]>([]);
   const [selectedStaffId, setSelectedStaffId] = useState<string>("PERSON_001");
   const [loadingStaff, setLoadingStaff] = useState(true);
+  const [nativeStatus, setNativeStatus] = useState<NativeEnrollmentStatus | null>(null);
+  const isNative = isNativeBiometricAvailable();
+
+  const checkNativeStatus = useCallback(async (staffId: string) => {
+    if (isNativeBiometricAvailable()) {
+      const status = await getNativeEnrollmentStatus(staffId);
+      setNativeStatus(status);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedStaffId) {
+      void checkNativeStatus(selectedStaffId);
+    }
+  }, [selectedStaffId, checkNativeStatus]);
 
   // Enrollment batch state
   const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
@@ -254,15 +278,27 @@ function AdminFaceEnrollmentPage() {
         singleFace.landmarks,
       );
 
-      // 4. Store embedding in backend PostgreSQL database
-      const result = await enrollStaffFace(targetStaffId, arcFaceDescriptor, url);
-      if (result.success) {
-        toast.success(`✓ 512-D ArcFace template persisted for ${selectedStaff?.name || targetStaffId}`);
-        void loadStaff();
-        return true;
+      // 4. Store embedding (Device-Local Android Keystore or Cloud PostgreSQL)
+      if (isNativeBiometricAvailable()) {
+        const nativeResult = await enrollNativeTemplate(targetStaffId, arcFaceDescriptor, filename);
+        if (nativeResult.success) {
+          toast.success(`✓ Face template encrypted with Android Keystore & stored locally on this phone (${selectedStaff?.name || targetStaffId})`);
+          void checkNativeStatus(targetStaffId);
+          return true;
+        } else {
+          toast.error(`Android Keystore enrollment failed: ${nativeResult.message || nativeResult.error}`);
+          return false;
+        }
       } else {
-        toast.error(`Database write failed: ${result.error || "Backend failed to save template"}`);
-        return false;
+        const result = await enrollStaffFace(targetStaffId, arcFaceDescriptor, url);
+        if (result.success) {
+          toast.success(`✓ 512-D ArcFace template persisted for ${selectedStaff?.name || targetStaffId}`);
+          void loadStaff();
+          return true;
+        } else {
+          toast.error(`Database write failed: ${result.error || "Backend failed to save template"}`);
+          return false;
+        }
       }
     } catch (err) {
       toast.error(`Error processing ${filename}: ${String(err)}`);
@@ -333,11 +369,23 @@ function AdminFaceEnrollmentPage() {
     if (!selectedStaff) return;
     if (
       !window.confirm(
-        `Are you sure you want to clear all ${selectedStaff.embeddingCount} stored face templates for ${selectedStaff.name}? This removes outdated templates so you can enroll your fresh face.`,
+        `Are you sure you want to clear all stored face templates for ${selectedStaff.name}? This removes outdated templates so you can enroll your fresh face.`,
       )
     ) {
       return;
     }
+
+    if (isNativeBiometricAvailable()) {
+      const ok = await clearNativeTemplates(selectedStaff.id);
+      if (ok) {
+        toast.success(`All local encrypted templates cleared from this phone for ${selectedStaff.name}`);
+        void checkNativeStatus(selectedStaff.id);
+      } else {
+        toast.error("Failed to clear local templates on device");
+      }
+      return;
+    }
+
     const success = await clearStaffEmbeddings(selectedStaff.id);
     if (success) {
       toast.success(`All face templates cleared for ${selectedStaff.name}`);
@@ -390,13 +438,26 @@ function AdminFaceEnrollmentPage() {
         img.naturalHeight || img.height,
         faces[0]!.landmarks,
       );
-      const result = await verifyLiveFace(arcFaceDescriptor, true);
+      let result: any;
+      if (isNativeBiometricAvailable()) {
+        const targetStaff = selectedStaff?.id || "PERSON_001";
+        const nat = await verifyNativeFace(targetStaff, arcFaceDescriptor);
+        result = {
+          matched: nat.matched,
+          staff: nat.matched ? { name: selectedStaff?.name || targetStaff, staffCode: nat.staffId || targetStaff } : null,
+          distance: nat.distance,
+          margin: null,
+          reason: nat.message || (nat.matched ? "Matched on-device Keystore template" : "Unknown Face"),
+        };
+      } else {
+        result = await verifyLiveFace(arcFaceDescriptor, true);
+      }
       setTestResult({
         matched: result.matched,
         name: result.staff?.name,
         staffCode: result.staff?.staffCode,
         distance: result.distance,
-        margin: result.matchMargin,
+        margin: result.margin ?? result.matchMargin,
         reason: result.reason,
       });
     } catch (err) {
@@ -443,14 +504,26 @@ function AdminFaceEnrollmentPage() {
         faces[0]!.landmarks,
       );
 
-      // Call backend vector search
-      const result = await verifyLiveFace(arcFaceDescriptor, true);
+      let result: any;
+      if (isNativeBiometricAvailable()) {
+        const targetStaff = selectedStaff?.id || "PERSON_001";
+        const nat = await verifyNativeFace(targetStaff, arcFaceDescriptor);
+        result = {
+          matched: nat.matched,
+          staff: nat.matched ? { name: selectedStaff?.name || targetStaff, staffCode: nat.staffId || targetStaff } : null,
+          distance: nat.distance,
+          margin: null,
+          reason: nat.message || (nat.matched ? "Matched on-device Keystore template" : "Unknown Face"),
+        };
+      } else {
+        result = await verifyLiveFace(arcFaceDescriptor, true);
+      }
       setTestResult({
         matched: result.matched,
         name: result.staff?.name,
         staffCode: result.staff?.staffCode,
         distance: result.distance,
-        margin: result.matchMargin,
+        margin: result.margin ?? result.matchMargin,
         reason: result.reason,
       });
     } catch (err) {
@@ -467,9 +540,15 @@ function AdminFaceEnrollmentPage() {
         description="Admin-only biometric enrollment console supporting 100+ staff with 128-dimensional vector search"
         actions={
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="font-mono text-xs">
-              PostgreSQL + pgvector (128-d)
-            </Badge>
+            {isNative ? (
+              <Badge className="bg-emerald-600 text-white font-mono text-xs">
+                Android Keystore (Device-Local)
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="font-mono text-xs">
+                Web Browser (Cloud Biometric Store)
+              </Badge>
+            )}
           </div>
         }
       />
@@ -490,10 +569,18 @@ function AdminFaceEnrollmentPage() {
       )}
 
       <AlertBanner
-        tone="info"
-        icon={ScanFace}
-        title="Scalable Multi-Embedding Biometric Architecture"
-        description="Every staff member stores multiple 128-dimensional face embeddings across diverse angles, lighting, and expressions. The database scales to 100+, 500+, 1000+ staff without schema changes. Unknown faces are strictly rejected."
+        tone={isNative ? "success" : "info"}
+        icon={isNative ? ShieldCheck : ScanFace}
+        title={
+          isNative
+            ? "Device-Local Biometric Enrollment Active (Android Keystore)"
+            : "Scalable Biometric Architecture (Web Browser)"
+        }
+        description={
+          isNative
+            ? `Biometric templates are encrypted with hardware-backed AES-256-GCM and stored strictly in this Android device's private database (Device: ${nativeStatus?.deviceId || "Active Hardware"}). Biometric vectors and face photos are NEVER uploaded to Supabase or cloud servers.`
+            : "Running in web browser. For hardware-isolated on-device biometrics with Android Keystore encryption, use the CampusAttend Android application."
+        }
       />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
@@ -530,13 +617,13 @@ function AdminFaceEnrollmentPage() {
                     </div>
                     <Badge
                       className={
-                        selectedStaff.embeddingCount > 0
+                        (isNative ? (nativeStatus?.count ?? 0) > 0 : selectedStaff.embeddingCount > 0)
                           ? "bg-success text-white"
                           : "bg-warning/20 text-warning"
                       }
                     >
-                      {selectedStaff.embeddingCount > 0
-                        ? `Enrolled (${selectedStaff.embeddingCount})`
+                      {(isNative ? (nativeStatus?.count ?? 0) > 0 : selectedStaff.embeddingCount > 0)
+                        ? `Enrolled (${isNative ? nativeStatus?.count : selectedStaff.embeddingCount})`
                         : "Pending"}
                     </Badge>
                   </div>
@@ -555,9 +642,13 @@ function AdminFaceEnrollmentPage() {
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-muted-foreground">Embeddings</dt>
-                      <dd className="font-mono font-bold text-foreground">
-                        {selectedStaff.embeddingCount} stored
+                      <dt className="text-muted-foreground">
+                        {isNative ? "Phone Storage" : "Cloud Storage"}
+                      </dt>
+                      <dd className={isNative ? "font-mono font-bold text-emerald-600 truncate" : "font-mono font-bold text-foreground"}>
+                        {isNative
+                          ? `${nativeStatus?.count ?? 0} Keystore templates`
+                          : `${selectedStaff.embeddingCount} stored`}
                       </dd>
                     </div>
                     <div>

@@ -96,3 +96,31 @@ interface SettingsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setDeviceSetting(setting: DeviceSettingsEntity)
 }
+
+/**
+ * Data Access Object for hardware-encrypted face templates.
+ */
+@Dao
+interface EncryptedFaceTemplateDao {
+
+    @Query("SELECT * FROM encrypted_face_templates WHERE staffId = :staffId AND deviceId = :deviceId ORDER BY createdAt ASC")
+    suspend fun getTemplatesForStaffAndDevice(staffId: String, deviceId: String): List<EncryptedFaceTemplateEntity>
+
+    @Query("SELECT * FROM encrypted_face_templates WHERE staffId = :staffId ORDER BY createdAt ASC")
+    suspend fun getTemplatesForStaff(staffId: String): List<EncryptedFaceTemplateEntity>
+
+    @Query("SELECT COUNT(*) FROM encrypted_face_templates WHERE staffId = :staffId AND deviceId = :deviceId")
+    suspend fun getTemplateCountForStaffAndDevice(staffId: String, deviceId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTemplate(template: EncryptedFaceTemplateEntity): Long
+
+    @Query("DELETE FROM encrypted_face_templates WHERE staffId = :staffId")
+    suspend fun deleteAllTemplatesForStaff(staffId: String): Int
+
+    @Query("DELETE FROM encrypted_face_templates WHERE staffId = :staffId AND deviceId = :deviceId")
+    suspend fun deleteTemplatesForStaffAndDevice(staffId: String, deviceId: String): Int
+
+    @Query("DELETE FROM encrypted_face_templates WHERE id = :id")
+    suspend fun deleteTemplateById(id: Long): Int
+}
