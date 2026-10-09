@@ -14,13 +14,14 @@ function getSupabaseClient() {
   const url =
     (typeof process !== "undefined" &&
       (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "";
+    "https://qvjcxoznvhoagclbyhad.supabase.co";
   const key =
     (typeof process !== "undefined" &&
       (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
         process.env["SUPABASE_ANON_KEY"] ||
-        process.env["VITE_SUPABASE_ANON_KEY"])) ||
-    "";
+        process.env["VITE_SUPABASE_ANON_KEY"] ||
+        process.env["VITE_SUPABASE_PUBLISHABLE_KEY"])) ||
+    "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
   if (!url || !key) return null;
   return createClient(url, key);
 }
