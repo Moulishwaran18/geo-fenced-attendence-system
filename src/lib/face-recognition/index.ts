@@ -126,7 +126,7 @@ export {
   enrolledCount,
   clearAllProfiles,
 } from "./staff-store";
-export type { StaffProfile, ReferenceSample, VerifyFaceResponse } from "./staff-store";
+export type { StaffProfile, ReferenceSample, VerifyFaceResponse, EnrollFaceResult } from "./staff-store";
 
 // Module 11: ArcFace 512-D Neural Recognition Engine
 export {

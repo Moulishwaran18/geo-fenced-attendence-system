@@ -155,56 +155,71 @@ export default async function handler(req: any, res?: any) {
       distance: number;
     }> = [];
 
-    // 2. Try Supabase pgvector RPC
-    try {
-      const { data: rpcRows, error: rpcErr } = await supabase.rpc("match_face_embeddings", {
-        query_embedding: descriptor,
-        match_threshold: 0.65,
-        match_count: 5,
-      });
+    // 2. Query active staff face embeddings from Supabase Cloud
+    const { data: embs, error: embErr } = await supabase
+      .from("face_embeddings")
+      .select("id, staff_id, embedding, staff:staff_id(id, staff_code, name, active)");
 
-      if (!rpcErr && Array.isArray(rpcRows) && rpcRows.length > 0) {
-        candidates = rpcRows.map((r: any) => ({
-          staffId: r.staff_id,
-          staffCode: r.staff_code,
-          name: r.name,
-          distance: parseFloat(r.distance),
-        }));
-      }
-    } catch {
-      // RPC fallback
-    }
-
-    // 3. Fallback: query active staff face embeddings directly
-    if (candidates.length === 0) {
-      const { data: embs, error: embErr } = await supabase
-        .from("face_embeddings")
-        .select(
-          "id, staff_id, embedding, staff:staff_id(id, staff_code, name, active)",
-        );
-
-      if (!embErr && Array.isArray(embs) && embs.length > 0) {
-        for (const f of embs) {
-          const staffObj = Array.isArray(f.staff) ? f.staff[0] : f.staff;
-          if (!staffObj || !staffObj.active) continue;
-          let embVec: number[] = [];
-          if (Array.isArray(f.embedding)) {
-            embVec = f.embedding;
-          } else if (typeof f.embedding === "string") {
+    if (!embErr && Array.isArray(embs) && embs.length > 0) {
+      for (const f of embs) {
+        const staffObj = Array.isArray(f.staff) ? f.staff[0] : f.staff;
+        if (!staffObj || !staffObj.active) continue;
+        let embVec: number[] = [];
+        if (Array.isArray(f.embedding)) {
+          embVec = f.embedding;
+        } else if (typeof f.embedding === "string") {
+          const str = f.embedding.trim();
+          if (str.startsWith("[") && str.endsWith("]")) {
             try {
-              embVec = JSON.parse(f.embedding);
+              embVec = JSON.parse(str);
+            } catch {}
+          } else if (str.startsWith("{") && str.endsWith("}")) {
+            try {
+              embVec = str.slice(1, -1).split(",").map(Number);
+            } catch {}
+          } else {
+            try {
+              embVec = str.split(",").map(Number);
             } catch {}
           }
-          if (embVec.length !== 512) continue;
-          const dist = calculateCosineDistance(descriptor, embVec);
-          candidates.push({
-            staffId: staffObj.id,
-            staffCode: staffObj.staff_code,
-            name: staffObj.name,
-            distance: dist,
-          });
         }
-        candidates.sort((a, b) => a.distance - b.distance);
+        if (embVec.length !== 512) continue;
+        const dist = calculateCosineDistance(descriptor, embVec);
+        candidates.push({
+          staffId: staffObj.id,
+          staffCode: staffObj.staff_code,
+          name: staffObj.name,
+          distance: dist,
+        });
+      }
+      candidates.sort((a, b) => a.distance - b.distance);
+    }
+
+    // 3. Fallback: Supabase pgvector RPC (if direct query returned nothing due to RLS/schema)
+    if (candidates.length === 0) {
+      try {
+        const { data: rpcRows, error: rpcErr } = await supabase.rpc("match_face_embeddings", {
+          query_embedding: descriptor,
+          match_threshold: 0.95,
+          match_count: 5,
+        });
+
+        if (!rpcErr && Array.isArray(rpcRows) && rpcRows.length > 0) {
+          candidates = rpcRows.map((r: any) => {
+            const rawDist = parseFloat(r.distance);
+            // If rawDist appears to be Euclidean (<= sqrt(2)), convert to cosine distance dC = dE^2 / 2
+            const cosineDist = rawDist > 0 && rawDist <= 1.5 ? (rawDist * rawDist) / 2 : rawDist;
+            return {
+              staffId: r.staff_id,
+              staffCode: r.staff_code,
+              name: r.name,
+              distance: cosineDist,
+            };
+          });
+          candidates.sort((a, b) => a.distance - b.distance);
+        }
+      } catch {
+        // RPC fallback failed
       }
     }
 

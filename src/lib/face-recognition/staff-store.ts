@@ -150,6 +150,7 @@ export async function fetchAllStaff(): Promise<StaffProfile[]> {
           id: string;
           staff_id: string;
           reference_image_path: string;
+          photo_data?: string | null;
           created_at: string;
         }>;
       }>;
@@ -161,10 +162,18 @@ export async function fetchAllStaff(): Promise<StaffProfile[]> {
       email: s.email,
       department: s.department,
       designation: s.designation,
-      referenceSamples: [],
-      embeddingCount: 0,
+      referenceSamples: (s.referenceSamples || []).map((r: any) => ({
+        id: r.id,
+        photoUrl: r.photo_data || r.reference_image_path || "/staff-photos/placeholder.jpg",
+        descriptor: [],
+        quality: 1.0,
+        createdAt: r.created_at || new Date().toISOString(),
+      })),
+      embeddingCount: s.embeddingCount ?? (s.referenceSamples?.length || 0),
       registeredAt: s.created_at,
-      status: "enrolled" as const,
+      status: ((s.embeddingCount ?? 0) > 0 || (s.referenceSamples && s.referenceSamples.length > 0))
+        ? ("enrolled" as const)
+        : ("pending" as const),
       active: s.active,
     }));
   } catch (err) {
@@ -232,6 +241,13 @@ export async function toggleStaffStatus(staffIdOrCode: string, active: boolean):
   }
 }
 
+export interface EnrollFaceResult {
+  success: boolean;
+  message?: string | undefined;
+  error?: string | undefined;
+  id?: string | undefined;
+}
+
 /**
  * Enroll a new 512-dimensional face embedding into the staff database.
  */
@@ -239,22 +255,53 @@ export async function enrollStaffFace(
   staffId: string,
   embedding: Float32Array | number[],
   referenceImagePath: string,
-): Promise<boolean> {
+  photoData?: string,
+): Promise<EnrollFaceResult> {
   try {
     const embArray = Array.isArray(embedding) ? embedding : Array.from(embedding);
+    let refPath = referenceImagePath;
+    let pData = photoData;
+    if (typeof refPath === "string" && refPath.startsWith("data:image/")) {
+      pData = pData || refPath;
+      refPath = `enrollment/webcam_${Date.now()}.jpg`;
+    }
+
     const res = await fetch(`/api/admin/staff/${encodeURIComponent(staffId)}/enroll`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         embedding: embArray,
         descriptor: embArray,
-        referenceImagePath,
+        referenceImagePath: refPath,
+        photoData: pData,
       }),
     });
-    return res.ok;
+
+    const json = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      message?: string;
+      error?: string;
+      data?: { id?: string };
+    };
+
+    if (!res.ok || json.success === false) {
+      return {
+        success: false,
+        error: json.error || `HTTP ${res.status}: Enrollment write failed on server`,
+      };
+    }
+
+    return {
+      success: true,
+      message: json.message || "Face template enrolled successfully",
+      id: json.data?.id,
+    };
   } catch (err) {
     console.error("Enroll staff face error:", err);
-    return false;
+    return {
+      success: false,
+      error: `Connection error: ${String(err)}`,
+    };
   }
 }
 

@@ -223,13 +223,20 @@ export default async function handler(req: any, res?: any) {
         }
       }
 
+      let refPath = body.referenceImagePath || "enrollment/live_capture.jpg";
+      let photoData = body.photoData || null;
+      if (typeof refPath === "string" && refPath.startsWith("data:image/")) {
+        if (!photoData) photoData = refPath;
+        refPath = `enrollment/webcam_${Date.now()}.jpg`;
+      }
+
       const { data: newEmb, error: embError } = await supabase
         .from("face_embeddings")
         .insert({
           staff_id: staffId,
           embedding,
-          reference_image_path: body.referenceImagePath || "enrollment/live_capture.jpg",
-          photo_data: body.photoData || null,
+          reference_image_path: refPath,
+          photo_data: photoData,
         })
         .select()
         .single();

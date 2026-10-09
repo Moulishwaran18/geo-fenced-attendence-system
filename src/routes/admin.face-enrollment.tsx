@@ -244,13 +244,13 @@ function AdminFaceEnrollmentPage() {
       );
 
       // 4. Store embedding in backend PostgreSQL database
-      const success = await enrollStaffFace(targetStaffId, arcFaceDescriptor, url);
-      if (success) {
-        toast.success(`✓ 512-d ArcFace embedding saved for ${targetStaffId}`);
+      const result = await enrollStaffFace(targetStaffId, arcFaceDescriptor, url);
+      if (result.success) {
+        toast.success(`✓ 512-D ArcFace template persisted for ${selectedStaff?.name || targetStaffId}`);
         void loadStaff();
         return true;
       } else {
-        toast.error(`Backend failed to save embedding for ${targetStaffId}`);
+        toast.error(`Database write failed: ${result.error || "Backend failed to save template"}`);
         return false;
       }
     } catch (err) {
@@ -291,7 +291,7 @@ function AdminFaceEnrollmentPage() {
                 ...it,
                 status: passed ? "valid" : "rejected",
                 message: passed
-                  ? "✓ Face detected & 128-d embedding stored"
+                  ? "✓ Face detected & 512-d ArcFace template stored"
                   : "❌ Rejected (face count / quality check failed)",
               }
             : it,
@@ -647,7 +647,7 @@ function AdminFaceEnrollmentPage() {
               {isProcessingBatch && (
                 <div className="flex items-center gap-2 rounded-lg bg-primary-soft p-3 text-xs font-medium text-primary">
                   <Loader2 className="size-4 animate-spin" />
-                  Processing reference photos: single-face validation & 128-d descriptor extraction…
+                  Processing reference photos: single-face validation & 512-d ArcFace embedding extraction…
                 </div>
               )}
 
@@ -707,7 +707,7 @@ function AdminFaceEnrollmentPage() {
                     <ImageIcon className="mb-2 size-8 text-muted-foreground/50" />
                     <p className="font-medium text-foreground">No reference photos enrolled yet</p>
                     <p className="mt-1">
-                      Upload photos or snap via camera to store 128-d face embeddings for {selectedStaff?.name}.
+                      Upload photos or snap via camera to store 512-d ArcFace embeddings for {selectedStaff?.name}.
                     </p>
                   </div>
                 ) : (

@@ -818,10 +818,19 @@ export async function searchFaceEmbeddings(
           if (Array.isArray(f.embedding)) {
             embVec = f.embedding;
           } else if (typeof f.embedding === "string") {
-            try {
-              embVec = JSON.parse(f.embedding);
-            } catch {
-              // Parse error
+            const str = f.embedding.trim();
+            if (str.startsWith("[") && str.endsWith("]")) {
+              try {
+                embVec = JSON.parse(str);
+              } catch {}
+            } else if (str.startsWith("{") && str.endsWith("}")) {
+              try {
+                embVec = str.slice(1, -1).split(",").map(Number);
+              } catch {}
+            } else {
+              try {
+                embVec = str.split(",").map(Number);
+              } catch {}
             }
           }
           if (embVec.length !== 512) continue;
