@@ -9,6 +9,6 @@
  * - /api/admin/db-diagnostic
  */
 
-import handler from "../../src/server/api/staff-handler.ts";
+import handler from "./staff.ts";
 
 export default handler;
