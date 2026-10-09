@@ -1,14 +1,13 @@
 /**
- * Vercel Serverless Function: /api/admin/[...slug]
+ * Vercel Serverless Function: /api/admin/staff/[...slug]
  *
- * Catches all dynamic admin subroutes:
+ * Catches dynamic staff subroutes:
  * - /api/admin/staff/:id
  * - /api/admin/staff/:id/enroll (and /face-enrollment)
  * - /api/admin/staff/:id/status
  * - /api/admin/staff/:id/embedding/:embeddingId
- * - /api/admin/db-diagnostic
  */
 
-import handler from "./staff.ts";
+import handler from "./index.ts";
 
 export default handler;

@@ -73,7 +73,9 @@ export default async function handler(req: any, res?: any) {
 
   if (req.query?.slug) {
     const slugParts = Array.isArray(req.query.slug) ? req.query.slug : [req.query.slug];
-    pathname = "/api/admin/" + slugParts.join("/");
+    if (slugParts.length > 0 && !pathname.includes(slugParts[0]!)) {
+      pathname = "/api/admin/staff/" + slugParts.join("/");
+    }
   }
 
   let body: any = undefined;
@@ -102,7 +104,7 @@ export default async function handler(req: any, res?: any) {
 
   try {
     // 1. GET /api/admin/staff — List all staff with enrollment metadata
-    if (pathname === "/api/admin/staff" && method === "GET") {
+    if ((pathname === "/api/admin/staff" || pathname === "/api/admin/staff/") && method === "GET") {
       const { data, error } = await supabase
         .from("staff")
         .select(
@@ -143,7 +145,7 @@ export default async function handler(req: any, res?: any) {
     }
 
     // 2. POST /api/admin/staff — Create new staff member
-    if (pathname === "/api/admin/staff" && method === "POST") {
+    if ((pathname === "/api/admin/staff" || pathname === "/api/admin/staff/") && method === "POST") {
       if (!body?.staff_code || !body?.name || !body?.email) {
         return sendJsonResponse(res, 400, {
           success: false,
@@ -198,7 +200,7 @@ export default async function handler(req: any, res?: any) {
     }
 
     // 4. Enroll face: /api/admin/staff/:id/enroll OR /face-enrollment
-    const enrollMatch = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/(?:enroll|face-enrollment)\/?$/);
+    const enrollMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:enroll|face-enrollment)\/?$/);
     if (enrollMatch && method === "POST") {
       const idOrCode = decodeURIComponent(enrollMatch[1]!);
       const embedding = body?.embedding || body?.descriptor;
@@ -249,7 +251,7 @@ export default async function handler(req: any, res?: any) {
     }
 
     // 5. Delete embedding: /api/admin/staff/:id/embedding/:embeddingId OR /embeddings/:id
-    const deleteMatch = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/(?:embedding|embeddings)\/([^/]+)\/?$/);
+    const deleteMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:embedding|embeddings)\/([^/]+)\/?$/);
     if (deleteMatch && method === "DELETE") {
       const embeddingId = decodeURIComponent(deleteMatch[2]!);
       const { error: delError } = await supabase.from("face_embeddings").delete().eq("id", embeddingId);
@@ -260,7 +262,7 @@ export default async function handler(req: any, res?: any) {
     }
 
     // 6. Toggle status: /api/admin/staff/:id/status
-    const statusMatch = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/status\/?$/);
+    const statusMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/status\/?$/);
     if (statusMatch && (method === "PATCH" || method === "POST")) {
       const idOrCode = decodeURIComponent(statusMatch[1]!);
       const active = typeof body?.active === "boolean" ? body.active : true;
@@ -280,7 +282,7 @@ export default async function handler(req: any, res?: any) {
     }
 
     // 7. Get single staff: /api/admin/staff/:id
-    const singleMatch = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/?$/);
+    const singleMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/?$/);
     if (singleMatch && method === "GET") {
       const idOrCode = decodeURIComponent(singleMatch[1]!);
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);

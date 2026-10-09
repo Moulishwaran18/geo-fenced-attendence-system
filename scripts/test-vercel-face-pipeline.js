@@ -1,5 +1,5 @@
 import faceVerifyHandler from "../api/face/verify.ts";
-import staffHandler from "../api/admin/staff.ts";
+import staffHandler from "../api/admin/staff/index.ts";
 import { getStaffById, getDatabaseDiagnostics, storeFaceEmbedding, deleteFaceEmbedding, searchFaceEmbeddings } from "../src/server/db/client.ts";
 
 let passCount = 0;
