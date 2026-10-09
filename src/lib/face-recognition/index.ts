@@ -118,6 +118,7 @@ export {
   toggleStaffStatus,
   enrollStaffFace,
   deleteStaffEmbedding,
+  clearStaffEmbeddings,
   verifyLiveFace,
   verifyLiveFaceImage,
   getEnrolledStaff,

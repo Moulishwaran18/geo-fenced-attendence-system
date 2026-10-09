@@ -37,6 +37,7 @@ import {
   generateArcFaceEmbedding,
   detectFaces,
   FACE_CONFIG,
+  clearStaffEmbeddings,
 } from "@/lib/face-recognition";
 import {
   fetchAllStaff,
@@ -168,13 +169,20 @@ function AdminFaceEnrollmentPage() {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        await videoRef.current.play().catch(console.error);
       }
     } catch (err) {
       toast.error("Camera access failed", { description: String(err) });
       setCameraActive(false);
     }
   };
+
+  useEffect(() => {
+    if (cameraActive && streamRef.current && videoRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(console.error);
+    }
+  }, [cameraActive]);
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -187,6 +195,10 @@ function AdminFaceEnrollmentPage() {
   const capturePhoto = async () => {
     if (!videoRef.current || !selectedStaff) return;
     const video = videoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      toast.error("Camera stream not ready yet. Please wait a moment.");
+      return;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -195,9 +207,8 @@ function AdminFaceEnrollmentPage() {
     ctx.drawImage(video, 0, 0);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
 
-    stopCamera();
-
-    // Process immediately
+    // Keep camera active so user can capture 2-3 angles (e.g. frontal, slight turn)
+    toast.info("Processing camera snapshot...");
     await processSinglePhoto(dataUrl, `webcam_snap_${Date.now()}.jpg`, selectedStaff.id);
   };
 
@@ -317,7 +328,84 @@ function AdminFaceEnrollmentPage() {
     }
   };
 
+  // 6b. Clear all reference embeddings for selected staff
+  const handleClearAllEmbeddings = async () => {
+    if (!selectedStaff) return;
+    if (
+      !window.confirm(
+        `Are you sure you want to clear all ${selectedStaff.embeddingCount} stored face templates for ${selectedStaff.name}? This removes outdated templates so you can enroll your fresh face.`,
+      )
+    ) {
+      return;
+    }
+    const success = await clearStaffEmbeddings(selectedStaff.id);
+    if (success) {
+      toast.success(`All face templates cleared for ${selectedStaff.name}`);
+      void loadStaff();
+    } else {
+      toast.error("Failed to clear face templates");
+    }
+  };
+
   // 7. Live Test Bench (Test any photo or live face against vector search)
+  const handleTestCameraSnap = async () => {
+    if (!videoRef.current || !cameraActive) {
+      await startCamera();
+      toast.info("Camera started. Click 'Test Current Camera Frame' to evaluate matching.");
+      return;
+    }
+    const video = videoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      toast.error("Camera stream not ready yet.");
+      return;
+    }
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise<void>((resolve) => {
+        img.onload = () => resolve();
+      });
+
+      const faces = await detectFaces(img);
+      if (faces.length !== 1) {
+        setTestResult({
+          matched: false,
+          reason: faces.length === 0 ? "No face detected in camera frame" : `Multiple faces (${faces.length}) detected`,
+        });
+        return;
+      }
+      const arcFaceDescriptor = await generateArcFaceEmbedding(
+        img,
+        img.naturalWidth || img.width,
+        img.naturalHeight || img.height,
+        faces[0]!.landmarks,
+      );
+      const result = await verifyLiveFace(arcFaceDescriptor, true);
+      setTestResult({
+        matched: result.matched,
+        name: result.staff?.name,
+        staffCode: result.staff?.staffCode,
+        distance: result.distance,
+        margin: result.matchMargin,
+        reason: result.reason,
+      });
+    } catch (err) {
+      setTestResult({ matched: false, reason: `Test error: ${String(err)}` });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
   const handleTestPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -514,7 +602,7 @@ function AdminFaceEnrollmentPage() {
                 Upload any face photo to execute real-time vector similarity search against all enrolled staff embeddings in PostgreSQL.
               </p>
 
-              <div className="flex items-center gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   type="file"
                   accept="image/*"
@@ -531,13 +619,22 @@ function AdminFaceEnrollmentPage() {
                 >
                   {isTesting ? (
                     <>
-                      <Loader2 className="mr-2 size-4 animate-spin" /> Searching Database…
+                      <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Testing…
                     </>
                   ) : (
                     <>
-                      <ScanFace className="mr-2 size-4 text-primary" /> Test Photo Match
+                      <ScanFace className="mr-1.5 size-3.5 text-primary" /> Test Photo
                     </>
                   )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="w-full"
+                  disabled={!modelsReady || isTesting}
+                  onClick={() => void handleTestCameraSnap()}
+                >
+                  <Camera className="mr-1.5 size-3.5 text-primary" /> Test Camera
                 </Button>
               </div>
 
@@ -563,7 +660,7 @@ function AdminFaceEnrollmentPage() {
                   <dl className="mt-2 space-y-1 font-mono text-[11px]">
                     {testResult.distance !== undefined && (
                       <div className="flex justify-between">
-                        <span>Euclidean Distance:</span>
+                        <span>Cosine Distance:</span>
                         <span className="font-bold">{testResult.distance.toFixed(4)}</span>
                       </div>
                     )}
@@ -692,14 +789,26 @@ function AdminFaceEnrollmentPage() {
                   <h4 className="text-xs font-semibold text-muted-foreground uppercase">
                     Stored Reference Gallery ({selectedStaff?.referenceSamples.length || 0} samples)
                   </h4>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => void loadStaff()}
-                  >
-                    <RefreshCw className="mr-1 size-3" /> Refresh
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {selectedStaff && (selectedStaff.embeddingCount > 0 || (selectedStaff.referenceSamples && selectedStaff.referenceSamples.length > 0)) && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => void handleClearAllEmbeddings()}
+                      >
+                        <Trash2 className="mr-1 size-3" /> Clear All Templates
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => void loadStaff()}
+                    >
+                      <RefreshCw className="mr-1 size-3" /> Refresh
+                    </Button>
+                  </div>
                 </div>
 
                 {!selectedStaff?.referenceSamples || selectedStaff.referenceSamples.length === 0 ? (

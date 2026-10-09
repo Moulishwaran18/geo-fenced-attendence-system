@@ -722,10 +722,20 @@ export function FaceScanDialog({
 
           {/* Unrecognized / Unknown State Banner */}
           {phase === "unrecognized" && (
-            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2 text-center backdrop-blur-sm">
+            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2 text-center backdrop-blur-sm space-y-1">
               <p className="flex items-center justify-center gap-1 text-xs font-bold">
                 <XCircle className="size-4" /> {errorMessage || "Unknown Face. Face is not registered."}
               </p>
+              <div className="pt-0.5">
+                <a
+                  href="/admin/face-enrollment"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded bg-white/20 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-white/30 underline"
+                >
+                  Enroll Your Face in Database →
+                </a>
+              </div>
             </div>
           )}
 

@@ -325,6 +325,22 @@ export async function deleteStaffEmbedding(
 }
 
 /**
+ * Clear all reference embeddings for a staff member.
+ */
+export async function clearStaffEmbeddings(staffIdOrCode: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `/api/admin/staff/${encodeURIComponent(staffIdOrCode)}/clear-templates`,
+      { method: "DELETE" },
+    );
+    return res.ok;
+  } catch (err) {
+    console.error("Clear staff embeddings error:", err);
+    return false;
+  }
+}
+
+/**
  * Verify a live 512-dimensional ArcFace embedding against active backend database.
  */
 export async function verifyLiveFace(

@@ -257,7 +257,7 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // 5. Delete embedding: /api/admin/staff/:id/embedding/:embeddingId OR /embeddings/:id
+    // 5. Delete single embedding: /api/admin/staff/:id/embedding/:embeddingId OR /embeddings/:id
     const deleteMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:embedding|embeddings)\/([^/]+)\/?$/);
     if (deleteMatch && method === "DELETE") {
       const embeddingId = decodeURIComponent(deleteMatch[2]!);
@@ -266,6 +266,23 @@ export default async function handler(req: any, res?: any) {
         return sendJsonResponse(res, 500, { success: false, error: delError.message });
       }
       return sendJsonResponse(res, 200, { success: true, message: "Embedding deleted successfully" });
+    }
+
+    // 5b. Clear all embeddings for staff: DELETE /api/admin/staff/:id/clear-templates or /clear-all
+    const clearMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:clear|clear-templates|clear-all)\/?$/);
+    if (clearMatch && method === "DELETE") {
+      const idOrCode = decodeURIComponent(clearMatch[1]!);
+      let staffId = idOrCode;
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
+      if (!isUuid) {
+        const { data: s } = await supabase.from("staff").select("id").eq("staff_code", idOrCode.toUpperCase()).single();
+        if (s?.id) staffId = s.id;
+      }
+      const { error: clearError } = await supabase.from("face_embeddings").delete().eq("staff_id", staffId);
+      if (clearError) {
+        return sendJsonResponse(res, 500, { success: false, error: clearError.message });
+      }
+      return sendJsonResponse(res, 200, { success: true, message: "All face templates cleared successfully" });
     }
 
     // 6. Toggle status: /api/admin/staff/:id/status
