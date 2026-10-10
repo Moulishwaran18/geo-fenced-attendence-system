@@ -8,7 +8,7 @@
  * Verifies PBKDF2 salted hash on server. Plaintext password is NEVER stored.
  */
 
-import { authenticateAdmin } from "../../src/server/admin-auth.ts";
+import { authenticateAdmin } from "./auth-helper.ts";
 
 function sendJsonResponse(
   res: any,

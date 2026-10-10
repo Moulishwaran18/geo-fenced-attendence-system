@@ -9,7 +9,7 @@ import {
   authenticateAdmin,
   verifyAdminSessionToken,
   extractAdminToken,
-} from "../../../src/server/admin-auth.ts";
+} from "../auth-helper.ts";
 
 function getSupabaseClient() {
   const url =

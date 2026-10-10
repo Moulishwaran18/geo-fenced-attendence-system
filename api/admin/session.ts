@@ -7,7 +7,7 @@
 import {
   verifyAdminSessionToken,
   extractAdminToken,
-} from "../../src/server/admin-auth.ts";
+} from "./auth-helper.ts";
 
 function sendJsonResponse(res: any, status: number, payload: any) {
   if (res && typeof res.setHeader === "function") {
