@@ -35,4 +35,6 @@ android/local.properties
 android/*.zip
 *.apk
 public/debug-frames/
+backups/
+*.backup*.json
 
