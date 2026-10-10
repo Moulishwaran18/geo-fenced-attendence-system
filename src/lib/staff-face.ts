@@ -291,14 +291,14 @@ export async function approveFaceChangeRequest(
   adminNotes?: string,
 ): Promise<{ success: boolean; message?: string; oneTimeToken?: string; error?: string }> {
   try {
-    let res = await fetch(`/api/admin/face-requests/${encodeURIComponent(id)}/approve`, {
+    let res = await fetch("/api/admin/face-requests/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAdminAuthHeaders() },
       credentials: "include",
       body: JSON.stringify({ id, requestId: id, adminNotes }),
     });
     if (res.status === 404) {
-      res = await fetch("/api/admin/face-requests/approve", {
+      res = await fetch(`/api/admin/face-requests/${encodeURIComponent(id)}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAdminAuthHeaders() },
         credentials: "include",
@@ -327,14 +327,14 @@ export async function rejectFaceChangeRequest(
   adminNotes?: string,
 ): Promise<{ success: boolean; message?: string; error?: string }> {
   try {
-    let res = await fetch(`/api/admin/face-requests/${encodeURIComponent(id)}/reject`, {
+    let res = await fetch("/api/admin/face-requests/reject", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAdminAuthHeaders() },
       credentials: "include",
       body: JSON.stringify({ id, requestId: id, adminNotes }),
     });
     if (res.status === 404) {
-      res = await fetch("/api/admin/face-requests/reject", {
+      res = await fetch(`/api/admin/face-requests/${encodeURIComponent(id)}/reject`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAdminAuthHeaders() },
         credentials: "include",
