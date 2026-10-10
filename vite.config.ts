@@ -197,6 +197,9 @@ function apiMiddlewarePlugin(): Plugin {
 }
 
 export default defineConfig({
+  nitro: {
+    preset: "vercel",
+  },
   vite: {
     server: {
       host: "0.0.0.0",

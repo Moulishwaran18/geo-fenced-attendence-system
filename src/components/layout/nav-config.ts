@@ -25,9 +25,9 @@ export interface NavItem {
 export const staffNav: NavItem[] = [
   { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
   { label: "Mark Attendance", to: "/mark-attendance", icon: MapPin },
-  { label: "Face Enrollment", to: "/face-enrollment", icon: ScanFace },
   { label: "Attendance History", to: "/history", icon: CalendarCheck },
   { label: "Profile", to: "/profile", icon: User },
+  { label: "Face Enrollment", to: "/face-enrollment", icon: ScanFace },
   { label: "Settings", to: "/settings", icon: Settings },
 ];
 

@@ -193,6 +193,13 @@ export default async function handler(req: any, res?: any) {
     pathname = new URL(pathname, "https://localhost").pathname;
   } catch {}
 
+  if (req.query?.match) {
+    const matchParts = Array.isArray(req.query.match) ? req.query.match : [req.query.match];
+    if (matchParts.length > 0 && !pathname.includes(matchParts[0]!)) {
+      pathname = "/api/staff/face/" + matchParts.join("/");
+    }
+  }
+
   // Parse request body for POST/PUT/PATCH
   let body: any = {};
   if (method !== "GET" && method !== "HEAD") {
