@@ -40,6 +40,7 @@ async function runMigration() {
       console.log("  - Table 'staff' verified/created.");
       console.log("  - Table 'face_embeddings' verified/created.");
       console.log("  - Table 'face_detection_logs' verified/created.");
+      console.log("  - Table 'admin_users' verified/created.");
       console.log("  - Foreign keys and audit indexes applied.");
     } catch (err) {
       console.error("PostgreSQL migration error:", err);
@@ -56,12 +57,21 @@ async function runMigration() {
     }
     const dbFile = path.join(dataDir, "staff-db.json");
     if (!fs.existsSync(dbFile)) {
-      fs.writeFileSync(dbFile, JSON.stringify({ staff: [], face_embeddings: [], face_detection_logs: [] }, null, 2), "utf-8");
+      fs.writeFileSync(dbFile, JSON.stringify({ staff: [], face_embeddings: [], face_detection_logs: [], admin_users: [] }, null, 2), "utf-8");
       console.log("✓ Initialized data/staff-db.json");
     } else {
       console.log("✓ Local store data/staff-db.json already present.");
     }
     console.log("✓ Schema is ready for local and production deployment.");
+  }
+
+  // Provision administrator account moulish idempotently
+  try {
+    const { ensureAdminAccountProvisioned } = await import("../src/server/admin-auth.ts");
+    const admin = await ensureAdminAccountProvisioned();
+    console.log(`✓ Administrator '${admin.username}' provisioned with secure salted hash.`);
+  } catch (err) {
+    console.warn("Notice during admin provisioning in migration:", err?.message || err);
   }
 }
 

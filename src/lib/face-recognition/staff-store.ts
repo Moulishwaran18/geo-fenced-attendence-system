@@ -8,6 +8,8 @@
  * - Backend vector search with zero raw biometric exposure to client.
  */
 
+import { getAdminAuthHeaders } from "../admin-auth.ts";
+
 export interface ReferenceSample {
   id: string;
   photoUrl: string;
@@ -131,7 +133,10 @@ export interface DeterministicAuditData {
  */
 export async function fetchAllStaff(): Promise<StaffProfile[]> {
   try {
-    const res = await fetch("/api/admin/staff");
+    const res = await fetch("/api/admin/staff", {
+      headers: getAdminAuthHeaders(),
+      credentials: "include",
+    });
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
     const json = (await res.json()) as {
       success: boolean;
@@ -214,7 +219,8 @@ export async function createNewStaff(data: {
   try {
     const res = await fetch("/api/admin/staff", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...getAdminAuthHeaders() },
+      credentials: "include",
       body: JSON.stringify(data),
     });
     return res.ok;
@@ -231,7 +237,8 @@ export async function toggleStaffStatus(staffIdOrCode: string, active: boolean):
   try {
     const res = await fetch(`/api/admin/staff/${encodeURIComponent(staffIdOrCode)}/status`, {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...getAdminAuthHeaders() },
+      credentials: "include",
       body: JSON.stringify({ active }),
     });
     return res.ok;
@@ -268,7 +275,8 @@ export async function enrollStaffFace(
 
     const res = await fetch(`/api/admin/staff/${encodeURIComponent(staffId)}/enroll`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...getAdminAuthHeaders() },
+      credentials: "include",
       body: JSON.stringify({
         embedding: embArray,
         descriptor: embArray,
@@ -315,7 +323,11 @@ export async function deleteStaffEmbedding(
   try {
     const res = await fetch(
       `/api/admin/staff/${encodeURIComponent(staffId)}/embedding/${encodeURIComponent(embeddingId)}`,
-      { method: "DELETE" },
+      {
+        method: "DELETE",
+        headers: getAdminAuthHeaders(),
+        credentials: "include",
+      },
     );
     return res.ok;
   } catch (err) {
@@ -331,7 +343,11 @@ export async function clearStaffEmbeddings(staffIdOrCode: string): Promise<boole
   try {
     const res = await fetch(
       `/api/admin/staff/${encodeURIComponent(staffIdOrCode)}/clear-templates`,
-      { method: "DELETE" },
+      {
+        method: "DELETE",
+        headers: getAdminAuthHeaders(),
+        credentials: "include",
+      },
     );
     return res.ok;
   } catch (err) {

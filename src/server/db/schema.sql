@@ -60,3 +60,20 @@ CREATE INDEX IF NOT EXISTS idx_face_detection_logs_user_id ON face_detection_log
 CREATE INDEX IF NOT EXISTS idx_face_detection_logs_detected_at ON face_detection_logs(detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_face_detection_logs_email ON face_detection_logs(email);
 
+-- 7. Administrator Accounts Table
+CREATE TABLE IF NOT EXISTS admin_users (
+  id VARCHAR(64) PRIMARY KEY,
+  username VARCHAR(64) UNIQUE NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  role VARCHAR(32) DEFAULT 'admin' NOT NULL,
+  password_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  active BOOLEAN DEFAULT true NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username);
+
+

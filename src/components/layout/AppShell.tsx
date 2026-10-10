@@ -1,6 +1,17 @@
 import { useState, type ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
-import { Bell, GraduationCap, LogOut, Menu, Search, User, X } from "lucide-react";
+import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
+import {
+  Bell,
+  GraduationCap,
+  Loader2,
+  LogOut,
+  Menu,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  User,
+  X,
+} from "lucide-react";
 import type { NavItem } from "./nav-config";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -15,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { currentStaff } from "@/mocks/data";
 import { useProfile } from "@/lib/profile-store";
+import { useAdminAuth, logoutAdmin } from "@/lib/admin-auth";
 
 interface AppShellProps {
   nav: NavItem[];
@@ -26,14 +38,72 @@ interface AppShellProps {
 export function AppShell({ nav, children, role, showSearch = role === "admin" }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { profile } = useProfile();
+  const { admin: authAdmin, authenticated, loading: adminLoading } = useAdminAuth();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
 
   const isActive = (to: string) => (to === "/admin" ? pathname === "/admin" : pathname.startsWith(to));
 
   const user =
     role === "admin"
-      ? { name: "S. Gopinath", meta: "Administrator · ADM-1002" }
+      ? {
+          name: authAdmin?.name || "Moulishwaran S",
+          meta: `Administrator · ${authAdmin?.username || "moulish"}`,
+        }
       : { name: profile.name, meta: `${currentStaff.designation} · ${currentStaff.staffId}` };
+
+  // If viewing admin console while unauthorized, render restricted access barrier
+  if (role === "admin" && !authenticated && !adminLoading) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 py-12 text-center">
+        <div className="mx-auto max-w-md rounded-2xl border border-border bg-card p-8 shadow-[var(--shadow-card)]">
+          <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-destructive/10 text-destructive">
+            <ShieldAlert className="size-8" />
+          </div>
+          <h1 className="mt-5 text-xl font-semibold tracking-tight text-foreground">
+            Administrator Access Required
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+            This administration console is restricted. You must authenticate with authorized
+            administrator credentials (<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">moulish</code>) on the server to access this view.
+          </p>
+          <div className="mt-6 flex flex-col gap-2.5">
+            <Button
+              size="lg"
+              className="w-full"
+              onClick={() => {
+                navigate({
+                  to: "/",
+                  search: { tab: "admin", redirect: pathname, unauthorized: "true" } as any,
+                });
+              }}
+            >
+              <ShieldCheck className="mr-2 size-4" /> Sign In as Administrator
+            </Button>
+            <Button
+              variant="outline"
+              size="lg"
+              className="w-full"
+              onClick={() => navigate({ to: "/dashboard" })}
+            >
+              Return to Staff Portal
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (role === "admin" && adminLoading && !authAdmin) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <Loader2 className="size-5 animate-spin text-primary" />
+          <span className="text-sm font-medium">Verifying administrator credentials…</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -102,15 +172,29 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link to={role === "admin" ? "/dashboard" : "/admin"}>
+                  <Link
+                    to={
+                      role === "admin"
+                        ? "/dashboard"
+                        : authenticated
+                          ? "/admin"
+                          : ("/?tab=admin" as "/")
+                    }
+                  >
                     Switch to {role === "admin" ? "staff" : "admin"} view
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link to="/">
-                    <LogOut className="mr-2 size-4" /> Logout
-                  </Link>
+                <DropdownMenuItem
+                  onClick={async () => {
+                    if (role === "admin") {
+                      await logoutAdmin();
+                    }
+                    navigate({ to: "/" });
+                  }}
+                  className="cursor-pointer text-destructive focus:text-destructive"
+                >
+                  <LogOut className="mr-2 size-4" /> Logout
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

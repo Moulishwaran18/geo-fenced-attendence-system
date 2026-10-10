@@ -13665,5 +13665,19 @@
       "deactivated_at": "2026-08-24T17:24:00.503Z",
       "reason": "Replaced with optimal pose reference gallery (straight, slight right, slight left, slight up, slight down)"
     }
+  ],
+  "admin_users": [
+    {
+      "id": "adm-moulish-001",
+      "username": "moulish",
+      "name": "Moulishwaran S",
+      "email": "moulish@sonatech.ac.in",
+      "role": "admin",
+      "password_hash": "c45a92fc6997d8557b6f4cda99cdf8aef412d742dba52506aeefb96e2850fd8b1054309744e4ffe8644bb2e744c944b09be1d0a9e894e007638554a069d61d50",
+      "salt": "9793e19a6e61abd07d646d6a7e5b5a29",
+      "active": true,
+      "created_at": "2026-10-10T05:42:11.916Z",
+      "updated_at": "2026-10-10T05:42:11.916Z"
+    }
   ]
 }

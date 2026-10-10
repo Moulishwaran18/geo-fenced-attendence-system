@@ -18,6 +18,8 @@
     "test:kalman": "node scripts/test-kalman-filter.js",
     "test:gps": "node scripts/test-gps-accuracy-suite.js",
     "test:android-location": "node scripts/test-native-android-location.js",
+    "db:provision-admin": "node --env-file=.env scripts/provision-admin.js",
+    "test:admin": "node --env-file=.env scripts/test-admin-auth.js",
     "test:supabase": "node --env-file=.env scripts/test-supabase-connection.js"
   },
   "dependencies": {

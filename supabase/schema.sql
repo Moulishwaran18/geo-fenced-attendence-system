@@ -110,9 +110,24 @@ CREATE TABLE IF NOT EXISTS public.geofence_zones (
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
+-- 9. ADMINISTRATOR ACCOUNTS TABLE
+CREATE TABLE IF NOT EXISTS public.admin_users (
+    id VARCHAR(64) PRIMARY KEY,
+    username VARCHAR(64) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    role VARCHAR(32) DEFAULT 'admin' NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    active BOOLEAN DEFAULT true NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
 -- ====================================================================
 -- INDEXES FOR PERFORMANCE
 -- ====================================================================
+CREATE INDEX IF NOT EXISTS idx_admin_users_username ON public.admin_users(username);
 CREATE INDEX IF NOT EXISTS idx_staff_staff_code ON public.staff(staff_code);
 CREATE INDEX IF NOT EXISTS idx_staff_email ON public.staff(email);
 CREATE INDEX IF NOT EXISTS idx_staff_active ON public.staff(active);
@@ -134,6 +149,11 @@ ALTER TABLE public.attendance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.security_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.geofence_zones ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_users ENABLE ROW LEVEL SECURITY;
+
+-- Admin users security policies (strict: never expose password hashes to unauthenticated public anon queries)
+DROP POLICY IF EXISTS "Restrict public read admin_users" ON public.admin_users;
+CREATE POLICY "Restrict public read admin_users" ON public.admin_users FOR SELECT USING (false);
 
 -- Staff policies
 DROP POLICY IF EXISTS "Allow public read staff" ON public.staff;

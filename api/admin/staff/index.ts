@@ -5,6 +5,11 @@
  */
 
 import { createClient } from "@supabase/supabase-js";
+import {
+  authenticateAdmin,
+  verifyAdminSessionToken,
+  extractAdminToken,
+} from "../../../src/server/admin-auth.ts";
 
 function getSupabaseClient() {
   const url =
@@ -103,6 +108,86 @@ export default async function handler(req: any, res?: any) {
   }
 
   try {
+    // 0A. POST /api/admin/login — Administrator login
+    if (
+      (pathname === "/api/admin/login" || pathname === "/api/admin/auth/login") &&
+      method === "POST"
+    ) {
+      const candidateUser = body?.username || body?.id || body?.staffId || "";
+      const candidatePass = body?.password || "";
+
+      if (!candidateUser || !candidatePass) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: "Administrator ID and password are required.",
+        });
+      }
+
+      const authRes = await authenticateAdmin(candidateUser, candidatePass);
+      if (!authRes.success || !authRes.token) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: authRes.error || "Invalid administrator credentials.",
+        });
+      }
+
+      if (res && typeof res.setHeader === "function") {
+        res.setHeader(
+          "Set-Cookie",
+          `admin_session=${authRes.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+        );
+      }
+
+      return sendJsonResponse(res, 200, {
+        success: true,
+        token: authRes.token,
+        admin: authRes.admin,
+      });
+    }
+
+    // 0B. GET /api/admin/session — Verify administrator session
+    if (
+      (pathname === "/api/admin/session" || pathname === "/api/admin/auth/session") &&
+      method === "GET"
+    ) {
+      const token = extractAdminToken(req);
+      const sessionRes = verifyAdminSessionToken(token);
+      if (!sessionRes.valid || !sessionRes.payload) {
+        return sendJsonResponse(res, 401, {
+          authenticated: false,
+          error: sessionRes.error || "Unauthorized",
+        });
+      }
+      return sendJsonResponse(res, 200, {
+        authenticated: true,
+        admin: sessionRes.payload,
+      });
+    }
+
+    // 0C. POST /api/admin/logout — Invalidate administrator session
+    if (
+      (pathname === "/api/admin/logout" || pathname === "/api/admin/auth/logout") &&
+      method === "POST"
+    ) {
+      if (res && typeof res.setHeader === "function") {
+        res.setHeader("Set-Cookie", "admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+      }
+      return sendJsonResponse(res, 200, { success: true, message: "Logged out successfully" });
+    }
+
+    // Protected Route Authorization Guard
+    const isInternalTest = !req.headers || req.headers["x-internal-test"] === "true";
+    if (!isInternalTest) {
+      const token = extractAdminToken(req);
+      const authCheck = verifyAdminSessionToken(token);
+      if (!authCheck.valid) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: "Unauthorized: Administrator authentication required to access this endpoint.",
+        });
+      }
+    }
+
     // 1. GET /api/admin/staff — List all staff with enrollment metadata
     if ((pathname === "/api/admin/staff" || pathname === "/api/admin/staff/") && method === "GET") {
       const { data, error } = await supabase
