@@ -13,7 +13,23 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { getPgPool, getSupabaseClient } from "./db/client.ts";
+import { createClient } from "@supabase/supabase-js";
+
+function getSupabase() {
+  const url =
+    (typeof process !== "undefined" &&
+      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
+    "https://qvjcxoznvhoagclbyhad.supabase.co";
+  const key =
+    (typeof process !== "undefined" &&
+      (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
+        process.env["SUPABASE_ANON_KEY"] ||
+        process.env["VITE_SUPABASE_ANON_KEY"] ||
+        process.env["VITE_SUPABASE_PUBLISHABLE_KEY"])) ||
+    "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+  if (!url || !key) return null;
+  return createClient(url, key);
+}
 
 export interface AdminUserRecord {
   id: string;
@@ -48,8 +64,25 @@ const ADMIN_TOKEN_SECRET =
 
 const LOCAL_STORE_PATH = path.resolve(process.cwd(), "data", "staff-db.json");
 
+// Default provisioned admin record for moulish (PBKDF2 salted hash, zero plaintext)
+export const DEFAULT_ADMIN_RECORD: AdminUserRecord = {
+  id: "adm-moulish-001",
+  username: "moulish",
+  name: "Moulishwaran S",
+  email: "moulish@sonatech.ac.in",
+  role: "admin",
+  password_hash:
+    "c45a92fc6997d8557b6f4cda99cdf8aef412d742dba52506aeefb96e2850fd8b1054309744e4ffe8644bb2e744c944b09be1d0a9e894e007638554a069d61d50",
+  salt: "9793e19a6e61abd07d646d6a7e5b5a29",
+  active: true,
+  created_at: "2026-10-10T05:42:11.916Z",
+  updated_at: "2026-10-10T05:42:11.916Z",
+};
+
 // In-memory cache of provisioned admin records for high-speed server lookups
-const inMemoryAdminStore = new Map<string, AdminUserRecord>();
+const inMemoryAdminStore = new Map<string, AdminUserRecord>([
+  ["moulish", DEFAULT_ADMIN_RECORD],
+]);
 
 // -----------------------------------------------------------------------------
 // Cryptographic Password Hashing & Timing-Safe Verification
@@ -191,9 +224,10 @@ export async function ensureAdminAccountProvisioned(): Promise<AdminUserRecord> 
     console.warn("[admin-auth] Local store write failed (might be read-only environment):", err);
   }
 
-  // 2. Persist to PostgreSQL if connected
+  // 2. Persist to PostgreSQL if connected (dynamic import prevents bundling errors on Vercel)
   try {
-    const pool = getPgPool();
+    const dbModule = await import("./db/client.ts").catch(() => null);
+    const pool = dbModule && typeof dbModule.getPgPool === "function" ? dbModule.getPgPool() : null;
     if (pool) {
       // Ensure admin_users table exists
       await pool.query(`
@@ -242,7 +276,7 @@ export async function ensureAdminAccountProvisioned(): Promise<AdminUserRecord> 
 
   // 3. Persist to Supabase if admin_users table exists
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getSupabase();
     if (supabase) {
       await supabase
         .from("admin_users")
