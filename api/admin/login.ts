@@ -159,7 +159,9 @@ export default async function handler(req: any, res?: any) {
     }
   }
 
-  const username = String(body?.username || body?.id || body?.staffId || "").trim();
+  const username = String(
+    body?.username || body?.id || body?.staffId || body?.adminId || "",
+  ).trim();
   const password = String(body?.password || "");
 
   if (!username || !password) {

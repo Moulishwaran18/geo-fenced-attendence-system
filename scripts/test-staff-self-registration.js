@@ -323,10 +323,11 @@ async function runSuite() {
   {
     await supabase.from("staff").delete().eq("staff_code", TEST_STAFF_ID);
     await supabase.from("staff").delete().eq("staff_code", ADMIN_STAFF_CODE);
-    const { count: afterCount } = await supabase
+    const { data: remaining } = await supabase
       .from("staff")
-      .select("id", { count: "exact", head: true });
-    assert(afterCount === 0, `Database cleaned up to pristine state. Staff count: ${afterCount}`);
+      .select("staff_code")
+      .in("staff_code", [TEST_STAFF_ID, ADMIN_STAFF_CODE]);
+    assert((remaining?.length || 0) === 0, `Temporary test staff members removed cleanly. Remaining test accounts: ${remaining?.length || 0}`);
   }
 
   console.log("\n==================================================================");

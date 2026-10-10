@@ -11,6 +11,7 @@ import {
   Shield,
   Smartphone,
   User,
+  UserCheck,
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -24,6 +25,7 @@ export interface NavItem {
 export const staffNav: NavItem[] = [
   { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
   { label: "Mark Attendance", to: "/mark-attendance", icon: MapPin },
+  { label: "Face Enrollment", to: "/face-enrollment", icon: ScanFace },
   { label: "Attendance History", to: "/history", icon: CalendarCheck },
   { label: "Profile", to: "/profile", icon: User },
   { label: "Settings", to: "/settings", icon: Settings },
@@ -35,6 +37,7 @@ export const adminNav: NavItem[] = [
   { label: "Attendance", to: "/admin/attendance", icon: ClipboardList },
   { label: "Campus Map", to: "/admin/campus-map", icon: Map },
   { label: "Face Enrollment", to: "/admin/face-enrollment", icon: ScanFace },
+  { label: "Face Requests", to: "/admin/face-requests", icon: UserCheck },
   { label: "Devices", to: "/admin/devices", icon: Smartphone },
   { label: "Security", to: "/admin/security", icon: Shield },
   { label: "Audit Logs", to: "/admin/audit-logs", icon: Activity },

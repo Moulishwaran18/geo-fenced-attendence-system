@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as FaceEnrollmentRouteImport } from './routes/face-enrollment'
 import { Route as GroundTruthRouteImport } from './routes/ground-truth'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as MarkAttendanceRouteImport } from './routes/mark-attendance'
@@ -21,6 +22,7 @@ import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
 import { Route as AdminAuditLogsRouteImport } from './routes/admin.audit-logs'
 import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
 import { Route as AdminFaceEnrollmentRouteImport } from './routes/admin.face-enrollment'
+import { Route as AdminFaceRequestsRouteImport } from './routes/admin.face-requests'
 import { Route as AdminStaffRouteImport } from './routes/admin.staff'
 
 const IndexRoute = IndexRouteImport.update({
@@ -31,6 +33,11 @@ const IndexRoute = IndexRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FaceEnrollmentRoute = FaceEnrollmentRouteImport.update({
+  id: '/face-enrollment',
+  path: '/face-enrollment',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GroundTruthRoute = GroundTruthRouteImport.update({
@@ -83,6 +90,11 @@ const AdminFaceEnrollmentRoute = AdminFaceEnrollmentRouteImport.update({
   path: '/admin/face-enrollment',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminFaceRequestsRoute = AdminFaceRequestsRouteImport.update({
+  id: '/admin/face-requests',
+  path: '/admin/face-requests',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminStaffRoute = AdminStaffRouteImport.update({
   id: '/admin/staff',
   path: '/admin/staff',
@@ -92,6 +104,7 @@ const AdminStaffRoute = AdminStaffRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
@@ -101,12 +114,14 @@ export interface FileRoutesByFullPath {
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
+  '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
   '/admin/': typeof AdminIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
@@ -116,6 +131,7 @@ export interface FileRoutesByTo {
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
+  '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
   '/admin': typeof AdminIndexRoute
 }
@@ -123,6 +139,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
@@ -132,6 +149,7 @@ export interface FileRoutesById {
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
+  '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
   '/admin/': typeof AdminIndexRoute
 }
@@ -140,6 +158,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/dashboard'
+    | '/face-enrollment'
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
@@ -149,12 +168,14 @@ export interface FileRouteTypes {
     | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/face-enrollment'
+    | '/admin/face-requests'
     | '/admin/staff'
     | '/admin/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/dashboard'
+    | '/face-enrollment'
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
@@ -164,12 +185,14 @@ export interface FileRouteTypes {
     | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/face-enrollment'
+    | '/admin/face-requests'
     | '/admin/staff'
     | '/admin'
   id:
     | '__root__'
     | '/'
     | '/dashboard'
+    | '/face-enrollment'
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
@@ -179,6 +202,7 @@ export interface FileRouteTypes {
     | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/face-enrollment'
+    | '/admin/face-requests'
     | '/admin/staff'
     | '/admin/'
   fileRoutesById: FileRoutesById
@@ -186,6 +210,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
+  FaceEnrollmentRoute: typeof FaceEnrollmentRoute
   GroundTruthRoute: typeof GroundTruthRoute
   HistoryRoute: typeof HistoryRoute
   MarkAttendanceRoute: typeof MarkAttendanceRoute
@@ -195,6 +220,7 @@ export interface RootRouteChildren {
   AdminAuditLogsRoute: typeof AdminAuditLogsRoute
   AdminCampusMapRoute: typeof AdminCampusMapRoute
   AdminFaceEnrollmentRoute: typeof AdminFaceEnrollmentRoute
+  AdminFaceRequestsRoute: typeof AdminFaceRequestsRoute
   AdminStaffRoute: typeof AdminStaffRoute
   AdminIndexRoute: typeof AdminIndexRoute
 }
@@ -213,6 +239,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/face-enrollment': {
+      id: '/face-enrollment'
+      path: '/face-enrollment'
+      fullPath: '/face-enrollment'
+      preLoaderRoute: typeof FaceEnrollmentRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ground-truth': {
@@ -285,6 +318,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminFaceEnrollmentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/face-requests': {
+      id: '/admin/face-requests'
+      path: '/admin/face-requests'
+      fullPath: '/admin/face-requests'
+      preLoaderRoute: typeof AdminFaceRequestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/staff': {
       id: '/admin/staff'
       path: '/admin/staff'
@@ -298,6 +338,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
+  FaceEnrollmentRoute: FaceEnrollmentRoute,
   GroundTruthRoute: GroundTruthRoute,
   HistoryRoute: HistoryRoute,
   MarkAttendanceRoute: MarkAttendanceRoute,
@@ -307,6 +348,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminAuditLogsRoute: AdminAuditLogsRoute,
   AdminCampusMapRoute: AdminCampusMapRoute,
   AdminFaceEnrollmentRoute: AdminFaceEnrollmentRoute,
+  AdminFaceRequestsRoute: AdminFaceRequestsRoute,
   AdminStaffRoute: AdminStaffRoute,
   AdminIndexRoute: AdminIndexRoute,
 }

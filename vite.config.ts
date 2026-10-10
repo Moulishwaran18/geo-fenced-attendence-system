@@ -19,6 +19,8 @@ import attendanceHandler from "./api/attendance.ts";
 import networkInfoHandler from "./api/network-info.ts";
 import staffRegisterHandler from "./api/staff/register.ts";
 import staffLoginHandler from "./api/staff/login.ts";
+import staffFaceHandler from "./api/staff/face.ts";
+import adminFaceRequestsHandler from "./api/admin/face-requests.ts";
 
 function apiMiddlewarePlugin(): Plugin {
   return {
@@ -170,6 +172,16 @@ function apiMiddlewarePlugin(): Plugin {
 
         if (req.url && req.url.startsWith("/api/staff/login")) {
           await staffLoginHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/staff/face")) {
+          await staffFaceHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/admin/face-requests")) {
+          await adminFaceRequestsHandler(req, res);
           return;
         }
 

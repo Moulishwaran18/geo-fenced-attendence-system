@@ -3,6 +3,14 @@
     {
       "source": "/api/admin/staff/:match*",
       "destination": "/api/admin/staff"
+    },
+    {
+      "source": "/api/admin/face-requests/:match*",
+      "destination": "/api/admin/face-requests"
+    },
+    {
+      "source": "/api/staff/face/:match*",
+      "destination": "/api/staff/face"
     }
   ]
 }

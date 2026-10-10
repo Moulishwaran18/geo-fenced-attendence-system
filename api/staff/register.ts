@@ -140,6 +140,8 @@ export default async function handler(req: any, res?: any) {
     body?.registrationCode ||
     body?.registration_code ||
     body?.sharedPassword ||
+    body?.sharedCreationPassword ||
+    body?.shared_password ||
     ""
   ).toString().trim();
   const emailCandidate = (body?.email || "").toString().trim();

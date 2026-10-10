@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   AlertCircle,
@@ -13,6 +13,8 @@ import {
   TrendingUp,
   Wifi,
   XCircle,
+  Lock,
+  ScanFace,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
@@ -22,11 +24,13 @@ import { AttendanceTable } from "@/components/common/AttendanceTable";
 import { AttendanceDetailDialog } from "@/components/common/AttendanceDetailDialog";
 import { AlertBanner } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { useProfile } from "@/lib/profile-store";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import { useAttendance, type AttendanceRecord } from "@/hooks/use-attendance";
 import { useGeofence } from "@/hooks/use-geofence";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
+import { getStaffFaceStatus, type StaffFaceStatusResponse } from "@/lib/staff-face";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({
@@ -64,10 +68,14 @@ function DashboardPage() {
   const geofence = useGeofence(true);
   const { status: wifiStatus, isChecking: isWifiChecking } = useWifiStatus();
 
-  // State for record details modal
   const [selectedRecord, setSelectedRecord] = useState<AttendanceRecord | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [isRefreshingGps, setIsRefreshingGps] = useState(false);
+  const [faceStatus, setFaceStatus] = useState<StaffFaceStatusResponse | null>(null);
+
+  useEffect(() => {
+    void getStaffFaceStatus().then(setFaceStatus).catch(() => {});
+  }, []);
 
   const hour = now
     ? Number(
@@ -261,6 +269,80 @@ function DashboardPage() {
           tone={locationTone}
           onClick={handleRefreshLocation}
         />
+      </div>
+
+      {/* Face Authentication & Biometric Status Banner / Card */}
+      <div className="mt-6">
+        <div className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm backdrop-blur-sm transition-all sm:p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span
+                className={`grid size-12 shrink-0 place-items-center rounded-2xl ${
+                  faceStatus?.enrollmentStatus === "approved"
+                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                    : faceStatus?.enrollmentStatus === "pending_approval"
+                    ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                    : faceStatus?.enrollmentStatus === "rejected"
+                    ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
+                    : "bg-primary/15 text-primary"
+                }`}
+              >
+                <ScanFace className="size-6" />
+              </span>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base font-semibold tracking-tight text-foreground sm:text-lg">
+                    Face Authentication & Biometrics
+                  </h3>
+                  {faceStatus?.isLocked ? (
+                    <Badge variant="outline" className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                      <Lock className="size-3" />
+                      Approved & Locked
+                    </Badge>
+                  ) : faceStatus?.canSaveReplacement ? (
+                    <Badge variant="outline" className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                      Token Active (Ready to Update)
+                    </Badge>
+                  ) : faceStatus?.enrollmentStatus === "pending_approval" ? (
+                    <Badge variant="outline" className="gap-1 border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                      Pending Approval
+                    </Badge>
+                  ) : faceStatus?.enrollmentStatus === "rejected" ? (
+                    <Badge variant="outline" className="gap-1 border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300">
+                      Change Rejected
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="gap-1 border-primary/40 bg-primary/10 text-primary">
+                      Not Registered
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
+                  {faceStatus?.isLocked
+                    ? `Your face registration is locked (${faceStatus.sampleCount ?? 0} sample${faceStatus.sampleCount === 1 ? "" : "s"} enrolled). Request administrator approval to change it.`
+                    : faceStatus?.canSaveReplacement
+                    ? "Administrator approval received! You may now capture or upload your updated face reference samples."
+                    : faceStatus?.enrollmentStatus === "pending_approval"
+                    ? `Change request submitted on ${faceStatus.activeRequest?.createdAt ? new Date(faceStatus.activeRequest.createdAt).toLocaleDateString() : "recently"}. Awaiting administrator review.`
+                    : "Register your face reference photos to enable live biometric face recognition for daily attendance marking."}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <Button asChild variant={faceStatus?.enrollmentStatus === "approved" ? "outline" : "default"} size="sm">
+                <Link to="/face-enrollment">
+                  <ScanFace className="mr-1.5 size-4" />
+                  {faceStatus?.enrollmentStatus === "approved"
+                    ? "Manage Biometrics"
+                    : faceStatus?.canSaveReplacement
+                    ? "Update Face Now"
+                    : "Register Your Face"}
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Main Grid: Attendance Ready Section + This Month Sidebar */}

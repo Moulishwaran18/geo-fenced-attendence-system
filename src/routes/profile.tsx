@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
-import { Pencil, ScanFace, Smartphone, MapPin, User } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Pencil, ScanFace, Smartphone, MapPin, User, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
@@ -20,6 +20,7 @@ import { currentStaff } from "@/mocks/data";
 import { useProfile, validateProfile } from "@/lib/profile-store";
 import { useActiveStaff } from "@/lib/staff-auth";
 import { useDevice } from "@/lib/use-device";
+import { getStaffFaceStatus, type StaffFaceStatusResponse } from "@/lib/staff-face";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({
@@ -43,6 +44,11 @@ function ProfilePage() {
   const device = useDevice();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(profile);
+  const [faceStatus, setFaceStatus] = useState<StaffFaceStatusResponse | null>(null);
+
+  useEffect(() => {
+    void getStaffFaceStatus().then(setFaceStatus).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (open) setDraft(profile);
@@ -134,13 +140,40 @@ function ProfilePage() {
             </div>
           </Section>
 
-          <Section title="Verification">
+          <Section title="Verification & Biometrics">
             <ul className="divide-y divide-border text-sm">
               <li className="flex items-center justify-between px-5 py-3.5">
-                <span className="flex items-center gap-2">
-                  <ScanFace className="size-4 text-muted-foreground" aria-hidden /> Face verification
-                </span>
-                <StatusBadge status="Enabled" />
+                <div className="flex items-center gap-2">
+                  <ScanFace className="size-4 text-muted-foreground" aria-hidden />
+                  <div>
+                    <p className="font-medium">Face Biometrics</p>
+                    <p className="text-xs text-muted-foreground">
+                      {faceStatus?.isLocked
+                        ? `Locked (${faceStatus.sampleCount ?? 0} sample${faceStatus.sampleCount === 1 ? "" : "s"} enrolled)`
+                        : faceStatus?.canSaveReplacement
+                        ? "Token Active (Ready to Update)"
+                        : faceStatus?.enrollmentStatus === "pending_approval"
+                        ? "Change Pending Approval"
+                        : "Not Enrolled"}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {faceStatus?.isLocked ? (
+                    <StatusBadge status="Locked" tone="success" />
+                  ) : faceStatus?.canSaveReplacement ? (
+                    <StatusBadge status="Approved" tone="success" />
+                  ) : faceStatus?.enrollmentStatus === "pending_approval" ? (
+                    <StatusBadge status="Pending" tone="warning" />
+                  ) : (
+                    <StatusBadge status="Not Enrolled" tone="neutral" />
+                  )}
+                  <Button asChild variant="ghost" size="sm" className="h-7 px-2">
+                    <Link to="/face-enrollment" title="Open Face Enrollment">
+                      <ExternalLink className="size-3.5" />
+                    </Link>
+                  </Button>
+                </div>
               </li>
               <li className="flex items-center justify-between px-5 py-3.5">
                 <span className="flex items-center gap-2">
