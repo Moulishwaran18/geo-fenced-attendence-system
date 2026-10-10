@@ -4,12 +4,134 @@
  * Handles staff management, enrollment, and status for CampusAttend via Supabase Cloud.
  */
 
+import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import {
-  authenticateAdmin,
-  verifyAdminSessionToken,
-  extractAdminToken,
-} from "../auth-helper.ts";
+
+const ADMIN_TOKEN_SECRET =
+  (typeof process !== "undefined" &&
+    (process.env["CAMPUS_ADMIN_SECRET"] ||
+      process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["ADMIN_SECRET_KEY"])) ||
+  "campusattend-admin-sec-key-moulish-2026-auth-token";
+
+const ADMIN_CREDENTIALS = {
+  id: "adm-moulish-001",
+  username: "moulish",
+  name: "Moulishwaran S",
+  email: "moulish@sonatech.ac.in",
+  role: "admin",
+  salt: "9793e19a6e61abd07d646d6a7e5b5a29",
+  password_hash:
+    "c45a92fc6997d8557b6f4cda99cdf8aef412d742dba52506aeefb96e2850fd8b1054309744e4ffe8644bb2e744c944b09be1d0a9e894e007638554a069d61d50",
+  active: true,
+};
+
+function extractAdminToken(req: any): string | null {
+  if (!req) return null;
+  let authHeader = "";
+  if (typeof req.headers?.get === "function") {
+    authHeader = req.headers.get("authorization") || req.headers.get("x-admin-token") || "";
+  } else if (req.headers) {
+    authHeader = req.headers["authorization"] || req.headers["x-admin-token"] || "";
+  }
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  if (authHeader && !authHeader.includes(" ")) {
+    return authHeader.trim();
+  }
+  let cookieHeader = "";
+  if (typeof req.headers?.get === "function") {
+    cookieHeader = req.headers.get("cookie") || "";
+  } else if (req.headers) {
+    cookieHeader = req.headers["cookie"] || "";
+  }
+  if (cookieHeader) {
+    const match = cookieHeader.match(/(?:^|;\s*)admin_session=([^;]+)/);
+    if (match && match[1]) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+  return null;
+}
+
+function verifyAdminSessionToken(tokenStr?: string | null): {
+  valid: boolean;
+  payload?: any;
+  error?: string;
+} {
+  if (!tokenStr || typeof tokenStr !== "string") {
+    return { valid: false, error: "Missing administrator session token." };
+  }
+  const parts = tokenStr.trim().split(".");
+  if (parts.length !== 2) {
+    return { valid: false, error: "Malformed administrator session token." };
+  }
+  const [payloadStr, signature] = parts;
+  if (!payloadStr || !signature) {
+    return { valid: false, error: "Invalid token components." };
+  }
+  const expectedSignature = crypto
+    .createHmac("sha256", ADMIN_TOKEN_SECRET)
+    .update(payloadStr)
+    .digest("base64url");
+  const sigBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (
+    sigBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(sigBuffer, expectedBuffer)
+  ) {
+    return { valid: false, error: "Invalid administrator session signature." };
+  }
+  try {
+    const jsonStr = Buffer.from(payloadStr, "base64url").toString("utf-8");
+    const payload = JSON.parse(jsonStr);
+    if (payload.role !== "admin" || payload.username !== "moulish") {
+      return { valid: false, error: "Token does not possess administrator privileges." };
+    }
+    if (Date.now() > payload.expiresAt) {
+      return { valid: false, error: "Administrator session has expired." };
+    }
+    return { valid: true, payload };
+  } catch {
+    return { valid: false, error: "Failed to decode administrator session token." };
+  }
+}
+
+async function authenticateAdmin(user: string, pass: string): Promise<any> {
+  if (!user || !pass) return { success: false, error: "Credentials required" };
+  if (user.trim().toLowerCase() !== ADMIN_CREDENTIALS.username) {
+    return { success: false, error: "Invalid credentials" };
+  }
+  try {
+    const candHash = crypto
+      .pbkdf2Sync(pass, ADMIN_CREDENTIALS.salt, 100000, 64, "sha512")
+      .toString("hex");
+    if (!crypto.timingSafeEqual(Buffer.from(candHash, "hex"), Buffer.from(ADMIN_CREDENTIALS.password_hash, "hex"))) {
+      return { success: false, error: "Invalid credentials" };
+    }
+    const now = Date.now();
+    const payload = {
+      sub: ADMIN_CREDENTIALS.username,
+      username: ADMIN_CREDENTIALS.username,
+      name: ADMIN_CREDENTIALS.name,
+      email: ADMIN_CREDENTIALS.email,
+      role: "admin",
+      issuedAt: now,
+      expiresAt: now + 24 * 60 * 60 * 1000,
+      nonce: crypto.randomBytes(16).toString("hex"),
+    };
+    const pStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const sig = crypto.createHmac("sha256", ADMIN_TOKEN_SECRET).update(pStr).digest("base64url");
+    return {
+      success: true,
+      token: `${pStr}.${sig}`,
+      admin: ADMIN_CREDENTIALS,
+    };
+  } catch {
+    return { success: false, error: "Authentication failed" };
+  }
+}
 
 function getSupabaseClient() {
   const url =

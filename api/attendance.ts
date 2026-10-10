@@ -11,7 +11,6 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import { fetchDevServerPublicEgressIp, isVercelOrProduction } from "./wifi-status.ts";
 
 const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
 const TOKEN_SECRET =

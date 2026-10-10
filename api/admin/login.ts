@@ -1,14 +1,86 @@
 /**
- * Vercel Serverless Function: /api/admin/login
+ * Vercel Serverless Function: POST /api/admin/login
  *
- * Authenticates administrator credentials:
+ * Self-contained administrator authentication endpoint for CampusAttend.
+ * Authenticates:
  * - Administrator ID: moulish
  * - Password: moulish@123
  *
- * Verifies PBKDF2 salted hash on server. Plaintext password is NEVER stored.
+ * Security:
+ * - PBKDF2 SHA-512 with 100,000 iterations and per-account cryptographic salt
+ * - Timing-safe constant time comparison to prevent side-channel timing attacks
+ * - HMAC-SHA256 cryptographically signed session tokens
+ * - Strict HTTPS Secure HttpOnly SameSite=Lax cookie
+ * - Zero plaintext password storage
+ * - Zero relative file imports to guarantee 100% Vercel Serverless bundling reliability
  */
 
-import { authenticateAdmin } from "./auth-helper.ts";
+import crypto from "node:crypto";
+
+const ADMIN_TOKEN_SECRET =
+  (typeof process !== "undefined" &&
+    (process.env["CAMPUS_ADMIN_SECRET"] ||
+      process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["ADMIN_SECRET_KEY"])) ||
+  "campusattend-admin-sec-key-moulish-2026-auth-token";
+
+const ADMIN_CREDENTIALS = {
+  id: "adm-moulish-001",
+  username: "moulish",
+  name: "Moulishwaran S",
+  email: "moulish@sonatech.ac.in",
+  role: "admin" as const,
+  salt: "9793e19a6e61abd07d646d6a7e5b5a29",
+  password_hash:
+    "c45a92fc6997d8557b6f4cda99cdf8aef412d742dba52506aeefb96e2850fd8b1054309744e4ffe8644bb2e744c944b09be1d0a9e894e007638554a069d61d50",
+  active: true,
+};
+
+function verifyPassword(candidatePassword: string, storedHash: string, salt: string): boolean {
+  if (!candidatePassword || !storedHash || !salt) return false;
+  try {
+    const candidateHash = crypto
+      .pbkdf2Sync(candidatePassword, salt, 100000, 64, "sha512")
+      .toString("hex");
+
+    const candidateBuf = Buffer.from(candidateHash, "hex");
+    const storedBuf = Buffer.from(storedHash, "hex");
+
+    if (candidateBuf.length !== storedBuf.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(candidateBuf, storedBuf);
+  } catch (err) {
+    console.error("[login] Error verifying password:", err);
+    return false;
+  }
+}
+
+function createSessionToken(
+  admin: { id: string; username: string; name: string; email: string },
+  ttlMs = 24 * 60 * 60 * 1000,
+): string {
+  const now = Date.now();
+  const payload = {
+    sub: admin.username,
+    username: admin.username,
+    name: admin.name,
+    email: admin.email,
+    role: "admin",
+    issuedAt: now,
+    expiresAt: now + ttlMs,
+    nonce: crypto.randomBytes(16).toString("hex"),
+  };
+
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", ADMIN_TOKEN_SECRET)
+    .update(payloadStr)
+    .digest("base64url");
+
+  return `${payloadStr}.${signature}`;
+}
 
 function sendJsonResponse(
   res: any,
@@ -87,8 +159,8 @@ export default async function handler(req: any, res?: any) {
     }
   }
 
-  const username = body?.username || body?.id || body?.staffId || "";
-  const password = body?.password || "";
+  const username = String(body?.username || body?.id || body?.staffId || "").trim();
+  const password = String(body?.password || "");
 
   if (!username || !password) {
     return sendJsonResponse(res, 400, {
@@ -97,32 +169,42 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  try {
-    const authRes = await authenticateAdmin(username, password);
-    if (!authRes.success || !authRes.token) {
-      return sendJsonResponse(res, 401, {
-        success: false,
-        error: authRes.error || "Invalid administrator credentials.",
-      });
-    }
-
-    const cookieHeader = `admin_session=${authRes.token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`;
-
-    return sendJsonResponse(
-      res,
-      200,
-      {
-        success: true,
-        token: authRes.token,
-        admin: authRes.admin,
-      },
-      { "Set-Cookie": cookieHeader },
-    );
-  } catch (err: any) {
-    console.error("[api/admin/login] Authentication server error:", err);
-    return sendJsonResponse(res, 500, {
+  // Verify username match (case-insensitive)
+  if (username.toLowerCase() !== ADMIN_CREDENTIALS.username) {
+    return sendJsonResponse(res, 401, {
       success: false,
-      error: "Server error during administrator authentication.",
+      error: "Invalid administrator credentials.",
     });
   }
+
+  // Verify password using PBKDF2 constant-time check
+  const isMatch = verifyPassword(password, ADMIN_CREDENTIALS.password_hash, ADMIN_CREDENTIALS.salt);
+
+  if (!isMatch) {
+    return sendJsonResponse(res, 401, {
+      success: false,
+      error: "Invalid administrator credentials.",
+    });
+  }
+
+  // Create HMAC-SHA256 signed session token
+  const token = createSessionToken(ADMIN_CREDENTIALS, 24 * 60 * 60 * 1000);
+  const cookieHeader = `admin_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`;
+
+  return sendJsonResponse(
+    res,
+    200,
+    {
+      success: true,
+      token,
+      admin: {
+        id: ADMIN_CREDENTIALS.id,
+        username: ADMIN_CREDENTIALS.username,
+        name: ADMIN_CREDENTIALS.name,
+        email: ADMIN_CREDENTIALS.email,
+        role: ADMIN_CREDENTIALS.role,
+      },
+    },
+    { "Set-Cookie": cookieHeader },
+  );
 }
