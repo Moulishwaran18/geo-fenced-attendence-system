@@ -27,11 +27,20 @@ export interface StaffFaceStatusResponse {
     department: string;
   };
   status: FaceEnrollmentState;
+  enrollmentStatus?: FaceEnrollmentState;
   isLocked: boolean;
   canEdit: boolean;
+  canSaveReplacement?: boolean;
   embeddingCount: number;
+  sampleCount?: number;
   samples: StaffFaceSample[];
   hasPendingRequest: boolean;
+  activeRequest?: {
+    id: string;
+    reason: string;
+    status: string;
+    created_at: string;
+  } | null;
   pendingRequest?: {
     id: string;
     reason: string;
@@ -101,17 +110,28 @@ export async function getStaffFaceStatus(): Promise<StaffFaceStatusResponse> {
       };
     }
 
-    return data;
+    const statusData: StaffFaceStatusResponse = {
+      ...data,
+      enrollmentStatus: data.status,
+      sampleCount: data.embeddingCount,
+      canSaveReplacement: Boolean(data.oneTimeToken || (data.status === "approved" && data.canEdit)),
+      activeRequest: data.pendingRequest || null,
+    };
+    return statusData;
   } catch (err: any) {
     clearTimeout(timeoutId);
     return {
       success: false,
       status: "not_registered",
+      enrollmentStatus: "not_registered",
       isLocked: false,
       canEdit: true,
+      canSaveReplacement: false,
       embeddingCount: 0,
+      sampleCount: 0,
       samples: [],
       hasPendingRequest: false,
+      activeRequest: null,
       error: err?.message || "Failed to reach server for face status",
     };
   }

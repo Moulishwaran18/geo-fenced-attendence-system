@@ -128,7 +128,7 @@ function AdminFaceRequestsPage() {
       <PageHeader
         title="Face Change Requests"
         description="Review and authorize staff requests to update locked facial recognition profiles. Approvals grant single-use permission."
-        action={
+        actions={
           <Button variant="outline" size="sm" onClick={() => void fetchRequests()} disabled={loading}>
             <RefreshCw className={`mr-1.5 size-3.5 ${loading ? "animate-spin" : ""}`} />
             Refresh

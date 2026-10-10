@@ -293,7 +293,7 @@ export async function ensureAdminAccountProvisioned(): Promise<AdminUserRecord> 
           },
           { onConflict: "username" },
         )
-        .catch(() => {});
+        .then(() => {}, () => {});
     }
   } catch {
     // Ignore if table not present in Supabase

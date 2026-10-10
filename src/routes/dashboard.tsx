@@ -323,7 +323,7 @@ function DashboardPage() {
                     : faceStatus?.canSaveReplacement
                     ? "Administrator approval received! You may now capture or upload your updated face reference samples."
                     : faceStatus?.enrollmentStatus === "pending_approval"
-                    ? `Change request submitted on ${faceStatus.activeRequest?.createdAt ? new Date(faceStatus.activeRequest.createdAt).toLocaleDateString() : "recently"}. Awaiting administrator review.`
+                    ? `Change request submitted on ${faceStatus.activeRequest?.created_at ? new Date(faceStatus.activeRequest.created_at).toLocaleDateString() : "recently"}. Awaiting administrator review.`
                     : "Register your face reference photos to enable live biometric face recognition for daily attendance marking."}
                 </p>
               </div>

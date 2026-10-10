@@ -305,15 +305,11 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
         body.photo_data,
       );
 
-      if (!result.success) {
-        return errorResponse(result.error || "Failed to store biometric reference", 400);
-      }
-
       return jsonResponse(
         {
           success: true,
           message: "Biometric embedding enrolled successfully.",
-          embeddingId: result.embeddingId,
+          embeddingId: result.id,
         },
         201,
       );
@@ -328,9 +324,9 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
   if (deleteEmbeddingMatch && method === "DELETE") {
     const embeddingId = deleteEmbeddingMatch[1]!;
     try {
-      const result = await deleteFaceEmbedding(embeddingId);
-      if (!result.success) {
-        return errorResponse(result.error || "Failed to delete embedding", 400);
+      const deleted = await deleteFaceEmbedding(embeddingId);
+      if (!deleted) {
+        return errorResponse("Embedding not found or already deleted", 404);
       }
       return jsonResponse({
         success: true,

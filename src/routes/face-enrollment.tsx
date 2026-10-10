@@ -76,9 +76,9 @@ interface LocalSample {
   url: string;
   filename: string;
   status: "pending" | "processing" | "valid" | "rejected";
-  message?: string;
-  embedding?: number[];
-  photoData?: string;
+  message?: string | undefined;
+  embedding?: number[] | undefined;
+  photoData?: string | undefined;
 }
 
 function StaffFaceEnrollmentPage() {
@@ -416,7 +416,7 @@ function StaffFaceEnrollmentPage() {
       <PageHeader
         title="Face Authentication & Biometrics"
         description="Register, lock and manage your institutional facial recognition profile for geofenced attendance."
-        action={
+        actions={
           <Button variant="outline" size="sm" onClick={() => void fetchStatus()} disabled={loadingStatus}>
             <RefreshCw className={`mr-1.5 size-3.5 ${loadingStatus ? "animate-spin" : ""}`} />
             Refresh Status

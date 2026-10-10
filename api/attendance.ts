@@ -62,6 +62,101 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
+function isVercelOrProduction(req?: any): boolean {
+  if (typeof process !== "undefined") {
+    if (
+      process.env["VERCEL"] === "1" ||
+      process.env["VERCEL"] === "true" ||
+      Boolean(process.env["VERCEL_ENV"])
+    ) {
+      return true;
+    }
+    if (process.env["NODE_ENV"] === "production") {
+      return true;
+    }
+  }
+
+  if (req) {
+    const headers = req.headers || {};
+    const getHeader = (name: string): string => {
+      if (typeof headers.get === "function") return headers.get(name) || "";
+      const lower = name.toLowerCase();
+      return headers[name] || headers[lower] || "";
+    };
+
+    if (
+      getHeader("x-vercel-forwarded-for") ||
+      getHeader("x-vercel-id") ||
+      getHeader("x-vercel-deployment-url")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+let cachedDevEgressIp: { ip: string; timestamp: number } | null = null;
+const DEV_EGRESS_CACHE_TTL_MS = 15000;
+
+async function fetchDevServerPublicEgressIp(): Promise<string | null> {
+  if (isVercelOrProduction()) {
+    return null;
+  }
+
+  const now = Date.now();
+  if (cachedDevEgressIp && now - cachedDevEgressIp.timestamp < DEV_EGRESS_CACHE_TTL_MS) {
+    return cachedDevEgressIp.ip;
+  }
+
+  const endpoints = [
+    {
+      url: "https://api.ipify.org?format=json",
+      parse: (text: string) => {
+        try {
+          const json = JSON.parse(text);
+          return json?.ip ? String(json.ip).trim() : null;
+        } catch {
+          return null;
+        }
+      },
+    },
+    {
+      url: "https://icanhazip.com",
+      parse: (text: string) => text.trim(),
+    },
+    {
+      url: "https://checkip.amazonaws.com",
+      parse: (text: string) => text.trim(),
+    },
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await fetch(endpoint.url, {
+        signal: controller.signal,
+        headers: { "User-Agent": "SONA-Campus-Attendance-Dev/1.0" },
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const text = await res.text();
+        const extracted = sanitizeIp(endpoint.parse(text));
+        if (extracted && /^(\d{1,3}\.){3}\d{1,3}$/.test(extracted)) {
+          cachedDevEgressIp = { ip: extracted, timestamp: now };
+          return extracted;
+        }
+      }
+    } catch {
+      // Continue to next reflector endpoint
+    }
+  }
+
+  return null;
+}
+
 function extractTrustedClientIp(req: any): string {
   if (!req) return "unknown";
   const headers = req.headers || {};
