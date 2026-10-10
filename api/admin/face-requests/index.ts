@@ -286,8 +286,9 @@ export default async function handler(req: any, res?: any) {
     // Approve Face Change Request and Issue One-Time Authorization Token
     // -------------------------------------------------------------------------
     const approveMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/approve\/?$/);
-    if (approveMatch && method === "POST") {
-      const requestId = decodeURIComponent(approveMatch[1]!);
+    const isFlatApprove = (pathname === "/api/admin/face-requests/approve" || pathname.endsWith("/approve")) && (body?.id || body?.requestId);
+    if ((approveMatch || isFlatApprove) && method === "POST") {
+      const requestId = (approveMatch ? decodeURIComponent(approveMatch[1]!) : (body?.id || body?.requestId || "")).toString().trim();
       const adminNotes = (body?.adminNotes || body?.notes || "").toString().trim();
 
       const { data: targetReq, error: findErr } = await supabase
@@ -350,8 +351,9 @@ export default async function handler(req: any, res?: any) {
     // Reject Face Change Request
     // -------------------------------------------------------------------------
     const rejectMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/reject\/?$/);
-    if (rejectMatch && method === "POST") {
-      const requestId = decodeURIComponent(rejectMatch[1]!);
+    const isFlatReject = (pathname === "/api/admin/face-requests/reject" || pathname.endsWith("/reject")) && (body?.id || body?.requestId);
+    if ((rejectMatch || isFlatReject) && method === "POST") {
+      const requestId = (rejectMatch ? decodeURIComponent(rejectMatch[1]!) : (body?.id || body?.requestId || "")).toString().trim();
       const adminNotes = (body?.adminNotes || body?.notes || "").toString().trim();
 
       const { data: targetReq, error: findErr } = await supabase

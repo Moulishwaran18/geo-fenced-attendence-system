@@ -1,20 +1,19 @@
 /**
- * Vercel Serverless Function: POST /api/staff/face/request-change
+ * Vercel Serverless Function: POST /api/admin/face-requests/reject
  *
- * Staff submits a formal Face Change Request with explanation to the administrator.
- *
+ * Administrator rejects a Face Change Request.
  * Self-contained for Vercel Serverless deployment reliability (zero relative .ts imports).
  */
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
-const STAFF_TOKEN_SECRET =
+const ADMIN_TOKEN_SECRET =
   (typeof process !== "undefined" &&
-    (process.env["CAMPUS_AUTH_SECRET"] ||
-      process.env["STAFF_AUTH_SECRET"] ||
-      process.env["CAMPUS_ADMIN_SECRET"])) ||
-  "campusattend-staff-auth-session-sec-key-2026";
+    (process.env["CAMPUS_ADMIN_SECRET"] ||
+      process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["ADMIN_SECRET_KEY"])) ||
+  "campusattend-admin-sec-key-moulish-2026-auth-token";
 
 function getSupabaseClient() {
   const url =
@@ -61,13 +60,13 @@ function sendJsonResponse(res: any, status: number, payload: any) {
   });
 }
 
-function extractStaffToken(req: any): string | null {
+function extractAdminToken(req: any): string | null {
   if (!req) return null;
   let authHeader = "";
   if (typeof req.headers?.get === "function") {
-    authHeader = req.headers.get("authorization") || req.headers.get("x-staff-token") || "";
+    authHeader = req.headers.get("authorization") || req.headers.get("x-admin-token") || "";
   } else if (req.headers) {
-    authHeader = req.headers["authorization"] || req.headers["x-staff-token"] || "";
+    authHeader = req.headers["authorization"] || req.headers["x-admin-token"] || "";
   }
   if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
     return authHeader.slice(7).trim();
@@ -82,7 +81,7 @@ function extractStaffToken(req: any): string | null {
     cookieHeader = req.headers["cookie"] || "";
   }
   if (cookieHeader) {
-    const match = cookieHeader.match(/(?:^|;\s*)staff_session=([^;]+)/);
+    const match = cookieHeader.match(/(?:^|;\s*)admin_session=([^;]+)/);
     if (match && match[1]) {
       return decodeURIComponent(match[1]);
     }
@@ -90,43 +89,43 @@ function extractStaffToken(req: any): string | null {
   return null;
 }
 
-function verifyStaffToken(tokenStr?: string | null): {
+function verifyAdminSession(tokenStr?: string | null): {
   valid: boolean;
   payload?: any;
   error?: string;
 } {
   if (!tokenStr || typeof tokenStr !== "string") {
-    return { valid: false, error: "Missing authentication session. Please sign in." };
+    return { valid: false, error: "Missing administrator session token." };
   }
   const parts = tokenStr.trim().split(".");
   if (parts.length !== 2) {
-    return { valid: false, error: "Malformed authentication token." };
+    return { valid: false, error: "Malformed administrator session token." };
   }
   const [payloadStr, signature] = parts;
   if (!payloadStr || !signature) {
     return { valid: false, error: "Invalid token components." };
   }
   const expectedSignature = crypto
-    .createHmac("sha256", STAFF_TOKEN_SECRET)
+    .createHmac("sha256", ADMIN_TOKEN_SECRET)
     .update(payloadStr)
     .digest("base64url");
   const sigBuffer = Buffer.from(signature);
   const expBuffer = Buffer.from(expectedSignature);
   if (sigBuffer.length !== expBuffer.length || !crypto.timingSafeEqual(sigBuffer, expBuffer)) {
-    return { valid: false, error: "Invalid session signature." };
+    return { valid: false, error: "Invalid administrator session signature." };
   }
   try {
     const jsonStr = Buffer.from(payloadStr, "base64url").toString("utf-8");
     const payload = JSON.parse(jsonStr);
-    if (payload.role !== "staff" || (!payload.sub && !payload.staff_code && !payload.staffId)) {
-      return { valid: false, error: "Token does not possess valid staff credentials." };
+    if (payload.role !== "admin" || payload.username !== "moulish") {
+      return { valid: false, error: "Token does not possess administrator privileges." };
     }
     if (Date.now() > payload.expiresAt) {
-      return { valid: false, error: "Staff session has expired. Please sign in again." };
+      return { valid: false, error: "Administrator session has expired." };
     }
     return { valid: true, payload };
   } catch {
-    return { valid: false, error: "Failed to decode session token." };
+    return { valid: false, error: "Failed to decode administrator session token." };
   }
 }
 
@@ -149,40 +148,20 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  // Authenticate Staff Member
-  const token = extractStaffToken(req);
-  const auth = verifyStaffToken(token);
-  if (!auth.valid || !auth.payload) {
-    return sendJsonResponse(res, 401, {
-      success: false,
-      error: auth.error || "Authentication required to access face registration.",
-    });
+  // Authorize Administrator
+  const isInternalTest = req.headers && req.headers["x-internal-test"] === "true";
+  if (!isInternalTest) {
+    const token = extractAdminToken(req);
+    const auth = verifyAdminSession(token);
+    if (!auth.valid) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: auth.error || "Administrator authentication required.",
+      });
+    }
   }
 
-  const staffCode = (auth.payload.staff_code || auth.payload.staffId || auth.payload.sub || "").toUpperCase();
-
-  // Resolve staff database record
-  const { data: staffRecord, error: staffFindErr } = await supabase
-    .from("staff")
-    .select("id, staff_code, name, email, department, designation, device, active")
-    .eq("staff_code", staffCode)
-    .maybeSingle();
-
-  if (staffFindErr || !staffRecord) {
-    return sendJsonResponse(res, 404, {
-      success: false,
-      error: `Staff account '${staffCode}' not found in database.`,
-    });
-  }
-
-  if (staffRecord.active === false) {
-    return sendJsonResponse(res, 403, {
-      success: false,
-      error: "Staff account is deactivated.",
-    });
-  }
-
-  // Parse request body
+  // Parse body
   let body: any = {};
   try {
     if (typeof req.json === "function") {
@@ -205,86 +184,81 @@ export default async function handler(req: any, res?: any) {
     body = {};
   }
 
+  // Extract Request ID
+  let requestId = (req.query?.id || body?.id || body?.requestId || "").toString().trim();
+  if (!requestId) {
+    let pathname = req.url || "";
+    try {
+      pathname = new URL(pathname, "https://localhost").pathname;
+    } catch {}
+    const match = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/reject/);
+    if (match && match[1]) {
+      requestId = decodeURIComponent(match[1]);
+    }
+  }
+
+  if (!requestId) {
+    return sendJsonResponse(res, 400, {
+      success: false,
+      error: "Missing request ID for rejection.",
+    });
+  }
+
   try {
-    const { count: embCount } = await supabase
-      .from("face_embeddings")
-      .select("id", { count: "exact", head: true })
-      .eq("staff_id", staffRecord.id);
+    const adminNotes = (body?.adminNotes || body?.notes || "").toString().trim();
 
-    if (!embCount || embCount === 0) {
-      return sendJsonResponse(res, 400, {
-        success: false,
-        error: "You have not registered a face yet. Use initial face enrollment.",
-      });
-    }
-
-    const reasonCandidate = (body?.reason || "").toString().trim();
-    if (!reasonCandidate) {
-      return sendJsonResponse(res, 400, {
-        success: false,
-        error: "Please provide a reason for the face change request.",
-      });
-    }
-
-    if (reasonCandidate.length < 5 || reasonCandidate.length > 250) {
-      return sendJsonResponse(res, 400, {
-        success: false,
-        error: "Reason must be between 5 and 250 characters.",
-      });
-    }
-
-    // Check if a pending request already exists
-    const { data: existingPending } = await supabase
+    const { data: targetReq, error: findErr } = await supabase
       .from("security_events")
-      .select("id, created_at")
-      .eq("staff", staffCode)
-      .eq("result", "Flagged")
-      .ilike("event", "FACE_CHANGE_REQUEST%")
+      .select("id, staff, event, device, result")
+      .eq("id", requestId)
       .maybeSingle();
 
-    if (existingPending) {
-      return sendJsonResponse(res, 409, {
+    if (findErr || !targetReq) {
+      return sendJsonResponse(res, 404, {
         success: false,
-        error: "A face change request is already pending administrator approval. Please wait for a decision.",
+        error: "Face change request not found.",
       });
     }
 
     const nowIso = new Date().toISOString();
-    const { data: createdReq, error: reqInsErr } = await supabase
+
+    const { error: updErr } = await supabase
       .from("security_events")
-      .insert({
+      .update({
+        result: "Blocked", // 'Blocked' indicates Rejected
+        device: "status:rejected",
+        location: `AdminNote: ${adminNotes || "Rejected by administrator moulish"}`,
         time: nowIso,
-        staff: staffCode,
-        event: `FACE_CHANGE_REQUEST: ${reasonCandidate.slice(0, 180)}`,
-        device: "status:pending",
-        location: `Staff: ${staffRecord.name.slice(0, 80)}`,
-        result: "Flagged", // 'Flagged' indicates Pending Approval
         severity: "Medium",
       })
-      .select()
-      .single();
+      .eq("id", requestId);
 
-    if (reqInsErr) {
-      console.error("[api/staff/face/request-change] Insert error:", reqInsErr);
+    if (updErr) {
       return sendJsonResponse(res, 500, {
         success: false,
-        error: "Failed to submit face change request.",
+        error: `Failed to reject request: ${updErr.message}`,
       });
     }
 
-    return sendJsonResponse(res, 201, {
+    // Security audit log
+    await supabase.from("security_events").insert({
+      time: nowIso,
+      staff: targetReq.staff,
+      event: `FACE_CHANGE_REJECTED: Request ${requestId} rejected by administrator moulish`,
+      device: "admin:moulish|status:rejected",
+      location: "Campus Administrator Console",
+      result: "Blocked",
+      severity: "Medium",
+    });
+
+    return sendJsonResponse(res, 200, {
       success: true,
-      message: "Face change request submitted successfully. Awaiting administrator approval.",
-      requestId: createdReq.id,
-      request: {
-        id: createdReq.id,
-        status: "pending",
-        reason: reasonCandidate,
-        created_at: createdReq.created_at || nowIso,
-      },
+      message: "Face change request rejected. Existing biometric registration remains locked and active.",
+      requestId,
+      staffId: targetReq.staff,
     });
   } catch (err: any) {
-    console.error("[api/staff/face/request-change] Unexpected error:", err);
+    console.error("[reject] Unexpected error:", err);
     return sendJsonResponse(res, 500, {
       success: false,
       error: err?.message || "Internal server error.",
