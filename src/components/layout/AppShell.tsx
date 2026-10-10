@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { currentStaff } from "@/mocks/data";
 import { useProfile } from "@/lib/profile-store";
+import { useActiveStaff } from "@/lib/staff-auth";
 import { useAdminAuth, logoutAdmin } from "@/lib/admin-auth";
 
 interface AppShellProps {
@@ -38,6 +39,7 @@ interface AppShellProps {
 export function AppShell({ nav, children, role, showSearch = role === "admin" }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { profile } = useProfile();
+  const activeStaff = useActiveStaff();
   const { admin: authAdmin, authenticated, loading: adminLoading } = useAdminAuth();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -50,7 +52,10 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
           name: authAdmin?.name || "Moulishwaran S",
           meta: `Administrator · ${authAdmin?.username || "moulish"}`,
         }
-      : { name: profile.name, meta: `${currentStaff.designation} · ${currentStaff.staffId}` };
+      : {
+          name: profile.name || activeStaff.name,
+          meta: `${activeStaff.designation} · ${activeStaff.staffId}`,
+        };
 
   // If viewing admin console while unauthorized, render restricted access barrier
   if (role === "admin" && !authenticated && !adminLoading) {

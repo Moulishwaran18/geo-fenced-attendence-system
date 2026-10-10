@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { currentStaff, type AttendanceStatus } from "@/mocks/data";
+import { useActiveStaff } from "@/lib/staff-auth";
 import { formatIndiaDate, formatIndiaTime, indiaDateKey } from "@/lib/india-time";
 
 export interface AttendanceRecord {
@@ -100,7 +101,9 @@ export function getWorkingDaysInMonth(year: number, monthZeroIndexed: number): n
   return Math.min(22, count);
 }
 
-export function useAttendance(targetStaffCode: string = currentStaff.staffId) {
+export function useAttendance(targetStaffCode?: string) {
+  const activeStaff = useActiveStaff();
+  const effectiveStaffCode = targetStaffCode || activeStaff.staffId || currentStaff.staffId;
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -122,11 +125,11 @@ export function useAttendance(targetStaffCode: string = currentStaff.staffId) {
 
       if (data) {
         // Filter by user staff_code if available, preserving user-specific history
-        const userRows = targetStaffCode
+        const userRows = effectiveStaffCode
           ? data.filter(
               (r) =>
                 !r.staff_code ||
-                r.staff_code.toLowerCase() === targetStaffCode.toLowerCase(),
+                r.staff_code.toLowerCase() === effectiveStaffCode.toLowerCase(),
             )
           : data;
 
@@ -138,17 +141,15 @@ export function useAttendance(targetStaffCode: string = currentStaff.staffId) {
 
           const idStr = r.id
             ? r.id.startsWith("ATT-")
-              ? r.id
-              : `ATT-${r.id.slice(0, 8).toUpperCase()}`
             : `ATT-${rawDate.replaceAll("-", "")}-LIVE`;
 
           return {
             id: idStr,
             rawId: r.id,
-            staff_code: r.staff_code || targetStaffCode,
-            staff_name: r.staff_name || currentStaff.name,
-            department: r.department || currentStaff.department,
-            email: currentStaff.email,
+            staff_code: r.staff_code || effectiveStaffCode,
+            staff_name: r.staff_name || activeStaff.name || currentStaff.name,
+            department: r.department || activeStaff.department || currentStaff.department,
+            email: activeStaff.email || currentStaff.email,
             date: displayDate,
             rawDate,
             day: dayName,

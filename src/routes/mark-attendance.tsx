@@ -51,6 +51,7 @@ import {
   type VerificationSignal,
 } from "@/mocks/attendance-service";
 import { currentStaff } from "@/mocks/data";
+import { useActiveStaff } from "@/lib/staff-auth";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
@@ -139,7 +140,7 @@ function MarkAttendancePage() {
     ? mockSnapshot.signals.find((s) => s.key === "location")?.state === "verified"
     : geofence.isInside === true;
 
-  const loggedInStaff = currentStaff;
+  const loggedInStaff = useActiveStaff();
 
   // Identity match check: recognized face must match the authenticated individual
   const isIdentityMatched = Boolean(

@@ -20,6 +20,7 @@
     "test:android-location": "node scripts/test-native-android-location.js",
     "db:provision-admin": "node --env-file=.env scripts/provision-admin.js",
     "test:admin": "node --env-file=.env scripts/test-admin-auth.js",
+    "test:staff-auth": "node --env-file=.env scripts/test-staff-self-registration.js",
     "test:supabase": "node --env-file=.env scripts/test-supabase-connection.js"
   },
   "dependencies": {

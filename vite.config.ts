@@ -17,6 +17,8 @@ import { handleFaceDetectionLogApi } from "./src/server/api/audit-log-handler.ts
 import wifiStatusHandler from "./api/wifi-status.ts";
 import attendanceHandler from "./api/attendance.ts";
 import networkInfoHandler from "./api/network-info.ts";
+import staffRegisterHandler from "./api/staff/register.ts";
+import staffLoginHandler from "./api/staff/login.ts";
 
 function apiMiddlewarePlugin(): Plugin {
   return {
@@ -158,6 +160,16 @@ function apiMiddlewarePlugin(): Plugin {
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ error: "Stream error" }));
           });
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/staff/register")) {
+          await staffRegisterHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/staff/login")) {
+          await staffLoginHandler(req, res);
           return;
         }
 

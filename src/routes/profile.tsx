@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { currentStaff } from "@/mocks/data";
 import { useProfile, validateProfile } from "@/lib/profile-store";
+import { useActiveStaff } from "@/lib/staff-auth";
 import { useDevice } from "@/lib/use-device";
 
 export const Route = createFileRoute("/profile")({
@@ -38,6 +39,7 @@ export const Route = createFileRoute("/profile")({
 
 function ProfilePage() {
   const { profile, saveProfile } = useProfile();
+  const activeStaff = useActiveStaff();
   const device = useDevice();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(profile);
@@ -47,11 +49,11 @@ function ProfilePage() {
   }, [open, profile]);
 
   const fields = [
-    ["Staff Name", profile.name],
-    ["Staff ID", currentStaff.staffId],
-    ["Department", currentStaff.department],
-    ["Designation", currentStaff.designation],
-    ["Email", profile.email],
+    ["Staff Name", profile.name || activeStaff.name],
+    ["Staff ID", activeStaff.staffId],
+    ["Department", activeStaff.department],
+    ["Designation", activeStaff.designation],
+    ["Email", profile.email || activeStaff.email],
     ["Phone", currentStaff.phone],
   ];
 
@@ -85,13 +87,13 @@ function ProfilePage() {
               <User className="size-9" aria-hidden />
             </span>
             <div>
-              <h2 className="text-xl font-semibold tracking-tight">{profile.name}</h2>
+              <h2 className="text-xl font-semibold tracking-tight">{profile.name || activeStaff.name}</h2>
               <p className="text-sm text-muted-foreground">
-                {currentStaff.designation} · {currentStaff.department}
+                {activeStaff.designation} · {activeStaff.department}
               </p>
               <div className="mt-2 flex gap-2">
                 <StatusBadge status="Active" />
-                <StatusBadge status={currentStaff.staffId} tone="info" dot={false} />
+                <StatusBadge status={activeStaff.staffId} tone="info" dot={false} />
               </div>
             </div>
           </div>
