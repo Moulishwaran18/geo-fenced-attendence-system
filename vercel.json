@@ -1,15 +1,15 @@
 {
   "rewrites": [
     {
-      "source": "/api/admin/staff/:match*",
+      "source": "/api/admin/staff/:match+",
       "destination": "/api/admin/staff"
     },
     {
-      "source": "/api/admin/face-requests/:match*",
+      "source": "/api/admin/face-requests/:match+",
       "destination": "/api/admin/face-requests"
     },
     {
-      "source": "/api/staff/face/:match*",
+      "source": "/api/staff/face/:match+",
       "destination": "/api/staff/face"
     }
   ]
