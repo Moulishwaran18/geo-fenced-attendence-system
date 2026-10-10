@@ -19,8 +19,8 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import handlerFaceStaff from "../api/staff/face.ts";
-import handlerFaceAdmin from "../api/admin/face-requests.ts";
+import handlerFaceStaff from "../api/staff/face/index.ts";
+import handlerFaceAdmin from "../api/admin/face-requests/index.ts";
 import handlerRegister from "../api/staff/register.ts";
 import handlerStaffLogin from "../api/staff/login.ts";
 import handlerAdminLogin from "../api/admin/login.ts";

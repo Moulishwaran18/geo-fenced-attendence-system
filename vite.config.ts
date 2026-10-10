@@ -19,8 +19,8 @@ import attendanceHandler from "./api/attendance.ts";
 import networkInfoHandler from "./api/network-info.ts";
 import staffRegisterHandler from "./api/staff/register.ts";
 import staffLoginHandler from "./api/staff/login.ts";
-import staffFaceHandler from "./api/staff/face.ts";
-import adminFaceRequestsHandler from "./api/admin/face-requests.ts";
+import staffFaceHandler from "./api/staff/face/index.ts";
+import adminFaceRequestsHandler from "./api/admin/face-requests/index.ts";
 
 function apiMiddlewarePlugin(): Plugin {
   return {
