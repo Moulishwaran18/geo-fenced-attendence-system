@@ -483,7 +483,8 @@ export default async function handler(req: any, res?: any) {
 
         // Verify device identity binding
         const devMatch = (approvedRow.device || "").match(/device_id:([^|]+)/);
-        if (devMatch && devMatch[1] && deviceId && devMatch[1] !== deviceId) {
+        const boundDev = devMatch && devMatch[1] ? devMatch[1].trim() : "";
+        if (boundDev && boundDev !== "android-device" && deviceId && boundDev !== deviceId) {
           return sendJsonResponse(res, 403, {
             success: false,
             error: "Face approval request is bound to a different device identity.",

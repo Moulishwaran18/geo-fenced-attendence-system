@@ -121,6 +121,9 @@ function StaffFaceEnrollmentPage() {
   const [isReplacementMode, setIsReplacementMode] = useState(false);
 
   const [isActivating, setIsActivating] = useState(false);
+  const [activationError, setActivationError] = useState<string | null>(null);
+  const activationInProgressRef = useRef(false);
+  const hasActivatedTokenRef = useRef<string | null>(null);
 
   // File input ref for "Upload Photo Files"
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -629,55 +632,76 @@ function StaffFaceEnrollmentPage() {
   };
 
   // Activate pending templates staged locally after administrator approval
-  const handleActivateApprovedProfile = async () => {
-    if (!serverStatus?.oneTimeToken) {
-      toast.error("Missing administrator approval token.");
-      return;
-    }
-
-    setIsActivating(true);
-    try {
-      const token = serverStatus.oneTimeToken;
-      // 1. Native bridge activates staged templates into Room DB
-      const actResult = await activateNativePendingEnrollment(staffId, token);
-      if (!actResult.success) {
-        toast.error(actResult.message || "Failed to activate templates on this device.");
+  const handleActivateApprovedProfile = useCallback(
+    async (tokenOverride?: string) => {
+      const token = tokenOverride || serverStatus?.oneTimeToken;
+      if (!token) {
         return;
       }
 
-      // 2. Verify persistence in Android Keystore Room DB
-      const verifyCheck = await verifyNativePersistence(staffId);
-      if (!verifyCheck.verified || verifyCheck.count === 0) {
-        toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+      if (activationInProgressRef.current) {
         return;
       }
 
-      // 3. Notify server to consume single-use token and mark locked
-      const serverRes = await submitStaffFaceEnrollment(
-        {
-          deviceId: nativeDeviceId || undefined,
-          templateCount: verifyCheck.count,
-          oneTimeToken: token,
-        },
-        token
-      );
+      activationInProgressRef.current = true;
+      setIsActivating(true);
+      setActivationError(null);
 
-      if (!serverRes.success) {
-        toast.error(serverRes.error || "Failed to complete server lock registration.");
-        return;
+      try {
+        // 1. Native bridge activates staged templates into Room DB
+        const actResult = await activateNativePendingEnrollment(staffId, token);
+        if (!actResult.success) {
+          const errMsg = actResult.message || "Failed to activate templates on this device.";
+          setActivationError(errMsg);
+          toast.error(errMsg);
+          return;
+        }
+
+        // 2. Verify persistence in Android Keystore Room DB
+        const verifyCheck = await verifyNativePersistence(staffId);
+        if (!verifyCheck.verified || verifyCheck.count === 0) {
+          const errMsg = "Local persistence verification failed. Templates were not confirmed in secure device storage.";
+          setActivationError(errMsg);
+          toast.error(errMsg);
+          return;
+        }
+
+        // 3. Notify server to consume single-use token and mark locked
+        const serverRes = await submitStaffFaceEnrollment(
+          {
+            deviceId: nativeDeviceId || undefined,
+            templateCount: verifyCheck.count,
+            oneTimeToken: token,
+          },
+          token
+        );
+
+        if (!serverRes.success) {
+          const errMsg = serverRes.error || "Failed to complete server lock registration.";
+          setActivationError(errMsg);
+          toast.error(errMsg);
+          return;
+        }
+
+        hasActivatedTokenRef.current = token;
+        setActivationError(null);
+
+        toast.success("Face Registration Approved and Active!", {
+          description: `${verifyCheck.count} template(s) permanently locked with AES-256-GCM. You may now mark attendance with face recognition.`,
+        });
+
+        await checkStatus();
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        setActivationError(errMsg);
+        toast.error("Activation failed", { description: errMsg });
+      } finally {
+        setIsActivating(false);
+        activationInProgressRef.current = false;
       }
-
-      toast.success("Face Registration Approved and Active!", {
-        description: `${verifyCheck.count} template(s) permanently locked with AES-256-GCM. You may now mark attendance with face recognition.`,
-      });
-
-      await checkStatus();
-    } catch (err: any) {
-      toast.error("Activation failed", { description: err?.message || String(err) });
-    } finally {
-      setIsActivating(false);
-    }
-  };
+    },
+    [serverStatus?.oneTimeToken, staffId, nativeDeviceId, checkStatus]
+  );
 
   // Submit request to change face (server metadata only, ZERO biometrics)
   const handleSubmitChangeRequest = async () => {
@@ -710,6 +734,7 @@ function StaffFaceEnrollmentPage() {
   // Cancel pending change request
   const handleCancelRequest = async () => {
     try {
+      await clearNativePendingEnrollment(staffId);
       const res = await cancelStaffFaceChange();
       if (res.success) {
         toast.success("Face approval request cancelled.");
@@ -732,6 +757,36 @@ function StaffFaceEnrollmentPage() {
     serverStatus?.status === "pending_approval" ||
     serverStatus?.enrollmentStatus === "pending_approval";
   const isRejected = serverStatus?.status === "rejected" || serverStatus?.enrollmentStatus === "rejected";
+
+  // 1. Polling for administrator decision while approval is pending
+  useEffect(() => {
+    if (!isPendingApproval || isActivating) return;
+
+    const interval = setInterval(() => {
+      void checkStatus();
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [isPendingApproval, isActivating, checkStatus]);
+
+  // 2. Automatically trigger activation as soon as administrator approval is detected
+  useEffect(() => {
+    const token = serverStatus?.oneTimeToken;
+    const isApprovedAndReady =
+      (serverStatus?.status === "approved" || serverStatus?.canSaveReplacement === true) &&
+      Boolean(token) &&
+      (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment);
+
+    if (
+      isApprovedAndReady &&
+      token &&
+      !isActivating &&
+      !activationInProgressRef.current &&
+      hasActivatedTokenRef.current !== token
+    ) {
+      void handleActivateApprovedProfile(token);
+    }
+  }, [serverStatus, isEnrolledOnDevice, nativeStatus, isActivating, handleActivateApprovedProfile]);
 
   const validCount = samples.filter((s) => s.status === "valid").length;
   const hasRejected = samples.some((s) => s.status === "rejected");
@@ -881,27 +936,82 @@ function StaffFaceEnrollmentPage() {
             </div>
           </div>
         ) : isApproved && (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment) ? (
-          /* STATE: Administrator Approval Granted — Ready to Activate */
+          /* STATE: Administrator Approval Detected — Automatic Activation Flow */
           <div className="space-y-6">
-            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6 shadow-sm">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            {activationError ? (
+              /* Activation Error Card with Safe Automatic Retry */
+              <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-6 shadow-sm">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-4">
+                    <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-destructive/20 text-destructive">
+                      <AlertCircle className="size-6" />
+                    </span>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base font-semibold text-foreground">Activation Interrupted</h3>
+                        <Badge variant="outline" className="border-destructive/40 text-destructive">
+                          Safe Retry Available
+                        </Badge>
+                        <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                          Token Preserved
+                        </Badge>
+                      </div>
+
+                      <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                        Automatic activation was interrupted: <span className="text-foreground font-medium">{activationError}</span>.
+                        Your approval token was safely preserved on the server and has not been consumed.
+                      </p>
+
+                      <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                          <span className="font-medium text-foreground">Staff ID:</span> {staffId}
+                        </div>
+                        <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                          <span className="font-medium text-foreground">Device Bound:</span> {nativeDeviceId || "Active Device"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={() => void handleActivateApprovedProfile()}
+                    disabled={isActivating}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground shrink-0 self-start"
+                  >
+                    {isActivating ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        Retrying…
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="mr-2 size-4" />
+                        Retry Activation
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              /* Activating Loading State (Automatic) */
+              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6 shadow-sm">
                 <div className="flex items-start gap-4">
                   <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
-                    <KeyRound className="size-6" />
+                    <Loader2 className="size-6 animate-spin" />
                   </span>
-                  <div>
+                  <div className="flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base font-semibold text-foreground">Administrator Approval Granted</h3>
-                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                        Authorized
+                      <h3 className="text-base font-semibold text-foreground">Activating approved enrollment…</h3>
+                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300 animate-pulse">
+                        <Loader2 className="mr-1 size-3 animate-spin" /> In Progress
                       </Badge>
                       <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                        Single-Use Token Active
+                        Keystore AES-256-GCM
                       </Badge>
                     </div>
 
                     <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-                      Your facial biometric enrollment has been approved by the administrator. Click below to activate your encrypted templates in Android Keystore on this device and permanently lock your biometric profile.
+                      Administrator approval granted. Activating your encrypted face templates staged on this device into Android Keystore and locking your biometric profile…
                     </p>
 
                     <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
@@ -914,25 +1024,14 @@ function StaffFaceEnrollmentPage() {
                     </div>
                   </div>
                 </div>
-
-                <Button
-                  onClick={handleActivateApprovedProfile}
-                  disabled={isActivating}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 self-start"
-                >
-                  {isActivating ? (
-                    <>
-                      <Loader2 className="mr-2 size-4 animate-spin" />
-                      Activating Keystore…
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="mr-2 size-4" />
-                      Activate Approved Profile & Lock
-                    </>
-                  )}
-                </Button>
               </div>
+            )}
+
+            <div className="rounded-xl border border-border bg-card p-4 text-xs text-muted-foreground flex items-center gap-3">
+              <ShieldCheck className="size-4 text-primary shrink-0" />
+              <span>
+                Zero biometric templates or embeddings are downloaded from cloud servers. On-device hardware Keystore encryption verifies and locks your biometric enrollment atomically.
+              </span>
             </div>
           </div>
         ) : isEnrolledOnDevice && !isReplacementMode ? (
@@ -946,12 +1045,15 @@ function StaffFaceEnrollmentPage() {
                   </span>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base font-semibold text-foreground">Face enrolled on this device</h3>
+                      <h3 className="text-base font-semibold text-foreground">Face Registration Active</h3>
                       <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
                         <Lock className="mr-1 size-3" /> Locked
                       </Badge>
                       <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
                         Keystore AES-256-GCM
+                      </Badge>
+                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                        Enrollment Approved and Activated
                       </Badge>
                     </div>
 
