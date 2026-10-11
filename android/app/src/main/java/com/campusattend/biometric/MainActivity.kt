@@ -3,13 +3,16 @@ package com.campusattend.biometric
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.view.ViewGroup
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -78,6 +81,32 @@ class MainActivity : ComponentActivity() {
                 null
             )
         }
+    }
+
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val callback = fileChooserCallback
+        fileChooserCallback = null
+        if (callback == null) return@registerForActivityResult
+
+        val results: Array<Uri>? = when {
+            result.resultCode != RESULT_OK || result.data == null -> null
+            result.data?.data != null -> arrayOf(result.data!!.data!!)
+            result.data?.clipData != null -> {
+                val clipData = result.data!!.clipData!!
+                val list = mutableListOf<Uri>()
+                for (i in 0 until clipData.itemCount) {
+                    val uri = clipData.getItemAt(i).uri
+                    if (uri != null) list.add(uri)
+                }
+                if (list.isEmpty()) null else list.toTypedArray()
+            }
+            else -> null
+        }
+        callback.onReceiveValue(results)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -200,7 +229,7 @@ class MainActivity : ComponentActivity() {
                                             mediaPlaybackRequiresUserGesture = false
                                             cacheMode = WebSettings.LOAD_DEFAULT
                                             allowFileAccess = false
-                                            allowContentAccess = false
+                                            allowContentAccess = true
                                             val currentUa = userAgentString ?: ""
                                             if (!currentUa.contains("CampusAttendNative")) {
                                                 userAgentString = "$currentUa CampusAttendNative/1.0"
@@ -217,6 +246,37 @@ class MainActivity : ComponentActivity() {
 
                                             override fun onPermissionRequest(request: PermissionRequest?) {
                                                 request?.grant(request.resources)
+                                            }
+
+                                            override fun onShowFileChooser(
+                                                view: WebView?,
+                                                filePathCallback: ValueCallback<Array<Uri>>?,
+                                                fileChooserParams: FileChooserParams?
+                                            ): Boolean {
+                                                // Cancel previous callback to prevent WebView file chooser deadlock
+                                                fileChooserCallback?.onReceiveValue(null)
+                                                fileChooserCallback = filePathCallback
+
+                                                return try {
+                                                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                                        type = "image/*"
+                                                        addCategory(Intent.CATEGORY_OPENABLE)
+                                                        if (fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                                                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                                                        }
+                                                        val acceptTypes = fileChooserParams?.acceptTypes?.filter { it.isNotBlank() }
+                                                        if (!acceptTypes.isNullOrEmpty() && acceptTypes[0] != "*/*") {
+                                                            putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
+                                                        }
+                                                    }
+                                                    val chooser = Intent.createChooser(intent, "Select Reference Face Photos")
+                                                    fileChooserLauncher.launch(chooser)
+                                                    true
+                                                } catch (e: Exception) {
+                                                    fileChooserCallback?.onReceiveValue(null)
+                                                    fileChooserCallback = null
+                                                    false
+                                                }
                                             }
                                         }
 
@@ -383,6 +443,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        fileChooserCallback?.onReceiveValue(null)
+        fileChooserCallback = null
         super.onDestroy()
         locationService.stopLocationUpdates()
         webView?.destroy()

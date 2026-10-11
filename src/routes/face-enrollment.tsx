@@ -1,30 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertCircle,
   Camera,
   CheckCircle2,
   Clock,
-  Image as ImageIcon,
   KeyRound,
   Loader2,
   Lock,
-  Plus,
   RefreshCw,
   ScanFace,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Trash2,
   UploadCloud,
-  User,
   XCircle,
+  Image as ImageIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -44,8 +42,15 @@ import {
   FACE_CONFIG,
 } from "@/lib/face-recognition";
 import {
+  isNativeBiometricAvailable,
+  getNativeEnrollmentStatus,
+  getNativeDeviceId,
+  enrollNativeTemplatesBatch,
+  verifyNativePersistence,
+  type NativeEnrollmentStatus,
+} from "@/lib/native-biometric-bridge";
+import {
   getStaffFaceStatus,
-  submitStaffFaceEnrollment,
   requestStaffFaceChange,
   cancelStaffFaceChange,
   type StaffFaceStatusResponse,
@@ -55,61 +60,75 @@ import { useActiveStaff } from "@/lib/staff-auth";
 export const Route = createFileRoute("/face-enrollment")({
   head: () => ({
     meta: [
-      { title: "Face Registration & Biometrics — CampusAttend" },
+      { title: "Staff Face Enrollment — CampusAttend" },
       {
         name: "description",
         content:
-          "Register and manage your institutional facial recognition profile for instant location-verified attendance.",
+          "Register and manage your institutional facial recognition profile locally on your Android device.",
       },
-      { property: "og:title", content: "Face Registration — CampusAttend" },
+      { property: "og:title", content: "Staff Face Enrollment — CampusAttend" },
       {
         property: "og:description",
-        content: "Register, lock and manage staff face biometric authentication.",
+        content: "Hardware-isolated, on-device face biometric enrollment for CampusAttend staff.",
       },
     ],
   }),
   component: StaffFaceEnrollmentPage,
 });
 
-interface LocalSample {
+export interface EnrollmentSample {
   id: string;
-  url: string;
+  source: "camera" | "upload";
   filename: string;
-  status: "pending" | "processing" | "valid" | "rejected";
+  previewUrl: string;
+  status: "validating" | "valid" | "rejected";
   message?: string | undefined;
   embedding?: number[] | undefined;
-  photoData?: string | undefined;
+  faceConfidence?: number | undefined;
 }
 
+const MAX_SAMPLES = 5;
+const MIN_SAMPLES = 1;
+const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15MB
+
 function StaffFaceEnrollmentPage() {
-  const navigate = useNavigate();
   const activeStaff = useActiveStaff();
+  const staffId = activeStaff.staffId;
 
-  // Biometric status from server
-  const [faceStatus, setFaceStatus] = useState<StaffFaceStatusResponse | null>(null);
-  const [loadingStatus, setLoadingStatus] = useState(true);
+  // Native hardware status
+  const isNative = isNativeBiometricAvailable();
+  const [nativeStatus, setNativeStatus] = useState<NativeEnrollmentStatus | null>(null);
+  const [loadingNative, setLoadingNative] = useState(true);
+  const [nativeDeviceId, setNativeDeviceId] = useState<string | null>(null);
 
-  // Models state
+  // Server metadata status (approval tokens and change request review state only, NEVER biometrics)
+  const [serverStatus, setServerStatus] = useState<StaffFaceStatusResponse | null>(null);
+
+  // Neural network models state
   const [modelsReady, setModelsReady] = useState(areModelsLoaded() && isArcFaceLoaded());
   const [modelProgress, setModelProgress] = useState(0);
 
-  // Enrollment samples draft
-  const [samples, setSamples] = useState<LocalSample[]>([]);
+  // Enrollment samples state (1 to 5 samples)
+  const [samples, setSamples] = useState<EnrollmentSample[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isReplacementMode, setIsReplacementMode] = useState(false);
 
-  // Camera capture state
+  // File input ref for "Upload Photo Files"
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Live Camera state
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraPermissionDenied, setCameraPermissionDenied] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Change request modal state
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [requestReason, setRequestReason] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
 
-  // Load ArcFace neural network models
+  // Load ArcFace ONNX model and landmark detector
   useEffect(() => {
     if (areModelsLoaded() && isArcFaceLoaded()) {
       setModelsReady(true);
@@ -130,7 +149,7 @@ function StaffFaceEnrollmentPage() {
       })
       .catch((err) => {
         if (!cancelled) {
-          toast.error("Failed to load face recognition neural network", { description: String(err) });
+          toast.error("Failed to load on-device neural network models", { description: String(err) });
         }
       })
       .finally(() => clearInterval(interval));
@@ -141,179 +160,253 @@ function StaffFaceEnrollmentPage() {
     };
   }, []);
 
-  // Fetch face status from server
-  const fetchStatus = useCallback(async () => {
-    setLoadingStatus(true);
+  // Fetch local Android status & server approval state
+  const checkStatus = useCallback(async () => {
+    setLoadingNative(true);
     try {
-      const data = await getStaffFaceStatus();
-      setFaceStatus(data);
-    } catch {
-      toast.error("Failed to fetch face enrollment status.");
+      const devId = getNativeDeviceId();
+      setNativeDeviceId(devId);
+
+      if (isNativeBiometricAvailable()) {
+        const local = await getNativeEnrollmentStatus(staffId);
+        setNativeStatus(local);
+      } else {
+        setNativeStatus({
+          isAvailable: false,
+          isEnrolled: false,
+          count: 0,
+        });
+      }
+
+      // Check server metadata for authorized face-change request state (NO biometrics)
+      try {
+        const srv = await getStaffFaceStatus();
+        setServerStatus(srv);
+      } catch {
+        // Server unreachable; local Keystore status remains authoritative
+      }
+    } catch (err) {
+      console.warn("[FaceEnrollment] Failed to query local status:", err);
     } finally {
-      setLoadingStatus(false);
+      setLoadingNative(false);
     }
+  }, [staffId]);
+
+  useEffect(() => {
+    void checkStatus();
+  }, [checkStatus]);
+
+  // Clean up camera stream
+  const stopCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
   }, []);
 
   useEffect(() => {
-    void fetchStatus();
-  }, [fetchStatus]);
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
 
-  // Camera stream controls
+  // Start live camera stream
   const startCamera = async () => {
+    setCameraPermissionDenied(false);
     try {
-      setCameraActive(true);
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 720 }, height: { ideal: 720 }, facingMode: "user" },
+        video: {
+          width: { ideal: 720 },
+          height: { ideal: 720 },
+          facingMode: "user",
+        },
       });
       streamRef.current = stream;
+      setCameraActive(true);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play().catch(console.error);
       }
-    } catch (err) {
-      toast.error("Camera access failed", { description: String(err) });
-      setCameraActive(false);
+    } catch (err: any) {
+      if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+        setCameraPermissionDenied(true);
+      } else {
+        toast.error("Camera access failed", { description: String(err?.message || err) });
+      }
+      stopCamera();
     }
   };
 
-  useEffect(() => {
-    if (cameraActive && streamRef.current && videoRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(console.error);
-    }
-  }, [cameraActive]);
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    setCameraActive(false);
-  };
-
-  useEffect(() => {
-    return () => stopCamera();
-  }, []);
-
-  // Process a photo with face detection and ArcFace 512-D embedding
+  // Validate and generate embedding for an image strictly in memory
   const processImage = async (
-    dataUrl: string,
-    filename: string,
-  ): Promise<{ valid: boolean; embedding?: number[]; message?: string }> => {
-    try {
+    url: string,
+    filename: string
+  ): Promise<{ valid: boolean; embedding?: number[]; confidence?: number; message?: string }> => {
+    return new Promise((resolve) => {
       const img = new Image();
       img.crossOrigin = "anonymous";
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error("Failed to load image"));
-        img.src = dataUrl;
-      });
+      img.onload = async () => {
+        try {
+          if (img.naturalWidth < 120 || img.naturalHeight < 120) {
+            resolve({
+              valid: false,
+              message: "Image resolution too small (minimum 120x120px required).",
+            });
+            return;
+          }
 
-      // 1. Detect faces & landmarks
-      const faces = await detectFaces(img);
+          const faces = await detectFaces(img);
+          if (faces.length === 0) {
+            resolve({
+              valid: false,
+              message: `No face detected in '${filename}'. Ensure the face is facing the camera in good lighting.`,
+            });
+            return;
+          }
+          if (faces.length > 1) {
+            resolve({
+              valid: false,
+              message: `Multiple faces (${faces.length}) detected in '${filename}'. Only one person should be in the photo.`,
+            });
+            return;
+          }
 
-      if (faces.length === 0) {
-        return { valid: false, message: "No face detected in photo. Ensure clear frontal lighting." };
-      }
-      if (faces.length > 1) {
-        return { valid: false, message: `Multiple faces (${faces.length}) detected. Must show only you.` };
-      }
+          const face = faces[0]!;
+          if (face.confidence < FACE_CONFIG.MIN_FACE_CONFIDENCE) {
+            resolve({
+              valid: false,
+              confidence: face.confidence,
+              message: `Face confidence too low (${Math.round(face.confidence * 100)}%). Ensure photo is sharp and well-lit.`,
+            });
+            return;
+          }
 
-      const singleFace = faces[0]!;
-      if (singleFace.confidence < FACE_CONFIG.MIN_FACE_CONFIDENCE) {
-        return { valid: false, message: "Face detection confidence too low. Avoid extreme angles." };
-      }
+          const embedding = await generateArcFaceEmbedding(
+            img,
+            img.naturalWidth || img.width,
+            img.naturalHeight || img.height,
+            face.landmarks
+          );
 
-      // 2. Compute 512-D ArcFace descriptor
-      const embedding = await generateArcFaceEmbedding(
-        img,
-        img.naturalWidth || img.width,
-        img.naturalHeight || img.height,
-        singleFace.landmarks,
-      );
+          const floatArray = Array.from(embedding);
+          if (floatArray.length !== 512) {
+            resolve({
+              valid: false,
+              message: "Invalid embedding vector dimension generated.",
+            });
+            return;
+          }
 
-      const embArray = Array.from(embedding);
-      return { valid: true, embedding: embArray, message: "Face detected & 512-D ArcFace vector computed" };
-    } catch (err: any) {
-      return { valid: false, message: err?.message || "Error processing image" };
-    }
+          resolve({
+            valid: true,
+            embedding: floatArray,
+            confidence: face.confidence,
+          });
+        } catch (err: any) {
+          resolve({
+            valid: false,
+            message: `Failed to process image: ${err?.message || String(err)}`,
+          });
+        }
+      };
+      img.onerror = () => {
+        resolve({
+          valid: false,
+          message: `Unable to read or decode image file '${filename}'.`,
+        });
+      };
+      img.src = url;
+    });
   };
 
-  // Capture photo from camera
-  const captureCameraPhoto = async () => {
-    if (!videoRef.current) return;
-    const video = videoRef.current;
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      toast.error("Camera stream not ready yet.");
+  // Handle files selected via native Android picker or browser file input
+  const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) {
+      // User canceled or cleared selection
       return;
     }
 
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    const selectedFiles = Array.from(fileList);
+    const currentCount = samples.length;
+    const remainingSlots = MAX_SAMPLES - currentCount;
 
-    const tempId = `snap-${Date.now()}`;
-    const filename = `camera_snap_${samples.length + 1}.jpg`;
-
-    const newSample: LocalSample = {
-      id: tempId,
-      url: dataUrl,
-      filename,
-      status: "processing",
-      photoData: dataUrl,
-    };
-
-    setSamples((prev) => [...prev, newSample]);
-    setIsProcessing(true);
-
-    const result = await processImage(dataUrl, filename);
-    setSamples((prev) =>
-      prev.map((s) =>
-        s.id === tempId
-          ? {
-              ...s,
-              status: result.valid ? "valid" : "rejected",
-              embedding: result.embedding,
-              message: result.message,
-            }
-          : s,
-      ),
-    );
-    setIsProcessing(false);
-
-    if (result.valid) {
-      toast.success("Photo captured and face verified!");
-    } else {
-      toast.error(result.message || "Face check failed for snapshot.");
+    if (remainingSlots <= 0) {
+      toast.error(`Maximum of ${MAX_SAMPLES} reference photos reached. Remove an existing photo to add another.`);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
     }
-  };
 
-  // Upload photos via file input
-  const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+    let filesToProcess = selectedFiles;
+    if (selectedFiles.length > remainingSlots) {
+      toast.warning(
+        `You selected ${selectedFiles.length} photos, but only ${remainingSlots} more slot(s) remain. Processing the first ${remainingSlots}.`
+      );
+      filesToProcess = selectedFiles.slice(0, remainingSlots);
+    }
 
     setIsProcessing(true);
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]!;
+
+    for (let i = 0; i < filesToProcess.length; i++) {
+      const file = filesToProcess[i]!;
+      const tempId = `upload-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`;
       const url = URL.createObjectURL(file);
-      const tempId = `file-${Date.now()}-${i}`;
 
-      const newSample: LocalSample = {
+      // Validate format
+      const validTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+      const ext = file.name.split(".").pop()?.toLowerCase() || "";
+      const isFormatValid =
+        validTypes.includes(file.type.toLowerCase()) ||
+        ["jpg", "jpeg", "png", "webp"].includes(ext);
+
+      if (!isFormatValid) {
+        setSamples((prev) => [
+          ...prev,
+          {
+            id: tempId,
+            source: "upload",
+            filename: file.name,
+            previewUrl: url,
+            status: "rejected",
+            message: "Unsupported file format. Please upload JPG, PNG, or WebP images.",
+          },
+        ]);
+        continue;
+      }
+
+      // Validate file size
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        setSamples((prev) => [
+          ...prev,
+          {
+            id: tempId,
+            source: "upload",
+            filename: file.name,
+            previewUrl: url,
+            status: "rejected",
+            message: "File exceeds 15MB limit. Please upload a smaller photo.",
+          },
+        ]);
+        continue;
+      }
+
+      // Add as validating
+      const placeholder: EnrollmentSample = {
         id: tempId,
-        url,
+        source: "upload",
         filename: file.name,
-        status: "processing",
-        photoData: url,
+        previewUrl: url,
+        status: "validating",
       };
+      setSamples((prev) => [...prev, placeholder]);
 
-      setSamples((prev) => [...prev, newSample]);
-
+      // Run local face detection & ArcFace embedding in memory
       const result = await processImage(url, file.name);
+
       setSamples((prev) =>
         prev.map((s) =>
           s.id === tempId
@@ -321,52 +414,169 @@ function StaffFaceEnrollmentPage() {
                 ...s,
                 status: result.valid ? "valid" : "rejected",
                 embedding: result.embedding,
+                faceConfidence: result.confidence,
                 message: result.message,
               }
-            : s,
-        ),
+            : s
+        )
       );
+
+      if (result.valid) {
+        toast.success(`Verified face in '${file.name}'`);
+      } else {
+        toast.error(result.message || `Face check failed for '${file.name}'`);
+      }
     }
+
     setIsProcessing(false);
+    // CRITICAL: Reset input so the user can re-select files or pick again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
+  // Capture a snapshot from active camera stream
+  const captureCameraPhoto = async () => {
+    if (!videoRef.current || isProcessing) return;
+    const video = videoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      toast.error("Camera stream not ready yet.");
+      return;
+    }
+
+    if (samples.length >= MAX_SAMPLES) {
+      toast.error(`Maximum of ${MAX_SAMPLES} reference photos reached.`);
+      return;
+    }
+
+    setIsProcessing(true);
+    const tempId = `snap-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const snapshotName = `Camera Snapshot #${samples.length + 1}`;
+
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Could not initialize canvas context");
+      ctx.drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+
+      const placeholder: EnrollmentSample = {
+        id: tempId,
+        source: "camera",
+        filename: snapshotName,
+        previewUrl: dataUrl,
+        status: "validating",
+      };
+      setSamples((prev) => [...prev, placeholder]);
+
+      const result = await processImage(dataUrl, snapshotName);
+
+      setSamples((prev) =>
+        prev.map((s) =>
+          s.id === tempId
+            ? {
+                ...s,
+                status: result.valid ? "valid" : "rejected",
+                embedding: result.embedding,
+                faceConfidence: result.confidence,
+                message: result.message,
+              }
+            : s
+        )
+      );
+
+      if (result.valid) {
+        toast.success("Camera snapshot verified!");
+      } else {
+        toast.error(result.message || "Face check failed for snapshot.");
+      }
+    } catch (err: any) {
+      toast.error("Failed to capture snapshot", { description: err?.message || String(err) });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Remove a sample
   const removeSample = (id: string) => {
     setSamples((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Save Face Registration (Initial OR One-Time Replacement)
+  // Save biometric enrollment locally to Android Keystore
   const handleSaveRegistration = async () => {
     const validSamples = samples.filter((s) => s.status === "valid" && s.embedding);
-    if (validSamples.length === 0) {
-      toast.error("Please add at least 1 valid reference photo with a verified face.");
+
+    if (validSamples.length < MIN_SAMPLES) {
+      toast.error(`Please add at least ${MIN_SAMPLES} valid reference photo with a verified face.`);
+      return;
+    }
+
+    if (validSamples.length > MAX_SAMPLES) {
+      toast.error(`Maximum of ${MAX_SAMPLES} reference photos permitted.`);
+      return;
+    }
+
+    const hasRejected = samples.some((s) => s.status === "rejected");
+    if (hasRejected) {
+      toast.error("Please remove or replace rejected photos before saving face registration.");
+      return;
+    }
+
+    if (samples.some((s) => s.status === "validating") || isProcessing) {
+      toast.error("Photos are still validating. Please wait.");
+      return;
+    }
+
+    if (!isNative) {
+      toast.error("Local Android enrollment requires the installed CampusAttend APK with hardware Keystore.");
       return;
     }
 
     setIsSaving(true);
     try {
-      const payload = validSamples.map((s) => ({
-        embedding: s.embedding!,
-        referenceImagePath: s.filename,
-        photoData: s.photoData || s.url,
-      }));
+      const embeddings = validSamples.map((s) => s.embedding!);
+      const labels = validSamples.map((s, idx) => `sample_${idx + 1}`);
+      const oneTimeToken = serverStatus?.oneTimeToken || null;
 
-      const res = await submitStaffFaceEnrollment(payload, faceStatus?.oneTimeToken);
-      if (res.success) {
-        toast.success(res.message || "Face registration successfully saved and locked!");
-        setSamples([]);
-        stopCamera();
-        await fetchStatus();
-      } else {
-        toast.error(res.error || "Failed to save face registration.");
+      // 1. Batch-enroll encrypted templates directly into local SQLite Room database
+      const enrollResult = await enrollNativeTemplatesBatch(staffId, embeddings, labels, oneTimeToken);
+
+      if (!enrollResult.success) {
+        toast.error(
+          enrollResult.error === "ALREADY_ENROLLED"
+            ? "Face is already enrolled and locked on this device. Re-enrollment requires an authorized face-change approval."
+            : enrollResult.message || "Failed to save templates to Android Keystore."
+        );
+        return;
       }
+
+      // 2. CRITICAL: Verify persistence in native Keystore before confirming success
+      const verifyCheck = await verifyNativePersistence(staffId);
+      if (!verifyCheck.verified || verifyCheck.count === 0) {
+        toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+        return;
+      }
+
+      // 3. Confirm success
+      toast.success("Face registration successfully saved and locked!", {
+        description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore.`,
+      });
+
+      // Reset state and reload locked status
+      stopCamera();
+      setSamples([]);
+      setIsReplacementMode(false);
+      await checkStatus();
     } catch (err: any) {
-      toast.error(err?.message || "An error occurred while saving face registration.");
+      toast.error("Failed to save local biometric enrollment", { description: err?.message || String(err) });
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Submit request to change face
+  // Submit request to change face (server metadata only, ZERO biometrics)
   const handleSubmitChangeRequest = async () => {
     if (!requestReason.trim() || requestReason.trim().length < 5) {
       toast.error("Please provide a detailed reason (at least 5 characters).");
@@ -380,7 +590,7 @@ function StaffFaceEnrollmentPage() {
         toast.success("Face change request submitted to administrator!");
         setRequestModalOpen(false);
         setRequestReason("");
-        await fetchStatus();
+        await checkStatus();
       } else {
         toast.error(res.error || "Failed to submit request.");
       }
@@ -391,13 +601,13 @@ function StaffFaceEnrollmentPage() {
     }
   };
 
-  // Cancel pending request
+  // Cancel pending change request
   const handleCancelRequest = async () => {
     try {
       const res = await cancelStaffFaceChange();
       if (res.success) {
         toast.success("Face change request cancelled.");
-        await fetchStatus();
+        await checkStatus();
       } else {
         toast.error(res.error || "Failed to cancel request.");
       }
@@ -406,187 +616,210 @@ function StaffFaceEnrollmentPage() {
     }
   };
 
-  const isLocked = faceStatus?.isLocked === true;
-  const canEdit = faceStatus?.canEdit === true;
-  const status = faceStatus?.status || "not_registered";
+  const isEnrolledOnDevice = nativeStatus?.isEnrolled === true;
+  const isApprovedForReplacement =
+    serverStatus?.canSaveReplacement === true ||
+    (serverStatus?.status === "approved" && Boolean(serverStatus?.oneTimeToken));
+  const isPendingApproval = serverStatus?.hasPendingRequest === true || serverStatus?.status === "pending_approval";
+
   const validCount = samples.filter((s) => s.status === "valid").length;
+  const hasRejected = samples.some((s) => s.status === "rejected");
+  const isValidating = samples.some((s) => s.status === "validating") || isProcessing;
+  const canSave = validCount >= MIN_SAMPLES && validCount <= MAX_SAMPLES && !hasRejected && !isValidating && !isSaving && isNative;
 
   return (
     <AppShell nav={staffNav} role="staff">
       <PageHeader
-        title="Face Authentication & Biometrics"
-        description="Register, lock and manage your institutional facial recognition profile for geofenced attendance."
+        title="Staff Face Enrollment"
+        description="Hardware-isolated, on-device biometric security. Biometric templates are encrypted with Android Keystore and never stored in the cloud."
         actions={
-          <Button variant="outline" size="sm" onClick={() => void fetchStatus()} disabled={loadingStatus}>
-            <RefreshCw className={`mr-1.5 size-3.5 ${loadingStatus ? "animate-spin" : ""}`} />
-            Refresh Status
+          <Button variant="outline" size="sm" onClick={() => void checkStatus()} disabled={loadingNative}>
+            <RefreshCw className={`mr-1.5 size-3.5 ${loadingNative ? "animate-spin" : ""}`} />
+            Refresh Device Status
           </Button>
         }
       />
 
-      <div className="space-y-6">
-        {/* Status Alert Banner */}
-        {loadingStatus ? (
-          <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-6 shadow-sm">
-            <Loader2 className="size-5 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Checking biometric enrollment lock status…</p>
-          </div>
-        ) : status === "approved" && isLocked && !canEdit ? (
-          /* Profile is Locked and Approved */
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6 shadow-sm">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-4">
-                <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
-                  <ShieldCheck className="size-6" />
-                </span>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-foreground">Face Registration Locked & Active</h3>
-                    <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                      <Lock className="mr-1 size-3" /> Locked
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Your face registration is locked. Request administrator approval to change it.
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {faceStatus?.embeddingCount || 0} reference biometric samples verified for{" "}
-                    <strong>{activeStaff.name}</strong> ({activeStaff.staffId}).
-                  </p>
-                </div>
-              </div>
-
-              <Button
-                variant="outline"
-                className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                onClick={() => setRequestModalOpen(true)}
-              >
-                Request Face Change
-              </Button>
-            </div>
-          </div>
-        ) : status === "pending_approval" ? (
-          /* Change Request Pending Approval */
-          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-6 shadow-sm">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-4">
-                <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-amber-500/20 text-amber-600 dark:text-amber-400">
-                  <Clock className="size-6" />
-                </span>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-foreground">Face Change Request Pending Approval</h3>
-                    <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
-                      Pending Administrator Review
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Your request to update your face registration has been submitted. Existing approved templates remain
-                    active for attendance until a decision is made.
-                  </p>
-                  {faceStatus?.pendingRequest?.reason && (
-                    <p className="mt-2 rounded-lg bg-background/50 px-3 py-1.5 text-xs text-muted-foreground">
-                      <strong>Reason:</strong> {faceStatus.pendingRequest.reason}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground hover:text-destructive" onClick={handleCancelRequest}>
-                Withdraw Request
-              </Button>
-            </div>
-          </div>
-        ) : canEdit && faceStatus?.oneTimeToken ? (
-          /* Approved for One-Time Replacement */
-          <div className="rounded-2xl border border-primary/30 bg-primary/10 p-6 shadow-sm">
-            <div className="flex items-start gap-4">
-              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary/20 text-primary">
-                <KeyRound className="size-6" />
-              </span>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-foreground">Administrator Approved — Single-Use Update Authorized</h3>
-                  <Badge variant="outline" className="border-primary/40 text-primary">
-                    One-Time Token Active
-                  </Badge>
-                </div>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  The administrator approved your face change request. Capture or upload your replacement photos below and click{" "}
-                  <strong>Save Face Registration</strong>. Once saved, your profile will immediately re-lock.
-                </p>
-              </div>
-            </div>
-          </div>
-        ) : status === "rejected" ? (
-          /* Change Request Rejected */
-          <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-6 shadow-sm">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-4">
-                <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-destructive/20 text-destructive">
-                  <XCircle className="size-6" />
-                </span>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-foreground">Face Change Request Rejected</h3>
-                    <Badge variant="outline" className="border-destructive/40 text-destructive">
-                      Decision: Rejected
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Your previous request to change your face profile was not approved. Your existing registered face remains
-                    active for attendance.
-                  </p>
-                </div>
-              </div>
-
-              <Button variant="outline" size="sm" onClick={() => setRequestModalOpen(true)}>
-                Submit New Request
-              </Button>
-            </div>
-          </div>
-        ) : (
-          /* Initial Registration (Not Registered) */
-          <div className="rounded-2xl border border-border bg-card p-6 shadow-sm">
-            <div className="flex items-start gap-4">
-              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary-soft text-accent-foreground">
+      <div className="space-y-6 max-w-4xl">
+        {/* Authenticated Staff Identity Card */}
+        <div className="rounded-2xl border border-border/80 bg-card p-5 sm:p-6 shadow-sm">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3.5">
+              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary/10 text-primary">
                 <ScanFace className="size-6" />
               </span>
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-foreground">Initial Face Registration</h3>
-                  <Badge variant="secondary">Not Registered Yet</Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base font-semibold text-foreground">{activeStaff.name}</h3>
+                  <Badge variant="outline" className="font-mono text-xs">
+                    {staffId}
+                  </Badge>
+                  <Badge variant="secondary" className="text-xs">
+                    {activeStaff.department}
+                  </Badge>
                 </div>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Register your face using clear frontal lighting to enable instant biometric attendance verification. Once
-                  saved, your face registration will be permanently locked for security.
+                <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Smartphone className="size-3.5 text-primary" />
+                  <span>
+                    Hardware Device:{" "}
+                    <strong>{nativeDeviceId || (isNative ? "Active Android Device" : "Standard Web Client")}</strong>
+                  </span>
+                </p>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <Badge
+                variant={isNative ? "default" : "outline"}
+                className={isNative ? "bg-emerald-600 text-white hover:bg-emerald-600" : "text-muted-foreground"}
+              >
+                {isNative ? "Android Keystore Active" : "Web Isolation Mode"}
+              </Badge>
+            </div>
+          </div>
+        </div>
+
+        {/* Loading state indicator */}
+        {loadingNative ? (
+          <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-6 shadow-sm">
+            <Loader2 className="size-5 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">Inspecting device hardware keystore biometric status…</p>
+          </div>
+        ) : !isNative ? (
+          /* Notice for Desktop / Web browser users */
+          <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-6 shadow-sm">
+            <div className="flex items-start gap-4">
+              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-sky-500/20 text-sky-600 dark:text-sky-400">
+                <Smartphone className="size-6" />
+              </span>
+              <div className="space-y-2">
+                <h3 className="font-semibold text-foreground">Android Device Required for Hardware Keystore</h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  CampusAttend enforces <strong>zero cloud biometric storage</strong>. Facial templates and embeddings are{" "}
+                  <strong>NEVER stored in Supabase, PostgreSQL, or any remote server</strong>.
+                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Face enrollment is stored strictly within the private app storage of your Android phone, encrypted using
+                  <strong> AES-256-GCM via Android Keystore</strong> with hardware-bound Authenticated Additional Data (AAD).
+                  Please open CampusAttend inside the Android mobile APK on your device to enroll and save your face.
                 </p>
               </div>
             </div>
           </div>
-        )}
+        ) : isEnrolledOnDevice && !isReplacementMode ? (
+          /* STATE 1: Already Enrolled on this Android Phone */
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6 shadow-sm">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-4">
+                  <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                    <ShieldCheck className="size-6" />
+                  </span>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-semibold text-foreground">Face enrolled on this device</h3>
+                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                        <Lock className="mr-1 size-3" /> Locked
+                      </Badge>
+                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                        Keystore AES-256-GCM
+                      </Badge>
+                    </div>
 
-        {/* Neural Network Status Badge */}
-        {!modelsReady && (
-          <div className="flex items-center justify-between rounded-xl border border-border bg-muted/50 p-4 text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <Loader2 className="size-4 animate-spin text-primary" />
-              <span>Loading ArcFace 512-D neural network weights ({modelProgress}%)…</span>
+                    <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                      Your facial biometric templates are encrypted and stored in private app storage on this phone.
+                      Automated face recognition is active for your attendance marking.
+                    </p>
+
+                    <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Enrolled Staff ID:</span> {staffId}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Stored Templates:</span> {nativeStatus?.count ?? 0} samples
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Hardware Device ID:</span>{" "}
+                        {nativeStatus?.deviceId || nativeDeviceId}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Enrolled At:</span>{" "}
+                        {nativeStatus?.enrolledAt ? new Date(nativeStatus.enrolledAt).toLocaleString() : "Active"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {isApprovedForReplacement ? (
+                  <Button
+                    onClick={() => {
+                      setIsReplacementMode(true);
+                      setSamples([]);
+                    }}
+                    className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    <KeyRound className="mr-1.5 size-4" />
+                    Replace Face Enrollment (Approved)
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
+                    onClick={() => setRequestModalOpen(true)}
+                    disabled={isPendingApproval}
+                  >
+                    {isPendingApproval ? "Change Request Pending" : "Request Face Change"}
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Enrollment Controls (Enabled only if canEdit is true) */}
-        {canEdit ? (
+            {/* Approved replacement window notice */}
+            {isApprovedForReplacement && (
+              <div className="rounded-2xl border border-primary/30 bg-primary/10 p-5 shadow-sm">
+                <div className="flex items-start gap-3.5">
+                  <KeyRound className="size-5 text-primary shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground">Administrator Approval Active — 24-Hour Window</h4>
+                    <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                      You are authorized for exactly one replacement. Click <strong>Replace Face Enrollment</strong> above to
+                      capture or upload 1 to 5 fresh reference samples. The new templates will replace the existing ones on this device and immediately re-lock.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Pending change request banner */}
+            {isPendingApproval && (
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5 shadow-sm flex items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <Clock className="size-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-semibold text-foreground">Change Request Under Administrator Review</h4>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Existing approved templates on this device remain active for attendance until a decision is made.
+                    </p>
+                  </div>
+                </div>
+                <Button variant="ghost" size="sm" onClick={handleCancelRequest} className="text-muted-foreground hover:text-destructive shrink-0">
+                  Withdraw Request
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* STATE 2: Face Enrollment & Image Upload Interface (1 to 5 Reference Photos) */
           <div className="space-y-6">
             <Section
               title="Add Reference Face Photos"
-              description="Capture 1 to 3 clear, well-lit photos using your camera or upload image files."
+              description="Capture 1 to 5 clear, well-lit photos using your camera or upload image files."
             >
               <div className="p-6 space-y-6">
-                <div className="flex flex-wrap gap-3">
+                {/* Control Action Buttons */}
+                <div className="flex flex-wrap items-center gap-3">
                   {!cameraActive ? (
-                    <Button onClick={startCamera} disabled={!modelsReady}>
+                    <Button onClick={startCamera} disabled={!modelsReady || isProcessing}>
                       <Camera className="mr-2 size-4" />
                       Open Live Camera
                     </Button>
@@ -599,7 +832,7 @@ function StaffFaceEnrollmentPage() {
                   <Button
                     variant="outline"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={!modelsReady || isProcessing}
+                    disabled={!modelsReady || isProcessing || samples.length >= MAX_SAMPLES}
                   >
                     <UploadCloud className="mr-2 size-4" />
                     Upload Photo Files
@@ -609,16 +842,71 @@ function StaffFaceEnrollmentPage() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept="image/jpeg,image/png,image/webp"
+                    accept="image/jpeg,image/jpg,image/png,image/webp"
                     className="hidden"
                     onChange={handleFilesSelected}
                   />
+
+                  {samples.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSamples([])}
+                      disabled={isProcessing || isSaving}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2 className="mr-1.5 size-3.5" />
+                      Clear All ({samples.length})
+                    </Button>
+                  )}
+
+                  {isReplacementMode && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setIsReplacementMode(false);
+                        stopCamera();
+                        setSamples([]);
+                      }}
+                      className="ml-auto text-muted-foreground"
+                    >
+                      Back to Enrolled Profile
+                    </Button>
+                  )}
                 </div>
 
-                {/* Live Camera Viewfinder */}
+                {/* Guidance Tips Box */}
+                <div className="rounded-xl border border-border/80 bg-muted/40 p-4 space-y-2 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 font-medium text-foreground">
+                    <ScanFace className="size-4 text-primary" />
+                    <span>Reference Photo Requirements (1 to 5 Images)</span>
+                  </div>
+                  <ul className="grid gap-1.5 sm:grid-cols-2 list-disc list-inside">
+                    <li>Frontal neutral face capture with clear eye-level gaze.</li>
+                    <li>Slight angle / head turn (left or right) for natural variation.</li>
+                    <li>Standard clear eyeglasses are recommended if worn regularly.</li>
+                    <li>Normal indoor lighting without glare, backlighting, or deep shadows.</li>
+                    <li>No face masks, caps, or dark-tinted sunglasses.</li>
+                    <li>Accepted formats: JPEG, JPG, PNG, WebP (max 15MB each).</li>
+                  </ul>
+                </div>
+
+                {/* Camera Permission Denied View */}
+                {cameraPermissionDenied && (
+                  <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-5 text-center space-y-2">
+                    <ShieldAlert className="size-8 text-destructive mx-auto" />
+                    <h4 className="font-semibold text-foreground text-sm">Camera Permission Denied</h4>
+                    <p className="max-w-md mx-auto text-xs text-muted-foreground">
+                      Please allow camera permission in Android app settings or use &quot;Upload Photo Files&quot; to pick reference images from your gallery.
+                    </p>
+                  </div>
+                )}
+
+                {/* Live Camera Viewfinder (if camera is active) */}
                 {cameraActive && (
-                  <div className="relative mx-auto flex max-w-md flex-col items-center overflow-hidden rounded-2xl border border-border bg-black p-2">
-                    <div className="relative aspect-square w-full overflow-hidden rounded-xl">
+                  <div className="relative mx-auto flex max-w-md flex-col items-center overflow-hidden rounded-2xl border border-border bg-black p-2 shadow-inner">
+                    <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-zinc-950">
                       <video
                         ref={videoRef}
                         autoPlay
@@ -626,68 +914,88 @@ function StaffFaceEnrollmentPage() {
                         muted
                         className="size-full object-cover -scale-x-100"
                       />
-                      {/* Face Positioning Guide */}
+                      {/* Face Positioning Oval Guide */}
                       <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                        <div className="size-56 rounded-full border-2 border-dashed border-primary/70 bg-primary/5" />
+                        <div className="size-60 sm:size-64 rounded-[48%] border-2 border-dashed border-primary/80 bg-primary/5" />
                       </div>
                     </div>
 
                     <div className="mt-3 flex w-full items-center justify-between px-2">
-                      <p className="text-xs text-zinc-400">Position face within the oval</p>
-                      <Button size="sm" onClick={captureCameraPhoto} disabled={isProcessing}>
-                        {isProcessing ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Camera className="mr-1.5 size-3.5" />}
-                        Snap Photo
+                      <p className="text-xs text-zinc-300">Position face within the oval guide</p>
+                      <Button size="sm" onClick={captureCameraPhoto} disabled={isProcessing || samples.length >= MAX_SAMPLES}>
+                        {isProcessing ? (
+                          <>
+                            <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Verifying…
+                          </>
+                        ) : (
+                          <>
+                            <Camera className="mr-1.5 size-3.5" /> Snap Photo
+                          </>
+                        )}
                       </Button>
                     </div>
                   </div>
                 )}
 
-                {/* Previews of Draft Samples */}
+                {/* Samples Previews Gallery */}
                 {samples.length > 0 && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        Selected Photos ({samples.length}) · Valid for Save: {validCount}
+                        Reference Photos ({samples.length} of {MAX_SAMPLES} selected · {validCount} valid)
                       </h4>
-                      {validCount > 0 && (
-                        <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                          Ready to enroll
-                        </span>
-                      )}
+                      <Badge variant={validCount >= MIN_SAMPLES && !hasRejected ? "default" : "secondary"}>
+                        {validCount >= MIN_SAMPLES && !hasRejected ? "Ready to Save" : `${validCount} / ${MIN_SAMPLES} minimum`}
+                      </Badge>
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                      {samples.map((s) => (
+                      {samples.map((sample, idx) => (
                         <div
-                          key={s.id}
-                          className="relative flex flex-col overflow-hidden rounded-xl border border-border bg-card p-3 shadow-sm"
+                          key={sample.id}
+                          className={`relative flex flex-col overflow-hidden rounded-xl border bg-card p-3 shadow-sm transition-all ${
+                            sample.status === "valid"
+                              ? "border-emerald-500/40 bg-emerald-500/5"
+                              : sample.status === "rejected"
+                              ? "border-destructive/40 bg-destructive/5"
+                              : "border-border"
+                          }`}
                         >
                           <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-muted">
-                            <img src={s.url} alt={s.filename} className="size-full object-cover" />
+                            <img
+                              src={sample.previewUrl}
+                              alt={sample.filename}
+                              className="size-full object-cover"
+                            />
+                            <span className="absolute top-2 left-2 rounded-md bg-black/70 px-2 py-0.5 text-[10px] font-mono text-white">
+                              #{idx + 1}
+                            </span>
                             <button
                               type="button"
-                              onClick={() => removeSample(s.id)}
-                              className="absolute top-2 right-2 rounded-full bg-black/60 p-1.5 text-white hover:bg-destructive transition-colors"
+                              onClick={() => removeSample(sample.id)}
+                              disabled={isSaving}
+                              className="absolute top-2 right-2 rounded-full bg-black/70 p-1 text-white hover:bg-destructive hover:text-white transition-colors"
                               title="Remove photo"
                             >
                               <Trash2 className="size-3.5" />
                             </button>
                           </div>
 
-                          <div className="mt-2.5 flex-1">
-                            <p className="truncate text-xs font-medium text-foreground">{s.filename}</p>
-                            <div className="mt-1 flex items-center gap-1.5">
-                              {s.status === "processing" ? (
+                          <div className="mt-2.5 space-y-1">
+                            <p className="truncate text-xs font-medium text-foreground">{sample.filename}</p>
+                            <div>
+                              {sample.status === "validating" ? (
                                 <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                                  <Loader2 className="size-3 animate-spin" /> Checking face…
+                                  <Loader2 className="size-3 animate-spin text-primary" /> Validating face…
                                 </span>
-                              ) : s.status === "valid" ? (
-                                <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-                                  <CheckCircle2 className="size-3" /> Verified (512-D)
+                              ) : sample.status === "valid" ? (
+                                <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                  <CheckCircle2 className="size-3" /> Verified (512-D ArcFace)
                                 </span>
                               ) : (
-                                <span className="flex items-center gap-1 text-[11px] text-destructive">
-                                  <XCircle className="size-3" /> {s.message || "Rejected"}
+                                <span className="flex items-start gap-1 text-[11px] text-destructive leading-tight">
+                                  <XCircle className="size-3 shrink-0 mt-0.5" />
+                                  <span>{sample.message || "Face check rejected"}</span>
                                 </span>
                               )}
                             </div>
@@ -698,11 +1006,23 @@ function StaffFaceEnrollmentPage() {
                   </div>
                 )}
 
+                {/* Privacy Guarantee Banner */}
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 font-medium">
+                    <ShieldCheck className="size-4" />
+                    <span>Strict On-Device Biometric Storage</span>
+                  </div>
+                  <p className="mt-1 leading-relaxed">
+                    All face embeddings are processed in memory and encrypted directly in Android Keystore AES-256-GCM private app storage.
+                    Raw face photos and vectors are <strong>NEVER transmitted to Supabase, Vercel, or cloud servers</strong>.
+                  </p>
+                </div>
+
                 {/* Save Face Registration Action Button */}
                 <div className="pt-4 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3">
                   <div className="text-xs text-muted-foreground">
                     <p>
-                      Saving will link this biometric profile to <strong>{activeStaff.staffId}</strong>.
+                      Saving will lock this biometric profile to <strong>{activeStaff.staffId}</strong> on this phone.
                     </p>
                     <p className="text-[11px] text-muted-foreground/80">
                       The profile will be <strong>permanently locked</strong> immediately upon saving.
@@ -711,72 +1031,26 @@ function StaffFaceEnrollmentPage() {
 
                   <Button
                     size="lg"
-                    disabled={validCount === 0 || isSaving || isProcessing}
+                    disabled={!canSave}
                     onClick={handleSaveRegistration}
-                    className="w-full sm:w-auto"
+                    className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white"
                   >
-                    {isSaving && <Loader2 className="mr-2 size-4 animate-spin" />}
-                    {isSaving ? "Saving & Locking Face…" : "Save Face Registration"}
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        Encrypting & Saving Face…
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="mr-2 size-4" />
+                        Save Face Registration ({validCount} Photo{validCount === 1 ? "" : "s"})
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>
             </Section>
           </div>
-        ) : (
-          /* Profile is Locked — Show Locked Reference Gallery */
-          <Section
-            title="Enrolled Face Profile"
-            description="Active reference photos verified for automated attendance matching."
-          >
-            <div className="p-6 space-y-4">
-              <div className="rounded-xl border border-dashed border-border p-6 text-center">
-                <Lock className="mx-auto size-8 text-muted-foreground/60" />
-                <h4 className="mt-2 text-sm font-semibold text-foreground">Biometric Editing Disabled</h4>
-                <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-                  Your facial templates are securely encrypted and locked in the institutional biometric store.
-                  To update your photos, click below to request administrator approval.
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-4 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                  onClick={() => setRequestModalOpen(true)}
-                  disabled={status === "pending_approval"}
-                >
-                  {status === "pending_approval" ? "Request Already Pending" : "Request Face Change"}
-                </Button>
-              </div>
-
-              {faceStatus?.samples && faceStatus.samples.length > 0 && (
-                <div className="mt-4">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                    Enrolled Reference Samples ({faceStatus.samples.length})
-                  </h4>
-                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                    {faceStatus.samples.map((sample, idx) => (
-                      <div key={sample.id} className="rounded-xl border border-border bg-card p-3 shadow-sm">
-                        <div className="flex items-center gap-3">
-                          <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary-soft text-accent-foreground font-mono text-xs">
-                            #{idx + 1}
-                          </span>
-                          <div className="overflow-hidden">
-                            <p className="truncate text-xs font-medium">{sample.reference_image_path}</p>
-                            <p className="text-[11px] text-muted-foreground">
-                              {new Date(sample.created_at).toLocaleDateString("en-IN", {
-                                day: "numeric",
-                                month: "short",
-                                year: "numeric",
-                              })}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </Section>
         )}
       </div>
 
@@ -789,8 +1063,8 @@ function StaffFaceEnrollmentPage() {
               Request Face Registration Change
             </DialogTitle>
             <DialogDescription>
-              To maintain campus security, face biometric profiles are permanently locked. Please explain why you need
-              to re-register your face.
+              To maintain campus security, face biometric profiles are permanently locked on the device.
+              Please provide the institutional justification for re-enrolling your face.
             </DialogDescription>
           </DialogHeader>
 
@@ -807,8 +1081,8 @@ function StaffFaceEnrollmentPage() {
                 rows={4}
               />
               <p className="text-[11px] text-muted-foreground">
-                This request will be reviewed by college administration. If approved, you will receive single-use permission
-                to save a new face registration.
+                This request will be reviewed by college administration. If approved, you will receive single-use authorization
+                to enroll fresh samples on your device.
               </p>
             </div>
           </div>
