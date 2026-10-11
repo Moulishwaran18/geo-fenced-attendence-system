@@ -102,8 +102,8 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               </p>
               <p className="mt-2.5 max-w-md text-sm text-muted-foreground leading-relaxed">
                 CampusAttend is protected by institutional network security. This system can only be
-                accessed when your device is connected to an authorized campus Wi-Fi (
-                <strong className="text-foreground">M or SONA-WIFI</strong>).
+                accessed when your device is connected to an authorized campus Wi-Fi network whose name
+                contains <strong className="text-foreground">sona</strong> (case-insensitive).
               </p>
             </div>
 
@@ -114,28 +114,36 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               </h2>
               <div className="mt-3 space-y-2.5 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Active Wi-Fi SSID:</span>
+                  <span className="text-muted-foreground">Detected Network / SSID:</span>
                   <span className="font-semibold text-foreground">
-                    {status?.ssid ? (
-                      <span className="text-destructive">{status.ssid} (Unauthorized)</span>
+                    {status?.network || status?.ssid ? (
+                      <span className="text-destructive">{status.network || status.ssid}</span>
                     ) : (
                       <span className="text-muted-foreground">None / Disconnected</span>
                     )}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Authorized Wi-Fi:</span>
-                  <span className="font-semibold text-primary">M / SONA-WIFI</span>
+                  <span className="text-muted-foreground">Wi-Fi Policy:</span>
+                  <span className="font-mono text-primary font-medium">SSID contains &quot;sona&quot;</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Security Mode:</span>
-                  <span className="font-mono text-muted-foreground">{status?.auth || "Standard"}</span>
+                  <span className="text-muted-foreground">Verification Method:</span>
+                  <span className="font-mono text-muted-foreground">
+                    {status?.verificationMethod || (status?.isNativeBridge ? "Native Bridge" : "Browser Sandbox")}
+                  </span>
                 </div>
-                <div className="flex items-center justify-between pt-1 border-t border-border/60">
-                  <span className="text-muted-foreground">Diagnostics:</span>
-                  <span className="flex items-center gap-1.5 font-medium text-destructive">
-                    <AlertTriangle className="size-3.5 shrink-0" />
-                    <span className="truncate">{status?.reason || "Restricted to authorized Wi-Fi only"}</span>
+                {status?.errorCode && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Error Code:</span>
+                    <span className="font-mono text-destructive font-semibold">{status.errorCode}</span>
+                  </div>
+                )}
+                <div className="flex items-start justify-between pt-1 border-t border-border/60">
+                  <span className="text-muted-foreground shrink-0 mr-2">Diagnostics:</span>
+                  <span className="flex items-start gap-1.5 font-medium text-destructive text-right">
+                    <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+                    <span>{status?.reason || "Restricted to authorized Wi-Fi only"}</span>
                   </span>
                 </div>
               </div>
@@ -150,7 +158,10 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside pl-1">
                 <li>Open your device Wi-Fi settings.</li>
                 <li>
-                  Connect to <strong className="text-foreground">M or SONA-WIFI</strong>.
+                  Connect to an authorized Wi-Fi network containing <strong className="text-foreground">sona</strong> (e.g. SONA-WIFI).
+                </li>
+                <li>
+                  Ensure you are using the <strong className="text-foreground">CampusAttend Android APK</strong> with Location permissions enabled.
                 </li>
                 <li>
                   Once connected, this page will <strong className="text-foreground">automatically unlock</strong>, or click below to re-check.

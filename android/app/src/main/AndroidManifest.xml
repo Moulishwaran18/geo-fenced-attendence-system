@@ -15,6 +15,7 @@
     <!-- Network state for Wi-Fi SSID identification -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
 
     <!-- Hardware feature declarations for accurate capability detection -->
     <uses-feature android:name="android.hardware.camera" android:required="true" />

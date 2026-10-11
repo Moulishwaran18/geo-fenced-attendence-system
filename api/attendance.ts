@@ -195,16 +195,23 @@ function extractTrustedClientIp(req: any): string {
     if (clean) return clean;
   }
 
+  const cfIp = getHeader("cf-connecting-ip");
+  if (cfIp) {
+    const clean = sanitizeIp(cfIp);
+    if (clean) return clean;
+  }
+
   const fwd = getHeader("x-forwarded-for");
   if (fwd) {
     const ips = fwd.split(",").map((s: string) => sanitizeIp(s)).filter(Boolean);
     if (ips.length > 0) {
-      for (let i = ips.length - 1; i >= 0; i--) {
-        const ip = ips[i];
+      // In trusted reverse proxy environment, the first IP is the originating client
+      const firstIp = ips[0];
+      if (firstIp && !isPrivateIp(firstIp)) return firstIp;
+      for (const ip of ips) {
         if (ip && !isPrivateIp(ip)) return ip;
       }
-      const fallbackIp = ips[0];
-      if (fallbackIp) return fallbackIp;
+      return firstIp || "unknown";
     }
   }
 
@@ -246,6 +253,21 @@ function isAuthorizedCampusEgressIp(ip?: string | null): {
     authorized: false,
     reason: `Network verification rejected. Server observed public IP ${cleanIp} does not match authorized campus network egress IPs.`,
   };
+}
+
+function isAuthorizedSonaSsid(ssid?: string | null | undefined): boolean {
+  if (!ssid || typeof ssid !== "string") return false;
+  const clean = ssid.trim().replace(/^["']|["']$/g, "").trim().toLowerCase();
+  if (
+    !clean ||
+    clean === "<unknown ssid>" ||
+    clean === "unknown" ||
+    clean === "ssid_unavailable" ||
+    clean === "0x"
+  ) {
+    return false;
+  }
+  return clean.includes("sona");
 }
 
 function verifyNetworkAuthToken(token?: string | null): {
@@ -290,6 +312,11 @@ function verifyNetworkAuthToken(token?: string | null): {
 
     if (Date.now() > payload.expiresAt) {
       return { valid: false, error: "TOKEN_EXPIRED" };
+    }
+
+    const tokenSsid = payload.ssid || payload.network || "";
+    if (!payload.authorized || !isAuthorizedSonaSsid(tokenSsid)) {
+      return { valid: false, error: "UNAUTHORIZED_SSID_IN_TOKEN" };
     }
 
     return { valid: true, payload };
@@ -495,26 +522,14 @@ export default async function handler(req: any, res?: any) {
   // FACTOR 1: MANDATORY CAMPUS WI-FI NETWORK VERIFICATION
   // =========================================================================
   const tokenCheck = verifyNetworkAuthToken(networkToken);
-  let ipCheck = isAuthorizedCampusEgressIp(clientIp);
+  const isNetworkAuthorized = tokenCheck.valid;
 
-  // Local Development Fallback for direct attendance connections:
-  if (!ipCheck.authorized && !isVercelOrProduction(req) && isPrivateIp(clientIp)) {
-    const devEgressIp = await fetchDevServerPublicEgressIp();
-    if (devEgressIp) {
-      const devCheck = isAuthorizedCampusEgressIp(devEgressIp);
-      if (devCheck.authorized) {
-        ipCheck = devCheck;
-      }
-    }
-  }
-
-  const isNetworkAuthorized = tokenCheck.valid || ipCheck.authorized;
   if (!isNetworkAuthorized) {
     return sendJsonResponse(res, 403, {
       success: false,
       error: "CAMPUS_NETWORK_UNAUTHORIZED",
       message:
-        "Attendance rejected: Factor 1 (Campus Wi-Fi) failed. Genuine server-verified SONA-WIFI connection is required.",
+        "Attendance rejected: Factor 1 (Campus Wi-Fi) failed. Device must be connected to an authorized Wi-Fi network containing 'sona' verified via CampusAttend Android app.",
       clientIp: clientIp !== "unknown" ? clientIp : undefined,
       tokenError: tokenCheck.error || "No valid network authorization token present.",
     });
@@ -724,7 +739,6 @@ export default async function handler(req: any, res?: any) {
           verification: `${verifiedBiometricMethod} · Verified (SONA-WIFI)`,
           latitude: body.latitude,
           longitude: body.longitude,
-          photo_url: body.photoUrl || null,
         })
         .select()
         .single();
@@ -749,8 +763,8 @@ export default async function handler(req: any, res?: any) {
       gps: true,
       face: true,
     },
-    verifiedNetwork: "SONA Campus Network",
-    verifiedIp: tokenCheck.payload?.verifiedIp || ipCheck.matchedIp || clientIp,
+    verifiedNetwork: tokenCheck.payload?.ssid || "SONA Campus Network",
+    verifiedIp: tokenCheck.payload?.verifiedIp || clientIp,
     staffCode,
     staffName,
     biometricMethod: verifiedBiometricMethod,

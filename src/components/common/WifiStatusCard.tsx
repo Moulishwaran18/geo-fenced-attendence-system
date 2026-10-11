@@ -203,13 +203,13 @@ export function WifiStatusCard({
           </div>
         </div>
 
-        {/* 4. Public Egress IP / Link */}
+        {/* 4. Connected SSID / Status */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Egress IP / Link
+            Connected SSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={displayIp}>
-            {displayIp}
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.ssid || status?.network || displayIp}>
+            {status?.ssid || status?.network || (wifiAuthorized ? "sona" : "None")}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
             {wifiStatusText === "Connected"
@@ -225,7 +225,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires connection to the authorized SONA campus Wi-Fi network, verified server-side through authorized campus network egress.
+          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires connection to an authorized Wi-Fi network whose name contains &quot;sona&quot; (case-insensitive), verified via CampusAttend Android app.
         </p>
       </div>
 

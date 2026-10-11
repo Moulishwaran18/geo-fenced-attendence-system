@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -25,7 +27,8 @@ import java.net.Inet6Address
  *
  * Exposes real device connected Wi-Fi SSID and transport status to the web application:
  * - Direct SSID extraction via ConnectivityManager & WifiManager
- * - Proper Android permission checks (ACCESS_FINE_LOCATION / NEARBY_WIFI_DEVICES)
+ * - NetworkCallback with FLAG_INCLUDE_LOCATION_INFO (API 31+) for unredacted SSID retrieval
+ * - Proper Android permission checks (ACCESS_FINE_LOCATION)
  * - Location services state verification (required by Android for SSID disclosure)
  * - Cellular vs Wi-Fi distinction (blocks mobile data from masquerading as Wi-Fi)
  */
@@ -40,6 +43,47 @@ class AndroidWifiBridge(
     private val locationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
 
+    @Volatile
+    private var callbackSsid: String? = null
+
+    init {
+        registerWifiNetworkCallback()
+    }
+
+    private fun registerWifiNetworkCallback() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && connectivityManager != null) {
+                val request = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .build()
+                connectivityManager.registerNetworkCallback(
+                    request,
+                    object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                        override fun onCapabilitiesChanged(
+                            network: Network,
+                            networkCapabilities: NetworkCapabilities
+                        ) {
+                            val wifiInfo = networkCapabilities.transportInfo as? WifiInfo
+                            val raw = wifiInfo?.ssid
+                            if (!raw.isNullOrBlank()) {
+                                val clean = sanitizeSsid(raw)
+                                if (clean.isNotEmpty()) {
+                                    callbackSsid = clean
+                                }
+                            }
+                        }
+
+                        override fun onLost(network: Network) {
+                            callbackSsid = null
+                        }
+                    }
+                )
+            }
+        } catch (_: Exception) {
+            // Callback registration fallback
+        }
+    }
+
     @JavascriptInterface
     fun isAvailable(): Boolean = true
 
@@ -48,7 +92,7 @@ class AndroidWifiBridge(
      * or authorized local development hosts can invoke native Wi-Fi methods.
      */
     private fun isCallingOriginTrusted(): Boolean {
-        val currentUrl = webView?.url ?: return true
+        val currentUrl = webView?.url ?: webView?.originalUrl ?: return true
         val trustedHosts = listOf(
             "geo-fenced-attendence-system.vercel.app",
             "localhost",
@@ -66,20 +110,13 @@ class AndroidWifiBridge(
 
     /**
      * Checks if the required runtime permissions to obtain the Wi-Fi SSID are granted.
-     * Android requires ACCESS_FINE_LOCATION (or ACCESS_COARSE_LOCATION) to query the connected SSID.
+     * Android requires ACCESS_FINE_LOCATION to query the connected SSID.
      */
     private fun hasWifiPermissions(): Boolean {
-        val fineGranted = ContextCompat.checkSelfPermission(
+        return ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-
-        val coarseGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        return fineGranted || coarseGranted
     }
 
     /**
@@ -236,6 +273,8 @@ class AndroidWifiBridge(
                 }
             }
 
+            val detectedSsid = extractCurrentSsid(caps)
+            json.put("ssid", if (detectedSsid.isNotEmpty()) detectedSsid else JSONObject.NULL)
             json.put("ipv4", if (ipv4.isNotEmpty()) ipv4 else JSONObject.NULL)
             json.put("ipv4Subnet", if (ipv4Subnet.isNotEmpty()) ipv4Subnet else JSONObject.NULL)
             json.put("prefixLength", prefixLength)
@@ -422,53 +461,66 @@ class AndroidWifiBridge(
      * Extracts and sanitizes the connected Wi-Fi SSID using multiple Android API strategies.
      */
     private fun extractCurrentSsid(caps: NetworkCapabilities?): String {
-        // Strategy A: NetworkCapabilities transportInfo (Android 10+ / API 29+)
-        val transportInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            caps?.transportInfo as? WifiInfo
-        } else {
-            null
+        // Strategy 1: NetworkCallback with FLAG_INCLUDE_LOCATION_INFO (Android 12+ / API 31+)
+        val fromCallback = callbackSsid
+        if (!fromCallback.isNullOrBlank()) {
+            val clean = sanitizeSsid(fromCallback)
+            if (clean.isNotEmpty()) {
+                return clean
+            }
         }
 
-        // Strategy B: WifiManager connectionInfo
+        // Strategy 2: WifiManager connectionInfo (reliable when ACCESS_FINE_LOCATION is granted)
         @Suppress("DEPRECATION")
-        val connInfo = transportInfo ?: wifiManager?.connectionInfo
+        val wifiInfo = wifiManager?.connectionInfo
+        if (wifiInfo != null && !wifiInfo.ssid.isNullOrBlank()) {
+            val clean = sanitizeSsid(wifiInfo.ssid)
+            if (clean.isNotEmpty()) {
+                return clean
+            }
+        }
 
-        var ssid = connInfo?.ssid ?: ""
+        // Strategy 3: NetworkCapabilities transportInfo (Android 10+ / API 29+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val transportInfo = caps?.transportInfo as? WifiInfo
+            if (transportInfo != null && !transportInfo.ssid.isNullOrBlank()) {
+                val clean = sanitizeSsid(transportInfo.ssid)
+                if (clean.isNotEmpty()) {
+                    return clean
+                }
+            }
+        }
 
-        // Sanitize Android quotes: "\"M\"" -> "M", "\"SONA-WIFI\"" -> "SONA-WIFI"
-        ssid = sanitizeSsid(ssid)
-
-        // Strategy C: NetworkInfo extraInfo fallback if SSID is masked
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
+        // Strategy 4: NetworkInfo extraInfo fallback if SSID is masked
+        try {
             @Suppress("DEPRECATION")
             val netInfo = connectivityManager?.getNetworkInfo(ConnectivityManager.TYPE_WIFI)
             val extraInfo = netInfo?.extraInfo
             if (!extraInfo.isNullOrBlank()) {
                 val cleanedExtra = sanitizeSsid(extraInfo)
-                if (cleanedExtra.isNotBlank() && cleanedExtra != "<unknown ssid>") {
-                    ssid = cleanedExtra
+                if (cleanedExtra.isNotBlank()) {
+                    return cleanedExtra
                 }
             }
-        }
+        } catch (_: Exception) {}
 
-        // Strategy D: Match scan results by BSSID if SSID is masked but BSSID is present
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") {
-            val bssid = connInfo?.bssid ?: ""
+        // Strategy 5: Match scan results by BSSID if SSID is masked but BSSID is present
+        try {
+            val bssid = wifiInfo?.bssid ?: ""
             if (bssid.isNotBlank() && bssid != "02:00:00:00:00:00") {
-                try {
-                    @Suppress("DEPRECATION")
-                    val scanResults = wifiManager?.scanResults
-                    val match = scanResults?.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
-                    if (match != null && !match.SSID.isNullOrBlank() && match.SSID != "<unknown ssid>") {
-                        ssid = sanitizeSsid(match.SSID)
+                @Suppress("DEPRECATION")
+                val scanResults = wifiManager?.scanResults
+                val match = scanResults?.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
+                if (match != null && !match.SSID.isNullOrBlank()) {
+                    val clean = sanitizeSsid(match.SSID)
+                    if (clean.isNotEmpty()) {
+                        return clean
                     }
-                } catch (_: Exception) {
-                    // ignore scan list restriction
                 }
             }
-        }
+        } catch (_: Exception) {}
 
-        return ssid
+        return ""
     }
 
     private fun sanitizeSsid(raw: String): String {

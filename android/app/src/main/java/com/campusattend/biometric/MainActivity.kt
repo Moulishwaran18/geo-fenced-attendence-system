@@ -194,6 +194,10 @@ class MainActivity : ComponentActivity() {
                                             cacheMode = WebSettings.LOAD_DEFAULT
                                             allowFileAccess = false
                                             allowContentAccess = false
+                                            val currentUa = userAgentString ?: ""
+                                            if (!currentUa.contains("CampusAttendNative")) {
+                                                userAgentString = "$currentUa CampusAttendNative/1.0"
+                                            }
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
@@ -248,13 +252,13 @@ class MainActivity : ComponentActivity() {
                                                 isLoadError = false
                                             }
 
-                                            @SuppressLint("WebViewClientOnReceivedSslError")
                                             override fun onReceivedSslError(
                                                 view: WebView?,
                                                 handler: SslErrorHandler?,
                                                 error: SslError?
                                             ) {
-                                                handler?.proceed()
+                                                // Preserve HTTPS certificate validation without bypasses
+                                                handler?.cancel()
                                             }
 
                                             override fun onReceivedError(
@@ -304,6 +308,9 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.ACCESS_WIFI_STATE,
                 Manifest.permission.ACCESS_NETWORK_STATE
             )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
             val needed = permissions.filter {
                 ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
             }
@@ -320,7 +327,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndRequestPermissions() {
-        val permissions = arrayOf(
+        val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.CAMERA,
@@ -328,6 +335,9 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.ACCESS_NETWORK_STATE,
             Manifest.permission.ACCESS_WIFI_STATE
         )
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
 
         val needed = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED

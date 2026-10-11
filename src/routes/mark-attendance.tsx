@@ -383,10 +383,16 @@ function MarkAttendancePage() {
 
     const displayVerification =
       wifiCardStatus === "VERIFIED"
-        ? (wifiStatus?.verificationMethod === "NATIVE_BRIDGE" ? "Native Bridge Verified" : "Server Verified")
+        ? (wifiStatus?.verificationMethod === "NATIVE_BRIDGE"
+            ? "Native Bridge Verified"
+            : wifiStatus?.verificationMethod === "SIMULATION"
+              ? "Simulated Network"
+              : "Server Verified")
         : wifiCardStatus === "CHECKING"
           ? "Verifying…"
-          : "Server Rejected";
+          : wifiStatus?.errorCode
+            ? `Rejected: ${wifiStatus.errorCode}`
+            : "Server Rejected";
 
     const wifiSignal = {
       key: "wifi" as const,
@@ -409,6 +415,11 @@ function MarkAttendancePage() {
               {displayVerification}
             </span>
           </div>
+          {wifiCardStatus !== "VERIFIED" && wifiStatus?.reason && (
+            <div className="pt-0.5 text-[10px] text-destructive leading-tight truncate">
+              {wifiStatus.reason}
+            </div>
+          )}
         </div>
       ),
       state: (wifiCardStatus === "VERIFIED" ? "verified" : wifiCardStatus === "CHECKING" ? "warning" : "error") as "verified" | "warning" | "error",
@@ -794,12 +805,23 @@ function MarkAttendancePage() {
                 </Button>
               }
             />
+          ) : !isUsingMockScenario && isWifiLoading && !wifiStatus ? (
+            <AlertBanner
+              tone="warning"
+              icon={Wifi}
+              title="Verifying Campus Wi-Fi…"
+              description="Verifying connection against authorized campus Wi-Fi network containing 'sona'..."
+            />
           ) : !wifiAuthorized ? (
             <AlertBanner
               tone="error"
               icon={Wifi}
               title="Attendance Blocked — Wi-Fi Not Authorized"
-              description="Device is not connected to an authorized campus Wi-Fi network. Connect to institutional Wi-Fi to satisfy Factor 1. (GPS & Face diagnostics remain accessible below)."
+              description={
+                wifiStatus?.reason
+                  ? wifiStatus.reason
+                  : "Device is not connected to an authorized campus Wi-Fi network. Connect to a Wi-Fi network containing 'sona' (e.g. SONA-WIFI) to satisfy Factor 1. (GPS & Face diagnostics remain accessible below)."
+              }
             />
           ) : !isUsingMockScenario && geofence.status === "acquiring" ? (
             <AlertBanner

@@ -3,6 +3,7 @@
  *
  * Facilitates communication with Android native Wi-Fi services:
  * - Checks if running inside the Android Native attendance application
+ * - Waits for native bridge initialization to avoid race conditions
  * - Requests real connected Wi-Fi SSID
  * - Distinguishes between Wi-Fi, Cellular, and Offline connections
  * - Handles runtime permission checks and device location requirements
@@ -29,6 +30,7 @@ export interface NativeConnectedWifi {
 export interface NativeNetworkFingerprint {
   transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
   isWifi: boolean;
+  ssid?: string | null;
   ipv4?: string | null;
   ipv4Subnet?: string | null;
   prefixLength?: number;
@@ -41,16 +43,49 @@ export interface NativeNetworkFingerprint {
 }
 
 /**
- * Checks whether the native Android Wi-Fi bridge is accessible in the current execution environment.
+ * Checks whether the current runtime environment is the native Android APK.
+ * Detects either already injected bridge or custom UserAgent token set by MainActivity.
+ */
+export function isNativeAppEnvironment(): boolean {
+  if (typeof window === "undefined") return false;
+  if ((window as any).AndroidWifiBridge) return true;
+  if (typeof navigator !== "undefined" && navigator.userAgent && navigator.userAgent.includes("CampusAttendNative")) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Waits for AndroidWifiBridge to become ready if running inside the native APK.
+ * Eliminates startup race conditions where React mounts before WebView finishes JavaScript interface injection.
+ */
+export async function waitForNativeWifiBridge(maxWaitMs = 1500): Promise<any | null> {
+  if (typeof window === "undefined") return null;
+  if ((window as any).AndroidWifiBridge) return (window as any).AndroidWifiBridge;
+
+  if (!isNativeAppEnvironment()) return null;
+
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if ((window as any).AndroidWifiBridge) {
+      return (window as any).AndroidWifiBridge;
+    }
+  }
+  return (window as any).AndroidWifiBridge || null;
+}
+
+/**
+ * Checks whether the native Android Wi-Fi bridge is accessible right now.
  */
 export function isNativeWifiBridgeAvailable(): boolean {
   if (typeof window === "undefined") return false;
   const bridge = (window as any).AndroidWifiBridge;
   return Boolean(
     bridge &&
-      (typeof bridge.getNetworkFingerprint === "function" ||
+      (typeof bridge.getConnectedWifi === "function" ||
         typeof bridge.getWifiSsid === "function" ||
-        typeof bridge.getConnectedWifi === "function" ||
+        typeof bridge.getNetworkFingerprint === "function" ||
         typeof bridge.isAvailable === "function" ||
         typeof bridge.getWifiDetails === "function")
   );
@@ -99,19 +134,21 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
     };
   }
 
-  // 1. Try modern getConnectedWifi()
+  // 1. Primary: modern getConnectedWifi()
   if (typeof bridge.getConnectedWifi === "function") {
     try {
       const raw = bridge.getConnectedWifi();
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       if (parsed && typeof parsed === "object") {
+        const rawSsid = parsed.ssid ? String(parsed.ssid).trim().replace(/^["']|["']$/g, "") : null;
+        const validSsid = rawSsid && rawSsid !== "<unknown ssid>" && rawSsid !== "0x" && rawSsid !== "SSID_UNAVAILABLE" ? rawSsid : null;
         return {
           connected: Boolean(parsed.connected),
           transport: parsed.transport || (parsed.connected ? "wifi" : "unknown"),
-          ssid: parsed.ssid || null,
+          ssid: validSsid,
           permissionGranted: parsed.permissionGranted ?? true,
           locationEnabled: parsed.locationEnabled ?? true,
-          reason: parsed.reason || (parsed.ssid ? "SUCCESS" : "SSID_UNAVAILABLE"),
+          reason: parsed.reason || (validSsid ? "SUCCESS" : "SSID_UNAVAILABLE"),
         };
       }
     } catch (e) {
@@ -119,18 +156,35 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
     }
   }
 
-  // 2. Fallback to getWifiDetails()
+  // 2. Direct string query getWifiSsid()
+  if (typeof bridge.getWifiSsid === "function") {
+    try {
+      const raw = String(bridge.getWifiSsid()).trim().replace(/^["']|["']$/g, "");
+      const valid = raw && raw !== "SSID_UNAVAILABLE" && raw !== "<unknown ssid>" && raw !== "0x";
+      if (valid) {
+        return {
+          connected: true,
+          transport: "wifi",
+          ssid: raw,
+          permissionGranted: true,
+          locationEnabled: true,
+          reason: "SUCCESS",
+        };
+      }
+    } catch (e) {
+      console.warn("[NativeWifiBridge] Failed to call getWifiSsid:", e);
+    }
+  }
+
+  // 3. Fallback: getWifiDetails()
   if (typeof bridge.getWifiDetails === "function") {
     try {
       const raw = bridge.getWifiDetails();
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       if (parsed && typeof parsed === "object") {
         const isWifi = Boolean(parsed.isWifi ?? (parsed.state === "connected"));
-        const rawSsid = parsed.ssid
-          ? String(parsed.ssid).trim().replace(/^["']|["']$/g, "")
-          : null;
-        const validSsid =
-          rawSsid && rawSsid !== "<unknown ssid>" && rawSsid !== "0x" ? rawSsid : null;
+        const rawSsid = parsed.ssid ? String(parsed.ssid).trim().replace(/^["']|["']$/g, "") : null;
+        const validSsid = rawSsid && rawSsid !== "<unknown ssid>" && rawSsid !== "0x" ? rawSsid : null;
         return {
           connected: isWifi,
           transport: isWifi ? "wifi" : "unknown",
@@ -156,9 +210,9 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
 
 /**
  * Asynchronous/promise-safe helper to obtain the native SSID.
- * Follows: window.AndroidWifiBridge.getWifiSsid()
  */
 export async function getNativeWifiSsid(): Promise<string | null> {
+  await waitForNativeWifiBridge(1000);
   if (!isNativeWifiBridgeAvailable()) {
     return null;
   }
@@ -168,7 +222,6 @@ export async function getNativeWifiSsid(): Promise<string | null> {
 
 /**
  * Obtains the real connected network-level fingerprint from the native Android bridge.
- * If running in standard Chrome (no native bridge), reports NO_NATIVE_BRIDGE.
  */
 export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
   if (typeof window === "undefined") {
@@ -198,6 +251,7 @@ export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
         return {
           transport: parsed.transport || "unknown",
           isWifi: Boolean(parsed.isWifi),
+          ssid: parsed.ssid || null,
           ipv4: parsed.ipv4 || null,
           ipv4Subnet: parsed.ipv4Subnet || null,
           prefixLength: parsed.prefixLength || 0,
@@ -214,42 +268,12 @@ export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
     }
   }
 
-  // Fallback to getWifiDetails()
-  if (typeof bridge.getWifiDetails === "function") {
-    try {
-      const raw = bridge.getWifiDetails();
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      if (parsed && typeof parsed === "object") {
-        const isWifi = Boolean(parsed.isWifi ?? (parsed.state === "connected"));
-        const dnsList = parsed.dns
-          ? String(parsed.dns)
-              .split(",")
-              .map((s: string) => s.trim())
-              .filter(Boolean)
-          : [];
-        return {
-          transport: isWifi ? "wifi" : "unknown",
-          isWifi,
-          ipv4: parsed.ip || null,
-          gateway: parsed.gateway || null,
-          dnsServers: dnsList,
-          hasInternet: true,
-          notVpn: true,
-          reason: "SUCCESS",
-          isNativeBridge: true,
-        };
-      }
-    } catch (e) {
-      console.warn("[NativeWifiBridge] Failed to parse getWifiDetails:", e);
-    }
-  }
-
+  const conn = getNativeConnectedWifi();
   return {
-    transport: "unknown",
-    isWifi: false,
-    reason: "FINGERPRINT_UNAVAILABLE",
+    transport: conn.transport,
+    isWifi: conn.transport === "wifi",
+    ssid: conn.ssid,
+    reason: conn.reason,
     isNativeBridge: true,
   };
 }
-
-
