@@ -228,16 +228,16 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
         body: JSON.stringify(params || {}),
       });
 
+      const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.message ||
-            errorData.error ||
-            `Attendance rejected by server (Status ${res.status}). Ensure device is connected to SONA-WIFI.`
+          data.message ||
+            data.error ||
+            `Attendance rejected by server (Status ${res.status}).`
         );
       }
 
-      const data = await res.json();
       if (data?.receipt) {
         window.dispatchEvent(
           new CustomEvent("campusattend:attendance-marked", {
@@ -246,20 +246,32 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
         );
         return data.receipt;
       }
+
+      throw new Error("Attendance server did not return a valid persistence receipt.");
     } catch (apiErr: any) {
+      // If server responded with an error or rejected, propagate immediately
       if (
         apiErr?.message?.includes("Attendance rejected") ||
         apiErr?.message?.includes("SONA-WIFI") ||
-        apiErr?.message?.includes("CAMPUS_NETWORK_UNAUTHORIZED")
+        apiErr?.message?.includes("CAMPUS_NETWORK_UNAUTHORIZED") ||
+        apiErr?.message?.includes("DATABASE_PERSISTENCE_FAILED") ||
+        apiErr?.message?.includes("Status 4") ||
+        apiErr?.message?.includes("Status 5")
       ) {
         throw apiErr;
       }
-      console.warn("[attendance-service] Server attendance API notice:", apiErr);
+      console.warn("[attendance-service] Server attendance API network notice (fallback):", apiErr);
     }
   }
 
   // 2. Direct Supabase record fallback for offline/local simulation
-  const dayStr = now.toLocaleDateString("en-US", { weekday: "long" });
+  const dayStr = now.toLocaleDateString("en-US", { weekday: "long", timeZone: "Asia/Kolkata" });
+  const istDateStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
   const staffCode = params?.staffCode || "SCT-2417";
   const staffName = params?.staffName || "Dr. Priya Ramanathan";
   const department = params?.department || "Computer Science & Engineering";
@@ -273,32 +285,42 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
         staff_code: staffCode,
         staff_name: staffName,
         department: department,
+        date: istDateStr,
         day: dayStr,
         time: timeStr,
         status: "Present",
         location: params?.location || "Main Campus, Sona College",
-        verification: params?.verification || "Verified",
-        latitude: params?.latitude,
-        longitude: params?.longitude,
+        verification: "Verified",
+        latitude: params?.latitude ?? null,
+        longitude: params?.longitude ?? null,
       })
       .select("id")
       .single();
 
-    if (data?.id) {
-      attendanceId = `ATT-${data.id.slice(0, 8).toUpperCase()}`;
-    }
     if (error) {
-      console.warn("[Supabase] attendance_records insert warning:", error.message);
+      console.error("[Supabase] attendance_records insert failed:", error.message);
+      throw new Error(`Database error saving attendance: ${error.message}`);
     }
-  } catch (err) {
-    console.warn("[Supabase] attendance_records network exception:", err);
+
+    if (data?.id) {
+      attendanceId = data.id;
+    }
+  } catch (err: any) {
+    console.error("[Supabase] attendance_records network exception:", err);
+    throw err;
   }
+
+  const receipt: AttendanceReceipt = {
+    attendanceId,
+    time: timeStr,
+    date: dateStr,
+  };
 
   if (typeof window !== "undefined") {
     try {
       window.dispatchEvent(
         new CustomEvent("campusattend:attendance-marked", {
-          detail: { attendanceId, time: timeStr, date: dateStr },
+          detail: receipt,
         }),
       );
     } catch {
@@ -306,11 +328,7 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
     }
   }
 
-  return {
-    attendanceId,
-    time: timeStr,
-    date: dateStr,
-  };
+  return receipt;
 }
 
 export const scenarioLabels: Record<VerificationScenario, string> = {

@@ -113,25 +113,70 @@ export function useAttendance(targetStaffCode?: string) {
     setError(null);
 
     try {
-      // Query authoritative PostgreSQL attendance records from Supabase
-      const { data, error: sbError } = await supabase
-        .from("attendance_records")
-        .select("*")
-        .order("created_at", { ascending: false });
+      let rawRows: any[] | null = null;
 
-      if (sbError) {
-        throw new Error(sbError.message);
+      // 1. Authoritative Serverless API Query with Staff Authentication
+      if (typeof window !== "undefined") {
+        try {
+          const queryParam = effectiveStaffCode
+            ? `?staff_code=${encodeURIComponent(effectiveStaffCode)}`
+            : "";
+          const reqHeaders: Record<string, string> = {
+            Accept: "application/json",
+          };
+          if (activeStaff.token) {
+            reqHeaders["Authorization"] = `Bearer ${activeStaff.token}`;
+          }
+          if (effectiveStaffCode) {
+            reqHeaders["x-staff-code"] = effectiveStaffCode;
+          }
+
+          const apiRes = await fetch(`/api/attendance${queryParam}`, {
+            method: "GET",
+            headers: reqHeaders,
+            credentials: "include",
+          });
+
+          if (apiRes.ok) {
+            const apiJson = await apiRes.json();
+            if (apiJson.success && Array.isArray(apiJson.records)) {
+              rawRows = apiJson.records;
+            }
+          }
+        } catch (apiErr) {
+          console.warn("[useAttendance] Server attendance history API notice:", apiErr);
+        }
       }
 
-      if (data) {
+      // 2. Direct Supabase Query Fallback
+      if (!rawRows) {
+        let sbQuery = supabase
+          .from("attendance_records")
+          .select("*")
+          .order("date", { ascending: false })
+          .order("created_at", { ascending: false });
+
+        if (effectiveStaffCode) {
+          sbQuery = sbQuery.ilike("staff_code", effectiveStaffCode);
+        }
+
+        const { data: sbData, error: sbError } = await sbQuery;
+
+        if (sbError) {
+          throw new Error(sbError.message);
+        }
+        rawRows = sbData || [];
+      }
+
+      if (rawRows) {
         // Filter by user staff_code if available, preserving user-specific history
         const userRows = effectiveStaffCode
-          ? data.filter(
+          ? rawRows.filter(
               (r) =>
                 !r.staff_code ||
                 r.staff_code.toLowerCase() === effectiveStaffCode.toLowerCase(),
             )
-          : data;
+          : rawRows;
 
         const mapped: AttendanceRecord[] = userRows.map((r) => {
           const rawDate = r.date || (r.created_at ? r.created_at.split("T")[0] : "");
@@ -140,7 +185,9 @@ export function useAttendance(targetStaffCode?: string) {
           const timeStr = r.time || (r.created_at ? formatIndiaTime(new Date(r.created_at)) : "09:00 AM");
 
           const idStr = r.id
-            ? r.id.startsWith("ATT-")
+            ? (typeof r.id === "string" && r.id.startsWith("ATT-")
+                ? r.id
+                : `ATT-${String(r.id).slice(0, 8).toUpperCase()}`)
             : `ATT-${rawDate.replaceAll("-", "")}-LIVE`;
 
           return {
@@ -175,7 +222,7 @@ export function useAttendance(targetStaffCode?: string) {
     } finally {
       setIsLoading(false);
     }
-  }, [targetStaffCode]);
+  }, [targetStaffCode, effectiveStaffCode, activeStaff.token]);
 
   useEffect(() => {
     void fetchRecords();

@@ -119,14 +119,17 @@ function HistoryPage() {
 
   // Dynamic statistics computed from the filtered view
   const stats = useMemo(() => {
-    const totalWorkingDays = Math.max(1, filteredRecords.length);
+    const totalRecords = filteredRecords.length;
     const present = filteredRecords.filter((r) => r.status === "Present").length;
     const late = filteredRecords.filter((r) => r.status === "Late").length;
     const absent = filteredRecords.filter((r) => r.status === "Absent").length;
-    const rate = Math.min(100, Math.round(((present + late) / totalWorkingDays) * 100));
+    const rate =
+      totalRecords === 0
+        ? 0
+        : Math.min(100, Math.round(((present + late) / totalRecords) * 100));
 
     return {
-      workingDays: totalWorkingDays,
+      totalRecords,
       present,
       late,
       absent,
@@ -168,9 +171,15 @@ function HistoryPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
-                void refresh();
-                toast.success("Attendance history refreshed");
+              onClick={async () => {
+                try {
+                  await refresh();
+                  toast.success("Attendance history refreshed");
+                } catch (err: any) {
+                  toast.error("Failed to refresh records", {
+                    description: err?.message || "Please check your network connection.",
+                  });
+                }
               }}
               disabled={isLoading}
               title="Refresh database records"
@@ -191,7 +200,7 @@ function HistoryPage() {
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Total Records"
-          value={stats.workingDays}
+          value={stats.totalRecords}
           hint={selectedMonth === "all" ? "All recorded entries" : "Entries in selected period"}
           icon={CalendarDays}
           tone="primary"

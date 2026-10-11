@@ -18,6 +18,110 @@ const TOKEN_SECRET =
     (process.env["CAMPUS_AUTH_SECRET"] || process.env["NETWORK_AUTH_SECRET"])) ||
   "sona-campus-wifi-egress-auth-secret-key-2026";
 
+const STAFF_TOKEN_SECRET =
+  (typeof process !== "undefined" &&
+    (process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["STAFF_AUTH_SECRET"] ||
+      process.env["CAMPUS_ADMIN_SECRET"])) ||
+  "campusattend-staff-auth-session-sec-key-2026";
+
+const ADMIN_TOKEN_SECRET =
+  (typeof process !== "undefined" &&
+    (process.env["CAMPUS_ADMIN_SECRET"] ||
+      process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["ADMIN_SECRET_KEY"])) ||
+  "campusattend-admin-sec-key-moulish-2026-auth-token";
+
+function getSupabaseClient() {
+  const url =
+    (typeof process !== "undefined" &&
+      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
+    "https://qvjcxoznvhoagclbyhad.supabase.co";
+  const key =
+    (typeof process !== "undefined" &&
+      (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
+        process.env["SUPABASE_ANON_KEY"] ||
+        process.env["VITE_SUPABASE_ANON_KEY"] ||
+        process.env["VITE_SUPABASE_PUBLISHABLE_KEY"])) ||
+    "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+  if (!url || !key) return null;
+  return createClient(url, key);
+}
+
+function verifyStaffToken(token?: string | null): { valid: boolean; payload?: any; error?: string } {
+  if (!token || typeof token !== "string") return { valid: false, error: "MISSING_TOKEN" };
+  const parts = token.trim().split(".");
+  if (parts.length !== 2) return { valid: false, error: "INVALID_FORMAT" };
+  const [payloadB64, signature] = parts;
+  if (!payloadB64 || !signature) return { valid: false, error: "INVALID_FORMAT" };
+  try {
+    const expectedSig = crypto.createHmac("sha256", STAFF_TOKEN_SECRET).update(payloadB64).digest("base64url");
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, error: "INVALID_SIGNATURE" };
+    }
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8"));
+    if (payload.expiresAt && Date.now() > payload.expiresAt) {
+      return { valid: false, error: "TOKEN_EXPIRED" };
+    }
+    return { valid: true, payload };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || "DECODE_FAILED" };
+  }
+}
+
+function verifyAdminToken(token?: string | null): { valid: boolean; payload?: any; error?: string } {
+  if (!token || typeof token !== "string") return { valid: false, error: "MISSING_TOKEN" };
+  const parts = token.trim().split(".");
+  if (parts.length !== 2) return { valid: false, error: "INVALID_FORMAT" };
+  const [payloadB64, signature] = parts;
+  if (!payloadB64 || !signature) return { valid: false, error: "INVALID_FORMAT" };
+  try {
+    const expectedSig = crypto.createHmac("sha256", ADMIN_TOKEN_SECRET).update(payloadB64).digest("base64url");
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, error: "INVALID_SIGNATURE" };
+    }
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8"));
+    if (payload.expiresAt && Date.now() > payload.expiresAt) {
+      return { valid: false, error: "TOKEN_EXPIRED" };
+    }
+    return { valid: true, payload };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || "DECODE_FAILED" };
+  }
+}
+
+function extractBearerOrCookieToken(req: any): string | null {
+  if (!req) return null;
+  const headers = req.headers || {};
+  const getHeader = (name: string): string => {
+    if (typeof headers.get === "function") return headers.get(name) || "";
+    const lower = name.toLowerCase();
+    return headers[name] || headers[lower] || "";
+  };
+  const authHeader = getHeader("authorization");
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  if (authHeader && !authHeader.includes(" ")) {
+    return authHeader.trim();
+  }
+  const customHeader = getHeader("x-admin-token") || getHeader("x-staff-token");
+  if (customHeader) return customHeader.trim();
+
+  const cookieHeader = getHeader("cookie");
+  if (cookieHeader) {
+    const adminMatch = cookieHeader.match(/(?:^|;\s*)admin_session=([^;]+)/);
+    if (adminMatch && adminMatch[1]) return decodeURIComponent(adminMatch[1]);
+    const staffMatch = cookieHeader.match(/(?:^|;\s*)staff_session=([^;]+)/);
+    if (staffMatch && staffMatch[1]) return decodeURIComponent(staffMatch[1]);
+  }
+  return null;
+}
+
 function getAuthorizedCampusEgressIps(): string[] {
   const envVal =
     (typeof process !== "undefined" &&
@@ -483,9 +587,126 @@ function sendJsonResponse(res: any, status: number, payload: any) {
   });
 }
 
+async function handleGetAttendance(req: any, res?: any) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_UNAVAILABLE",
+      message: "Authoritative attendance database client could not be initialized.",
+    });
+  }
+
+  // Parse query params safely
+  const rawUrl = req.url || "/api/attendance";
+  const parsedUrl = new URL(rawUrl, "http://localhost");
+  const filterStaffCode = (parsedUrl.searchParams.get("staff_code") || parsedUrl.searchParams.get("staffId") || "").trim();
+  const filterDate = (parsedUrl.searchParams.get("date") || "").trim();
+  const filterStatus = (parsedUrl.searchParams.get("status") || "").trim();
+  const filterDept = (parsedUrl.searchParams.get("department") || "").trim();
+  const limitParam = parseInt(parsedUrl.searchParams.get("limit") || "100", 10);
+  const limit = Math.min(200, isNaN(limitParam) ? 100 : Math.max(1, limitParam));
+
+  // Extract auth token
+  const token = extractBearerOrCookieToken(req);
+  const adminCheck = verifyAdminToken(token);
+  const staffCheck = verifyStaffToken(token);
+
+  const isAdmin = adminCheck.valid;
+  const isStaff = staffCheck.valid;
+
+  // Header fallback for staff identity
+  const headers = req.headers || {};
+  const getHeader = (name: string): string => {
+    if (typeof headers.get === "function") return headers.get(name) || "";
+    const lower = name.toLowerCase();
+    return headers[name] || headers[lower] || "";
+  };
+  const headerStaffCode = (getHeader("x-staff-code") || getHeader("x-staff-id")).trim();
+
+  let targetStaffCode: string | null = null;
+
+  if (isAdmin) {
+    // Administrator can view all staff records, or filter to a specific staff
+    if (filterStaffCode) {
+      targetStaffCode = filterStaffCode.toUpperCase();
+    }
+  } else if (isStaff) {
+    // Authenticated staff can ONLY view their own records
+    targetStaffCode = (staffCheck.payload.staffId || staffCheck.payload.sub || "").toUpperCase();
+  } else if (headerStaffCode || filterStaffCode) {
+    // Mobile app session or unauthenticated request scoped strictly to single requested staff
+    targetStaffCode = (headerStaffCode || filterStaffCode).toUpperCase();
+  } else {
+    // Unauthenticated request without staff scope cannot read all records
+    return sendJsonResponse(res, 401, {
+      success: false,
+      error: "UNAUTHORIZED",
+      message: "Authentication or authorized staff code required to access attendance history.",
+    });
+  }
+
+  try {
+    let query = supabase
+      .from("attendance_records")
+      .select("*")
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (targetStaffCode) {
+      query = query.ilike("staff_code", targetStaffCode);
+    }
+    if (filterDate) {
+      query = query.eq("date", filterDate);
+    }
+    if (filterStatus && filterStatus.toLowerCase() !== "all") {
+      query = query.ilike("status", filterStatus);
+    }
+    if (filterDept && filterDept.toLowerCase() !== "all") {
+      query = query.eq("department", filterDept);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("[api/attendance GET] Supabase query failed:", error);
+      return sendJsonResponse(res, 500, {
+        success: false,
+        error: "QUERY_FAILED",
+        message: "Failed to retrieve attendance records from database.",
+        details: error.message,
+      });
+    }
+
+    return sendJsonResponse(res, 200, {
+      success: true,
+      count: (data || []).length,
+      records: data || [],
+    });
+  } catch (err: any) {
+    console.error("[api/attendance GET] Exception:", err);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "SERVER_ERROR",
+      message: err?.message || "Internal server error retrieving attendance records.",
+    });
+  }
+}
+
 export default async function handler(req: any, res?: any) {
-  if (req.method !== "POST") {
-    const errorPayload = { error: "Method not allowed. Use POST." };
+  const method = (req.method || "GET").toUpperCase();
+
+  if (method === "OPTIONS") {
+    return sendJsonResponse(res, 204, {});
+  }
+
+  if (method === "GET") {
+    return handleGetAttendance(req, res);
+  }
+
+  if (method !== "POST") {
+    const errorPayload = { error: "Method not allowed. Use POST or GET." };
     return sendJsonResponse(res, 405, errorPayload);
   }
 
@@ -687,7 +908,44 @@ export default async function handler(req: any, res?: any) {
   }
 
   // 4. Authorized! Record Attendance in Database
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_UNAVAILABLE",
+      message: "Authoritative attendance database client could not be initialized.",
+    });
+  }
+
+  // Look up registered staff member to get authoritative name & department
+  let resolvedStaffCode = staffCode.toUpperCase();
+  let resolvedStaffName = body.staffName || "Staff Member";
+  let resolvedDepartment = body.department || "Engineering";
+
+  try {
+    const { data: staffRow } = await supabase
+      .from("staff")
+      .select("id, staff_code, name, department")
+      .ilike("staff_code", staffCode)
+      .maybeSingle();
+
+    if (staffRow) {
+      resolvedStaffCode = staffRow.staff_code;
+      if (staffRow.name) resolvedStaffName = staffRow.name;
+      if (staffRow.department) resolvedDepartment = staffRow.department;
+    }
+  } catch (lookupErr) {
+    console.warn("[api/attendance] Staff table lookup fallback:", lookupErr);
+  }
+
   const now = new Date();
+  const istDateStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
   const timeStr = now.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
@@ -695,68 +953,98 @@ export default async function handler(req: any, res?: any) {
     hour12: true,
     timeZone: "Asia/Kolkata",
   });
-  const dateStr = now.toLocaleDateString("en-IN", {
+
+  const displayDateStr = now.toLocaleDateString("en-IN", {
     day: "2-digit",
     month: "short",
     year: "numeric",
     timeZone: "Asia/Kolkata",
   });
+
   const dayStr = now.toLocaleDateString("en-US", {
     weekday: "long",
     timeZone: "Asia/Kolkata",
   });
-  const dateKey = now.toISOString().slice(0, 10).replace(/-/g, "");
 
-  const staffName = body.staffName || "Staff Member";
-  const department = body.department || "Engineering";
-  let attendanceId = `ATT-${dateKey}-${String(Math.floor(Math.random() * 900) + 100)}`;
+  // Idempotency: Check if attendance was already recorded today
+  const { data: existingRecord } = await supabase
+    .from("attendance_records")
+    .select("*")
+    .ilike("staff_code", resolvedStaffCode)
+    .eq("date", istDateStr)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  // Record in Supabase if configured
-  const supabaseUrl =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "";
-  const supabaseKey =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
-        process.env["SUPABASE_ANON_KEY"] ||
-        process.env["VITE_SUPABASE_ANON_KEY"])) ||
-    "";
+  if (existingRecord) {
+    const existingDisplayDate = existingRecord.date
+      ? new Intl.DateTimeFormat("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        }).format(new Date(`${existingRecord.date}T00:00:00`))
+      : displayDateStr;
 
-  if (supabaseUrl && supabaseKey) {
-    try {
-      const supabase = createClient(supabaseUrl, supabaseKey);
-      const { data, error } = await supabase
-        .from("attendance_records")
-        .insert({
-          staff_code: staffCode,
-          staff_name: staffName,
-          department: department,
-          day: dayStr,
-          time: timeStr,
-          status: "Present",
-          location: body.location || "Main Campus, Sona College",
-          verification: `${verifiedBiometricMethod} · Verified (SONA-WIFI)`,
-          latitude: body.latitude,
-          longitude: body.longitude,
-        })
-        .select()
-        .single();
+    return sendJsonResponse(res, 200, {
+      success: true,
+      alreadyMarked: true,
+      message: `Attendance already recorded for today (${existingDisplayDate} at ${existingRecord.time}).`,
+      receipt: {
+        attendanceId: existingRecord.id,
+        time: existingRecord.time,
+        date: existingDisplayDate,
+      },
+      verifiedFactors: {
+        wifi: true,
+        gps: true,
+        face: true,
+      },
+      verifiedNetwork: tokenCheck.payload?.ssid || "SONA Campus Network",
+      verifiedIp: tokenCheck.payload?.verifiedIp || clientIp,
+      staffCode: existingRecord.staff_code,
+      staffName: existingRecord.staff_name,
+      biometricMethod: verifiedBiometricMethod,
+      deviceId: existingRecord.device_id || boundDeviceId,
+      timestamp: existingRecord.created_at,
+    });
+  }
 
-      if (!error && data?.id) {
-        attendanceId = data.id;
-      }
-    } catch (dbErr) {
-      console.warn("[api/attendance] Supabase recording warning (fallback to generated ID):", dbErr);
-    }
+  // Insert into Supabase attendance_records with strict authoritative schema
+  const { data: inserted, error: insertError } = await supabase
+    .from("attendance_records")
+    .insert({
+      staff_code: resolvedStaffCode,
+      staff_name: resolvedStaffName,
+      department: resolvedDepartment,
+      date: istDateStr,
+      day: dayStr,
+      time: timeStr,
+      status: "Present",
+      location: body.location || "Main Campus, Sona College",
+      verification: "Verified",
+      latitude: isNaN(latitude) ? null : latitude,
+      longitude: isNaN(longitude) ? null : longitude,
+      device_id: boundDeviceId ? String(boundDeviceId).slice(0, 64) : null,
+    })
+    .select()
+    .single();
+
+  if (insertError || !inserted?.id) {
+    console.error("[api/attendance] Supabase insert failed:", insertError);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_PERSISTENCE_FAILED",
+      message: "Attendance validation succeeded, but database write failed. Attendance was not recorded.",
+      details: insertError?.message || "No record returned from database insert.",
+    });
   }
 
   const successPayload = {
     success: true,
     receipt: {
-      attendanceId,
-      time: timeStr,
-      date: dateStr,
+      attendanceId: inserted.id,
+      time: inserted.time || timeStr,
+      date: displayDateStr,
     },
     verifiedFactors: {
       wifi: true,
@@ -765,11 +1053,11 @@ export default async function handler(req: any, res?: any) {
     },
     verifiedNetwork: tokenCheck.payload?.ssid || "SONA Campus Network",
     verifiedIp: tokenCheck.payload?.verifiedIp || clientIp,
-    staffCode,
-    staffName,
+    staffCode: inserted.staff_code,
+    staffName: inserted.staff_name,
     biometricMethod: verifiedBiometricMethod,
-    deviceId: boundDeviceId,
-    timestamp: now.toISOString(),
+    deviceId: inserted.device_id || boundDeviceId,
+    timestamp: inserted.created_at || now.toISOString(),
   };
 
   return sendJsonResponse(res, 200, successPayload);

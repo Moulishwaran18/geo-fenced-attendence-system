@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Download, Search } from "lucide-react";
+import { Download, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { adminNav } from "@/components/layout/nav-config";
@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/select";
 import { departments, todaysAttendance } from "@/mocks/data";
 import { formatIndiaDate, useIndiaTime } from "@/lib/india-time";
+import { getAdminAuthHeaders } from "@/lib/admin-auth";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/admin/attendance")({
   head: () => ({
@@ -34,32 +36,164 @@ export const Route = createFileRoute("/admin/attendance")({
   component: AdminAttendancePage,
 });
 
+interface DisplayAttendanceRow {
+  staffId: string;
+  name: string;
+  department: string;
+  time: string;
+  date?: string;
+  location: string;
+  status: "Present" | "Late" | "Absent";
+  verification: "Verified" | "Failed" | "Manual" | "Warning";
+}
+
 function AdminAttendancePage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [dept, setDept] = useState("all");
+  const [dbRecords, setDbRecords] = useState<DisplayAttendanceRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const now = useIndiaTime(60000);
+
+  const fetchRecords = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      let fetched: any[] | null = null;
+
+      // 1. Fetch from serverless API with admin auth
+      try {
+        const headers = {
+          Accept: "application/json",
+          ...getAdminAuthHeaders(),
+        };
+        const res = await fetch("/api/attendance?limit=200", {
+          headers,
+          credentials: "include",
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && Array.isArray(json.records)) {
+            fetched = json.records;
+          }
+        }
+      } catch (e) {
+        console.warn("[AdminAttendance] /api/attendance notice:", e);
+      }
+
+      // 2. Direct Supabase fallback
+      if (!fetched) {
+        const { data, error } = await supabase
+          .from("attendance_records")
+          .select("*")
+          .order("date", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(200);
+
+        if (!error && data) {
+          fetched = data;
+        }
+      }
+
+      if (fetched && fetched.length > 0) {
+        const mapped: DisplayAttendanceRow[] = fetched.map((r) => ({
+          staffId: r.staff_code,
+          name: r.staff_name,
+          department: r.department,
+          time: r.time,
+          date: r.date,
+          location: r.location || "Main Campus, Sona College",
+          status: (r.status as "Present" | "Late" | "Absent") || "Present",
+          verification: (r.verification as any) || "Verified",
+        }));
+        setDbRecords(mapped);
+      } else {
+        setDbRecords([]);
+      }
+    } catch (err: any) {
+      console.error("[AdminAttendance] Error fetching records:", err);
+      toast.error("Failed to load records from database.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchRecords();
+  }, [fetchRecords]);
+
+  // Combine database records with fallback data if database has no entries
+  const effectiveSource = useMemo(() => {
+    if (dbRecords.length > 0) return dbRecords;
+    return todaysAttendance as DisplayAttendanceRow[];
+  }, [dbRecords]);
 
   const rows = useMemo(
     () =>
-      todaysAttendance.filter(
+      effectiveSource.filter(
         (r) =>
-          (status === "all" || r.status.toLowerCase() === status) &&
+          (status === "all" || r.status.toLowerCase() === status.toLowerCase()) &&
           (dept === "all" || r.department === dept) &&
           `${r.name} ${r.staffId}`.toLowerCase().includes(query.toLowerCase()),
       ),
-    [query, status, dept],
+    [effectiveSource, query, status, dept],
   );
+
+  const handleExportCsv = () => {
+    if (rows.length === 0) {
+      toast.error("No records available to export.");
+      return;
+    }
+    const header = ["Staff ID", "Name", "Department", "Date", "Time", "Location", "Status", "Verification"];
+    const csvRows = rows.map((r) => [
+      r.staffId,
+      `"${r.name}"`,
+      `"${r.department}"`,
+      r.date || "Today",
+      r.time,
+      `"${r.location}"`,
+      r.status,
+      r.verification,
+    ]);
+    const csvContent = [header.join(","), ...csvRows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `campusattend-attendance-${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${rows.length} records to CSV`);
+  };
 
   return (
     <AppShell nav={adminNav} role="admin">
       <PageHeader
         title="Attendance"
-        description={now ? `${formatIndiaDate(now, false)} · All departments` : "All departments"}
+        description={
+          now
+            ? `${formatIndiaDate(now, false)} · Authoritative Database Records (${dbRecords.length} live)`
+            : "Authoritative Database Records"
+        }
         actions={
-          <Button variant="outline" onClick={() => toast.success("CSV export queued (mock)")}>
-            <Download className="mr-2 size-4" /> Export CSV
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                await fetchRecords();
+                toast.success("Attendance records refreshed");
+              }}
+              disabled={isLoading}
+            >
+              <RefreshCw className={`mr-1.5 size-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportCsv}>
+              <Download className="mr-1.5 size-3.5" /> Export CSV
+            </Button>
+          </div>
         }
       />
 

@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time";
 import {
@@ -16,6 +17,8 @@ import { adminNav } from "@/components/layout/nav-config";
 import { StatCard } from "@/components/common/StatCard";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { departmentSummary, todaysAttendance, weeklyAttendance } from "@/mocks/data";
+import { getAdminAuthHeaders } from "@/lib/admin-auth";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/admin/")({
   head: () => ({
@@ -35,6 +38,61 @@ export const Route = createFileRoute("/admin/")({
 
 function AdminDashboard() {
   const now = useIndiaTime();
+  const [liveRows, setLiveRows] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function loadTodayAttendance() {
+      try {
+        const headers = { Accept: "application/json", ...getAdminAuthHeaders() };
+        const res = await fetch("/api/attendance?limit=50", { headers, credentials: "include" });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && Array.isArray(json.records) && json.records.length > 0) {
+            setLiveRows(
+              json.records.map((r: any) => ({
+                staffId: r.staff_code,
+                name: r.staff_name,
+                department: r.department,
+                time: r.time,
+                location: r.location || "Main Campus",
+                status: r.status,
+                verification: r.verification,
+              })),
+            );
+            return;
+          }
+        }
+      } catch {}
+
+      try {
+        const { data } = await supabase
+          .from("attendance_records")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(50);
+        if (data && data.length > 0) {
+          setLiveRows(
+            data.map((r) => ({
+              staffId: r.staff_code,
+              name: r.staff_name,
+              department: r.department,
+              time: r.time,
+              location: r.location || "Main Campus",
+              status: r.status,
+              verification: r.verification,
+            })),
+          );
+        }
+      } catch {}
+    }
+    void loadTodayAttendance();
+  }, []);
+
+  const displayAttendance = useMemo(() => {
+    if (liveRows.length > 0) return liveRows;
+    return todaysAttendance;
+  }, [liveRows]);
+
   return (
     <AppShell nav={adminNav} role="admin">
       <PageHeader
@@ -63,7 +121,7 @@ function AdminDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {todaysAttendance.map((r) => (
+                {displayAttendance.map((r) => (
                   <tr key={r.staffId} className="border-b border-border last:border-0 hover:bg-muted/60">
                     <td className="px-5 py-3.5 font-mono text-xs">{r.staffId}</td>
                     <td className="px-5 py-3.5 font-medium whitespace-nowrap">{r.name}</td>
@@ -80,7 +138,7 @@ function AdminDashboard() {
             </table>
           </div>
           <ul className="divide-y divide-border md:hidden">
-            {todaysAttendance.map((r) => (
+            {displayAttendance.map((r) => (
               <li key={r.staffId} className="flex items-start justify-between gap-3 px-4 py-3.5">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{r.name}</p>
