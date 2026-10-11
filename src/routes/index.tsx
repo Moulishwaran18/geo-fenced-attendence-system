@@ -70,8 +70,8 @@ function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   // Staff login credentials state
-  const [staffId, setStaffId] = useState("SCT-2417");
-  const [staffPassword, setStaffPassword] = useState("campusattend");
+  const [staffId, setStaffId] = useState("");
+  const [staffPassword, setStaffPassword] = useState("");
 
   // Staff self-registration form state
   const [regStaffId, setRegStaffId] = useState("");
@@ -625,7 +625,7 @@ function LoginPage() {
                 <Input
                   id="staffId"
                   autoComplete="username"
-                  placeholder="e.g. SCT-2417"
+                  placeholder="e.g. SCT-001"
                   value={staffId}
                   onChange={(e) => setStaffId(e.target.value)}
                   required

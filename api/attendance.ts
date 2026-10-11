@@ -544,27 +544,7 @@ function checkIdentityMatch(targetStaffCode: string, recognizedStaffCode?: strin
   const target = targetStaffCode.trim().toUpperCase();
   const recognized = recognizedStaffCode.trim().toUpperCase();
   if (!target || !recognized) return false;
-  if (target === recognized) return true;
-  // Aliases for standard staff IDs
-  if (
-    (target === "SCT-2417" || target === "PERSON_001") &&
-    (recognized === "PERSON_001" || recognized === "SCT-2417")
-  ) {
-    return true;
-  }
-  if (
-    (target === "SCT-2418" || target === "PERSON_002") &&
-    (recognized === "PERSON_002" || recognized === "SCT-2418")
-  ) {
-    return true;
-  }
-  if (
-    (target === "SCT-2419" || target === "PERSON_003") &&
-    (recognized === "PERSON_003" || recognized === "SCT-2419")
-  ) {
-    return true;
-  }
-  return false;
+  return target === recognized;
 }
 
 function sendJsonResponse(res: any, status: number, payload: any) {
@@ -634,15 +614,12 @@ async function handleGetAttendance(req: any, res?: any) {
   } else if (isStaff) {
     // Authenticated staff can ONLY view their own records
     targetStaffCode = (staffCheck.payload.staffId || staffCheck.payload.sub || "").toUpperCase();
-  } else if (headerStaffCode || filterStaffCode) {
-    // Mobile app session or unauthenticated request scoped strictly to single requested staff
-    targetStaffCode = (headerStaffCode || filterStaffCode).toUpperCase();
   } else {
-    // Unauthenticated request without staff scope cannot read all records
+    // Unauthenticated request cannot read attendance records
     return sendJsonResponse(res, 401, {
       success: false,
       error: "UNAUTHORIZED",
-      message: "Authentication or authorized staff code required to access attendance history.",
+      message: "Authenticated session token required to access attendance history.",
     });
   }
 
@@ -808,9 +785,114 @@ export default async function handler(req: any, res?: any) {
   }
 
   // =========================================================================
+  // AUTHENTICATION & IDENTITY ENFORCEMENT: ZERO CLIENT TRUST
+  // =========================================================================
+  const authToken = extractBearerOrCookieToken(req);
+  const staffTokenCheck = verifyStaffToken(authToken);
+
+  let attestationCheck: { valid: boolean; payload?: any; error?: string } = { valid: false };
+  if (body.biometricAttestation) {
+    attestationCheck = verifyBiometricAttestation(body.biometricAttestation);
+    if (!attestationCheck.valid) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "INVALID_BIOMETRIC_ATTESTATION",
+        message: `Attendance rejected: Device biometric hardware attestation failed verification (${attestationCheck.error}).`,
+      });
+    }
+  }
+
+  const sessionStaffId = staffTokenCheck.valid
+    ? String(staffTokenCheck.payload.staffId || staffTokenCheck.payload.sub || "").trim().toUpperCase()
+    : null;
+  const attestedStaffId = attestationCheck.valid
+    ? String(attestationCheck.payload.staffId || "").trim().toUpperCase()
+    : null;
+
+  if (!sessionStaffId && !attestedStaffId) {
+    return sendJsonResponse(res, 401, {
+      success: false,
+      error: "UNAUTHORIZED",
+      message: "Attendance rejected: Valid authenticated staff session or biometric hardware attestation required.",
+    });
+  }
+
+  if (sessionStaffId && attestedStaffId && sessionStaffId !== attestedStaffId) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "ATTESTATION_IDENTITY_MISMATCH",
+      message: `Hardware attestation identity (${attestedStaffId}) does not match authenticated session identity (${sessionStaffId}).`,
+      expectedStaffCode: sessionStaffId,
+      attestedStaffCode: attestedStaffId,
+    });
+  }
+
+  const authoritativeStaffId = (sessionStaffId || attestedStaffId)!;
+
+  // Reject forged client-supplied staffCode / studentId
+  if (body.staffCode || body.studentId) {
+    const clientStaffCode = String(body.staffCode || body.studentId).trim().toUpperCase();
+    if (clientStaffCode !== authoritativeStaffId) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "IDENTITY_FORGERY_DETECTED",
+        message: `Client-supplied staff code (${clientStaffCode}) does not match authenticated identity (${authoritativeStaffId}).`,
+        expectedStaffCode: authoritativeStaffId,
+        suppliedStaffCode: clientStaffCode,
+      });
+    }
+  }
+
+  // Authoritative Supabase Database Client Check
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_UNAVAILABLE",
+      message: "Authoritative attendance database client could not be initialized.",
+    });
+  }
+
+  // Look up registered staff member to get authoritative name & department
+  const { data: staffRow, error: staffLookupErr } = await supabase
+    .from("staff")
+    .select("id, staff_code, name, department, status, active")
+    .ilike("staff_code", authoritativeStaffId)
+    .maybeSingle();
+
+  if (staffLookupErr) {
+    console.error("[api/attendance] Staff lookup error:", staffLookupErr);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_ERROR",
+      message: "Database error during staff authorization verification.",
+      details: staffLookupErr.message,
+    });
+  }
+
+  if (!staffRow) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "UNREGISTERED_STAFF_IDENTITY",
+      message: `Attendance rejected: Staff ID '${authoritativeStaffId}' is not a registered staff member.`,
+    });
+  }
+
+  if (staffRow.active === false || (staffRow.status && staffRow.status.toLowerCase() === "inactive")) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "STAFF_ACCOUNT_INACTIVE",
+      message: `Attendance rejected: Staff account '${staffRow.staff_code}' is deactivated or inactive.`,
+    });
+  }
+
+  const canonicalStaffCode = staffRow.staff_code;
+  const canonicalStaffName = staffRow.name;
+  const canonicalDepartment = staffRow.department || "General";
+
+  // =========================================================================
   // FACTOR 3: MANDATORY FACE RECOGNITION, LIVENESS & IDENTITY MATCH
   // =========================================================================
-  const staffCode = String(body.staffCode || body.studentId || "SCT-2417").trim();
   const recognizedStaffCode = body.recognizedStaffCode
     ? String(body.recognizedStaffCode).trim()
     : null;
@@ -819,26 +901,17 @@ export default async function handler(req: any, res?: any) {
   let boundDeviceId: string | undefined = body.deviceId;
 
   // 3A. Cryptographic Attestation Verification (for Android Keystore device-local flow)
-  if (body.biometricAttestation) {
-    const attestationCheck = verifyBiometricAttestation(body.biometricAttestation);
-    if (!attestationCheck.valid) {
-      return sendJsonResponse(res, 403, {
-        success: false,
-        error: "INVALID_BIOMETRIC_ATTESTATION",
-        message: `Attendance rejected: Device biometric attestation failed verification (${attestationCheck.error}).`,
-      });
-    }
-
+  if (attestationCheck.valid && attestationCheck.payload) {
     const attestation = attestationCheck.payload;
 
-    // Verify attested identity matches authenticated user
-    const isIdentityMatch = checkIdentityMatch(staffCode, attestation.staffId);
+    // Verify attested identity matches canonical staff identity
+    const isIdentityMatch = checkIdentityMatch(canonicalStaffCode, attestation.staffId);
     if (!isIdentityMatch) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "ATTESTATION_IDENTITY_MISMATCH",
-        message: `Attendance rejected: Hardware attestation identity (${attestation.staffId}) does not match authenticated user (${staffCode}).`,
-        expectedStaffCode: staffCode,
+        message: `Attendance rejected: Hardware attestation identity (${attestation.staffId}) does not match authenticated staff (${canonicalStaffCode}).`,
+        expectedStaffCode: canonicalStaffCode,
         attestedStaffCode: attestation.staffId,
       });
     }
@@ -894,48 +967,17 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Identity Match: The recognized face must belong to the authenticated individual
-    const isIdentityMatch = checkIdentityMatch(staffCode, recognizedStaffCode);
+    // Identity Match: The recognized face must belong to the authenticated canonical staff member
+    const isIdentityMatch = checkIdentityMatch(canonicalStaffCode, recognizedStaffCode);
     if (!isIdentityMatch) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "IDENTITY_MISMATCH",
-        message: `Attendance rejected: Recognized face (${recognizedStaffCode}) does not match authenticated user (${staffCode}).`,
-        expectedStaffCode: staffCode,
+        message: `Attendance rejected: Recognized face (${recognizedStaffCode}) does not match authenticated user (${canonicalStaffCode}).`,
+        expectedStaffCode: canonicalStaffCode,
         recognizedStaffCode,
       });
     }
-  }
-
-  // 4. Authorized! Record Attendance in Database
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return sendJsonResponse(res, 500, {
-      success: false,
-      error: "DATABASE_UNAVAILABLE",
-      message: "Authoritative attendance database client could not be initialized.",
-    });
-  }
-
-  // Look up registered staff member to get authoritative name & department
-  let resolvedStaffCode = staffCode.toUpperCase();
-  let resolvedStaffName = body.staffName || "Staff Member";
-  let resolvedDepartment = body.department || "Engineering";
-
-  try {
-    const { data: staffRow } = await supabase
-      .from("staff")
-      .select("id, staff_code, name, department")
-      .ilike("staff_code", staffCode)
-      .maybeSingle();
-
-    if (staffRow) {
-      resolvedStaffCode = staffRow.staff_code;
-      if (staffRow.name) resolvedStaffName = staffRow.name;
-      if (staffRow.department) resolvedDepartment = staffRow.department;
-    }
-  } catch (lookupErr) {
-    console.warn("[api/attendance] Staff table lookup fallback:", lookupErr);
   }
 
   const now = new Date();
@@ -970,7 +1012,7 @@ export default async function handler(req: any, res?: any) {
   const { data: existingRecord } = await supabase
     .from("attendance_records")
     .select("*")
-    .ilike("staff_code", resolvedStaffCode)
+    .ilike("staff_code", canonicalStaffCode)
     .eq("date", istDateStr)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -1013,9 +1055,9 @@ export default async function handler(req: any, res?: any) {
   const { data: inserted, error: insertError } = await supabase
     .from("attendance_records")
     .insert({
-      staff_code: resolvedStaffCode,
-      staff_name: resolvedStaffName,
-      department: resolvedDepartment,
+      staff_code: canonicalStaffCode,
+      staff_name: canonicalStaffName,
+      department: canonicalDepartment,
       date: istDateStr,
       day: dayStr,
       time: timeStr,

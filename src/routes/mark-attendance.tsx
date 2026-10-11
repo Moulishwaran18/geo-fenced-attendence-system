@@ -91,11 +91,7 @@ function isSameIndividual(expectedStaffCode: string, recognizedStaffCode?: strin
   if (!recognizedStaffCode) return false;
   const exp = expectedStaffCode.trim().toUpperCase();
   const rec = recognizedStaffCode.trim().toUpperCase();
-  if (exp === rec) return true;
-  if ((exp === "SCT-2417" || exp === "PERSON_001") && (rec === "PERSON_001" || rec === "SCT-2417")) return true;
-  if ((exp === "SCT-2418" || exp === "PERSON_002") && (rec === "PERSON_002" || rec === "SCT-2418")) return true;
-  if ((exp === "SCT-2419" || exp === "PERSON_003") && (rec === "PERSON_003" || rec === "SCT-2419")) return true;
-  return false;
+  return exp === rec;
 }
 
 function MarkAttendancePage() {
@@ -146,16 +142,19 @@ function MarkAttendancePage() {
 
   // Identity match check: recognized face must match the authenticated individual
   const isIdentityMatched = Boolean(
+    loggedInStaff &&
     faceResult?.verified &&
     isSameIndividual(loggedInStaff.staffId, faceResult.staffCode || faceResult.staffId)
   );
 
   const isWrongPerson = Boolean(
+    loggedInStaff &&
     faceResult?.verified && !isIdentityMatched
   );
 
   const faceAuthenticated = Boolean(
-    faceResult &&
+    loggedInStaff &&
+      faceResult &&
       faceResult.verified &&
       isIdentityMatched &&
       faceResult.distance !== undefined &&
@@ -166,7 +165,7 @@ function MarkAttendancePage() {
   // FINAL DECISION RULE:
   // wifiAuthorized && gpsInsideGeofence && faceAuthenticated (which guarantees same individual match) -> ALLOWED
   // otherwise -> REJECTED
-  const canMarkAttendance = wifiAuthorized && gpsInsideGeofence && faceAuthenticated;
+  const canMarkAttendance = Boolean(loggedInStaff && wifiAuthorized && gpsInsideGeofence && faceAuthenticated);
 
   // Final Attendance Status Text
   const finalAttendanceStatus = useMemo(() => {
@@ -188,7 +187,7 @@ function MarkAttendancePage() {
       return {
         label: "REJECTED (Identity Mismatch)",
         tone: "error" as const,
-        detail: `Recognized identity (${faceResult?.staffCode || faceResult?.staffId}) does not match authenticated user (${loggedInStaff.staffId}).`,
+        detail: `Recognized identity (${faceResult?.staffCode || faceResult?.staffId}) does not match authenticated user (${loggedInStaff?.staffId || "Staff"}).`,
       };
     }
     if (!wifiAuthorized && !gpsInsideGeofence) {
@@ -264,7 +263,7 @@ function MarkAttendancePage() {
       tone: "warning" as const,
       detail: "Live face recognition required to complete 3-factor verification",
     };
-  }, [status, receipt, canMarkAttendance, isWrongPerson, wifiAuthorized, isUsingMockScenario, geofence, gpsInsideGeofence, faceResult, faceAuthenticated, loggedInStaff.staffId]);
+  }, [status, receipt, canMarkAttendance, isWrongPerson, wifiAuthorized, isUsingMockScenario, geofence, gpsInsideGeofence, faceResult, faceAuthenticated, loggedInStaff?.staffId]);
 
   // Live Location Signal computation
   const liveLocationSignal = useMemo((): VerificationSignal => {
@@ -454,7 +453,7 @@ function MarkAttendancePage() {
         faceAuthenticated && faceResult?.distance !== undefined
           ? `Match distance: ${faceResult.distance.toFixed(4)} (≤ ${FACE_CONFIG.MATCH_THRESHOLD})`
           : isWrongPerson
-            ? `Face does not match ${loggedInStaff.staffId}`
+            ? `Face does not match ${loggedInStaff?.staffId || "authenticated staff"}`
             : faceResult
               ? "Biometric match rejected"
               : "Camera & ArcFace ready — Click Scan to test",
@@ -560,6 +559,13 @@ function MarkAttendancePage() {
   ]);
 
   const run = async () => {
+    if (!loggedInStaff) {
+      toast.error("Authentication Required", {
+        description: "You must be signed in with a registered staff account to mark attendance.",
+      });
+      return;
+    }
+
     if (!wifiAuthorized) {
       toast.error("Wi-Fi Verification Failed", {
         description: "You must be connected to an authorized campus Wi-Fi network to mark attendance.",
@@ -598,6 +604,7 @@ function MarkAttendancePage() {
         staffCode: loggedInStaff.staffId,
         staffName: loggedInStaff.name,
         department: loggedInStaff.department,
+        token: loggedInStaff.token,
         location: "Main Campus, Sona College",
         latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
         longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
@@ -628,7 +635,7 @@ function MarkAttendancePage() {
       <FaceScanDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
-        expectedStaffCode={loggedInStaff.staffId}
+        expectedStaffCode={loggedInStaff?.staffId || ""}
         onVerified={async (result) => {
           setFace(result.snapshot ?? null);
           setFaceResult(result);
@@ -640,10 +647,10 @@ function MarkAttendancePage() {
             return;
           }
 
-          const matchedIdentity = isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId);
+          const matchedIdentity = Boolean(loggedInStaff && isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId));
           if (!matchedIdentity) {
             toast.error("Identity Mismatch", {
-              description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff.staffId}). Attendance rejected.`,
+              description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff?.staffId || "None"}). Attendance rejected.`,
             });
             return;
           }
@@ -653,13 +660,14 @@ function MarkAttendancePage() {
           });
 
           // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
-          if (wifiAuthorized && gpsInsideGeofence) {
+          if (loggedInStaff && wifiAuthorized && gpsInsideGeofence) {
             setStatus("verifying");
             try {
               const attendanceReceipt = await markAttendance({
                 staffCode: loggedInStaff.staffId,
                 staffName: result.staffName || loggedInStaff.name,
                 department: loggedInStaff.department,
+                token: loggedInStaff.token,
                 location: "Main Campus, Sona College",
                 latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
                 longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
@@ -761,6 +769,20 @@ function MarkAttendancePage() {
       ) : (
         <div className="space-y-6">
           {/* Conditional Status Banners */}
+          {!loggedInStaff && (
+            <AlertBanner
+              tone="error"
+              icon={ShieldAlert}
+              title="Staff Authentication Required"
+              description="You are not currently logged in. Attendance marking requires an authenticated, registered staff account."
+              action={
+                <Button variant="outline" size="sm" asChild className="mt-2 h-8 gap-1.5">
+                  <Link to="/">Sign In with Staff ID</Link>
+                </Button>
+              }
+            />
+          )}
+
           {!isUsingMockScenario && (geofence.status === "location_services_off" || geofence.status === "position_unavailable") ? (
             <AlertBanner
               tone="error"
@@ -1273,7 +1295,7 @@ function MarkAttendancePage() {
                     }
                     if (isWrongPerson) {
                       toast.error("Identity Mismatch", {
-                        description: `Recognized face does not match authenticated user (${loggedInStaff.staffId}). Attendance rejected.`,
+                        description: `Recognized face does not match authenticated user (${loggedInStaff?.staffId || "Staff"}). Attendance rejected.`,
                       });
                       return;
                     }

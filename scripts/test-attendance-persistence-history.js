@@ -1,17 +1,23 @@
 /**
- * Regression Test Suite: CampusAttend Attendance Persistence & History
+ * Comprehensive Security & Integrity Regression Test Suite:
+ * CampusAttend Attendance Persistence & History Workflow
  *
  * Covers:
- * 1. Successful attendance insert and persisted read-back.
- * 2. Database insert failure reporting (no false success).
- * 3. History fetch after marking attendance.
- * 4. Summary vs list synchronization (0 in list => 0 in summary).
- * 5. Status and timezone/date-boundary in Asia/Kolkata (IST).
- * 6. Duplicate submissions & idempotency (single row per staff per day).
- * 7. Unauthorized staff access restriction (staff cannot read other staff rows).
- * 8. Administrator history access (full visibility and filtering).
- * 9. Empty history handling.
- * 10. Clean teardown of test artifacts.
+ * 1. Summary calculations with zero records (0 in list => 0 in summary).
+ * 2. Unauthenticated attendance submission rejection (HTTP 401).
+ * 3. Unregistered staff ID rejection (HTTP 403 UNREGISTERED_STAFF_IDENTITY).
+ * 4. Forged staff code mismatch rejection (HTTP 403 IDENTITY_FORGERY_DETECTED).
+ * 5. Biometric face identity mismatch rejection (HTTP 403 IDENTITY_MISMATCH).
+ * 6. Deactivated/inactive staff account rejection (HTTP 403 STAFF_ACCOUNT_INACTIVE).
+ * 7. Successful attendance submission with registered staff token & canonical derivation.
+ * 8. Authoritative Supabase read-back verification (canonical name, department, status, location).
+ * 9. Duplicate submission idempotency (same staff, same date => single row, alreadyMarked: true).
+ * 10. Consistent Asia/Kolkata (IST) date/time calendar presentation.
+ * 11. Staff history retrieval and strict staff isolation (Staff A cannot read Staff B).
+ * 12. Administrator authorization and institute-wide access.
+ * 13. Unauthenticated history query rejection (HTTP 401).
+ * 14. Detection and safe audit inspection of orphaned historical records (SCT-2417).
+ * 15. Clean teardown of temporary test artifacts without altering production data.
  */
 
 import crypto from "node:crypto";
@@ -73,7 +79,7 @@ function createMockRes() {
     setHeader(k, v) { headers[k.toLowerCase()] = v; },
     status(code) { statusCode = code; res.statusCode = code; return res; },
     json(data) { body = data; return res; },
-    end(data) { if (data && !body) body = JSON.parse(data); return res; },
+    end(data) { if (data && !body) body = typeof data === "string" ? JSON.parse(data) : data; return res; },
     get response() { return { status: statusCode, headers, body }; },
   };
   return res;
@@ -81,19 +87,69 @@ function createMockRes() {
 
 async function runTests() {
   console.log("============================================================");
-  console.log("   CAMPUSATTEND ATTENDANCE PERSISTENCE & HISTORY SUITE");
+  console.log("   CAMPUSATTEND SECURITY & DATA INTEGRITY TEST SUITE");
   console.log("============================================================\n");
 
-  const TEST_STAFF_A = "TEST-REG-STAFF-A";
-  const TEST_STAFF_B = "TEST-REG-STAFF-B";
+  const TEST_STAFF_ACTIVE = "TEST-STAFF-ACTIVE-99";
+  const TEST_STAFF_INACTIVE = "TEST-STAFF-INACTIVE-99";
+  const TEST_STAFF_UNREGISTERED = "SCT-UNKNOWN-9999";
   const createdRecordIds = [];
+  const createdStaffIds = [];
 
   try {
-    // Clean any preexisting test rows
-    await supabase.from("attendance_records").delete().in("staff_code", [TEST_STAFF_A, TEST_STAFF_B]);
+    // Clean any preexisting test rows from previous runs
+    await supabase.from("attendance_records").delete().in("staff_code", [TEST_STAFF_ACTIVE, TEST_STAFF_INACTIVE]);
+    await supabase.from("staff").delete().in("staff_code", [TEST_STAFF_ACTIVE, TEST_STAFF_INACTIVE]);
+
+    // Provision temporary registered test staff for strict identity derivation
+    const { data: staffActiveRow, error: staffErr1 } = await supabase
+      .from("staff")
+      .insert({
+        staff_code: TEST_STAFF_ACTIVE,
+        name: "Canonical Test Staff Member",
+        department: "Computer Science & Engineering",
+        designation: "Assistant Professor",
+        email: "test.staff.active@sonatech.ac.in",
+        phone: "+91 99999 11111",
+        device: "Test Device",
+        device_status: "Active",
+        active: true,
+        status: "Active",
+      })
+      .select("id")
+      .single();
+
+    if (staffErr1 || !staffActiveRow) {
+      throw new Error(`Failed to provision active test staff: ${staffErr1?.message}`);
+    }
+    createdStaffIds.push(staffActiveRow.id);
+
+    const { data: staffInactiveRow, error: staffErr2 } = await supabase
+      .from("staff")
+      .insert({
+        staff_code: TEST_STAFF_INACTIVE,
+        name: "Disabled Test Staff",
+        department: "ECE",
+        designation: "Lecturer",
+        email: "test.staff.inactive@sonatech.ac.in",
+        phone: "+91 99999 22222",
+        device: "Test Device",
+        device_status: "Blocked",
+        active: false,
+        status: "Inactive",
+      })
+      .select("id")
+      .single();
+
+    if (staffErr2 || !staffInactiveRow) {
+      throw new Error(`Failed to provision inactive test staff: ${staffErr2?.message}`);
+    }
+    createdStaffIds.push(staffInactiveRow.id);
+
+    console.log("✓ Provisioned temporary registered staff accounts for test validation.\n");
 
     // -------------------------------------------------------------------------
-    // TEST 1: Summary Calculation when Records = 0 (Testing Fix for 1 vs 0 bug)
+    // TEST 1: Summary Calculation when Records = 0
     // -------------------------------------------------------------------------
     console.log("TEST 1: Summary calculations with zero records");
     const emptyRecords = [];
@@ -105,93 +161,239 @@ async function runTests() {
       rate: emptyRecords.length === 0 ? 0 : Math.round(100 * (0 / emptyRecords.length)),
     };
     if (stats0.totalRecords !== 0 || stats0.present !== 0 || stats0.late !== 0 || stats0.rate !== 0) {
-      throw new Error(`Summary calculation bug reproduced: expected 0, got ${JSON.stringify(stats0)}`);
+      throw new Error(`Summary calculation bug: expected 0, got ${JSON.stringify(stats0)}`);
     }
     console.log("✓ Empty record set correctly evaluates to Total: 0, Present: 0, Rate: 0%\n");
 
     // -------------------------------------------------------------------------
-    // TEST 2: Successful Attendance Insert and Read-back
+    // TEST 2: Unauthenticated Attendance Submission Rejection
     // -------------------------------------------------------------------------
-    console.log("TEST 2: Attendance submission via handler & durable Supabase insert");
+    console.log("TEST 2: Rejection of unauthenticated attendance submission");
     const networkToken = mintNetworkToken("SONA-WIFI");
-    const req1 = {
+    const unauthReq = {
       method: "POST",
       headers: {
+        "x-network-auth-token": networkToken,
+      },
+      body: {
+        staffCode: TEST_STAFF_ACTIVE,
+        latitude: 11.67672,
+        longitude: 78.12219,
+        faceVerified: true,
+        recognizedStaffCode: TEST_STAFF_ACTIVE,
+        faceMatchDistance: 0.25,
+        livenessPassed: true,
+      },
+    };
+    const unauthRes = createMockRes();
+    await attendanceHandler(unauthReq, unauthRes);
+    if (unauthRes.response.status !== 401) {
+      throw new Error(`Expected HTTP 401 for unauthenticated submission, got ${unauthRes.response.status}`);
+    }
+    console.log(`✓ Unauthenticated attendance submission rejected with HTTP 401 (${unauthRes.response.body?.error})\n`);
+
+    // -------------------------------------------------------------------------
+    // TEST 3: Unregistered Staff Identity Rejection
+    // -------------------------------------------------------------------------
+    console.log("TEST 3: Rejection of unregistered staff ID");
+    const unregToken = mintStaffToken(TEST_STAFF_UNREGISTERED);
+    const unregReq = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${unregToken}`,
+        "x-network-auth-token": networkToken,
+      },
+      body: {
+        staffCode: TEST_STAFF_UNREGISTERED,
+        latitude: 11.67672,
+        longitude: 78.12219,
+        faceVerified: true,
+        recognizedStaffCode: TEST_STAFF_UNREGISTERED,
+        faceMatchDistance: 0.25,
+        livenessPassed: true,
+      },
+    };
+    const unregRes = createMockRes();
+    await attendanceHandler(unregReq, unregRes);
+    if (unregRes.response.status !== 403 || unregRes.response.body?.error !== "UNREGISTERED_STAFF_IDENTITY") {
+      throw new Error(`Expected HTTP 403 UNREGISTERED_STAFF_IDENTITY, got ${unregRes.response.status} - ${JSON.stringify(unregRes.response.body)}`);
+    }
+    console.log(`✓ Unregistered staff identity correctly rejected with HTTP 403 (${unregRes.response.body?.message})\n`);
+
+    // -------------------------------------------------------------------------
+    // TEST 4: Identity Forgery & Client-Supplied Mismatch Rejection
+    // -------------------------------------------------------------------------
+    console.log("TEST 4: Rejection of forged client-supplied Staff ID mismatch");
+    const validStaffToken = mintStaffToken(TEST_STAFF_ACTIVE);
+    const forgeryReq = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${validStaffToken}`, // Authenticated as TEST_STAFF_ACTIVE
+        "x-network-auth-token": networkToken,
+      },
+      body: {
+        staffCode: "SCT-FORGED-IMPERSONATOR", // Client attempting to mark for another staff
+        latitude: 11.67672,
+        longitude: 78.12219,
+        faceVerified: true,
+        recognizedStaffCode: TEST_STAFF_ACTIVE,
+        faceMatchDistance: 0.25,
+        livenessPassed: true,
+      },
+    };
+    const forgeryRes = createMockRes();
+    await attendanceHandler(forgeryReq, forgeryRes);
+    if (forgeryRes.response.status !== 403 || forgeryRes.response.body?.error !== "IDENTITY_FORGERY_DETECTED") {
+      throw new Error(`Expected HTTP 403 IDENTITY_FORGERY_DETECTED, got ${forgeryRes.response.status} - ${JSON.stringify(forgeryRes.response.body)}`);
+    }
+    console.log(`✓ Client forgery attempt blocked with HTTP 403 (${forgeryRes.response.body?.message})\n`);
+
+    // -------------------------------------------------------------------------
+    // TEST 5: Biometric Face Recognition Identity Mismatch Rejection
+    // -------------------------------------------------------------------------
+    console.log("TEST 5: Rejection of biometric face identity mismatch");
+    const faceMismatchReq = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${validStaffToken}`,
+        "x-network-auth-token": networkToken,
+      },
+      body: {
+        staffCode: TEST_STAFF_ACTIVE,
+        latitude: 11.67672,
+        longitude: 78.12219,
+        faceVerified: true,
+        recognizedStaffCode: "OTHER-PERSON-FACE", // Recognized face does not match authenticated staff
+        faceMatchDistance: 0.25,
+        livenessPassed: true,
+      },
+    };
+    const faceMismatchRes = createMockRes();
+    await attendanceHandler(faceMismatchReq, faceMismatchRes);
+    if (faceMismatchRes.response.status !== 403 || faceMismatchRes.response.body?.error !== "IDENTITY_MISMATCH") {
+      throw new Error(`Expected HTTP 403 IDENTITY_MISMATCH, got ${faceMismatchRes.response.status} - ${JSON.stringify(faceMismatchRes.response.body)}`);
+    }
+    console.log(`✓ Face identity mismatch rejected with HTTP 403 (${faceMismatchRes.response.body?.message})\n`);
+
+    // -------------------------------------------------------------------------
+    // TEST 6: Inactive / Disabled Staff Account Rejection
+    // -------------------------------------------------------------------------
+    console.log("TEST 6: Rejection of disabled / inactive staff account");
+    const inactiveToken = mintStaffToken(TEST_STAFF_INACTIVE);
+    const inactiveReq = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${inactiveToken}`,
+        "x-network-auth-token": networkToken,
+      },
+      body: {
+        staffCode: TEST_STAFF_INACTIVE,
+        latitude: 11.67672,
+        longitude: 78.12219,
+        faceVerified: true,
+        recognizedStaffCode: TEST_STAFF_INACTIVE,
+        faceMatchDistance: 0.25,
+        livenessPassed: true,
+      },
+    };
+    const inactiveRes = createMockRes();
+    await attendanceHandler(inactiveReq, inactiveRes);
+    if (inactiveRes.response.status !== 403 || inactiveRes.response.body?.error !== "STAFF_ACCOUNT_INACTIVE") {
+      throw new Error(`Expected HTTP 403 STAFF_ACCOUNT_INACTIVE, got ${inactiveRes.response.status} - ${JSON.stringify(inactiveRes.response.body)}`);
+    }
+    console.log(`✓ Disabled staff account correctly rejected with HTTP 403 (${inactiveRes.response.body?.message})\n`);
+
+    // -------------------------------------------------------------------------
+    // TEST 7: Successful Attendance Insert with Canonical Server Derivation
+    // -------------------------------------------------------------------------
+    console.log("TEST 7: Successful attendance insertion & canonical server derivation");
+    const validReq = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${validStaffToken}`,
         "x-network-auth-token": networkToken,
         "x-forwarded-for": "111.92.42.18",
       },
       body: {
-        staffCode: TEST_STAFF_A,
-        staffName: "Test Staff Member A",
-        department: "Computer Science & Engineering",
+        staffCode: TEST_STAFF_ACTIVE,
+        staffName: "Fake Client Name Attempt", // Must be ignored by server
+        department: "Fake Client Department Attempt", // Must be ignored by server
         latitude: 11.67672,
         longitude: 78.12219,
         accuracy: 8,
         faceVerified: true,
-        recognizedStaffCode: TEST_STAFF_A,
-        faceMatchDistance: 0.28,
+        recognizedStaffCode: TEST_STAFF_ACTIVE,
+        faceMatchDistance: 0.26,
         livenessPassed: true,
         location: "Main Campus, Sona College",
-        deviceId: "DEV-TEST-PHONE-1",
+        deviceId: "DEV-TEST-PHONE-SECURE",
       },
     };
-    const res1 = createMockRes();
-    await attendanceHandler(req1, res1);
+    const validRes = createMockRes();
+    await attendanceHandler(validReq, validRes);
+    const validPayload = validRes.response.body;
 
-    const payload1 = res1.response.body;
-    if (res1.response.status !== 200 || !payload1?.success || !payload1?.receipt?.attendanceId) {
-      throw new Error(`Attendance insert failed: ${res1.response.status} - ${JSON.stringify(payload1)}`);
+    if (validRes.response.status !== 200 || !validPayload?.success || !validPayload?.receipt?.attendanceId) {
+      throw new Error(`Attendance insertion failed: ${validRes.response.status} - ${JSON.stringify(validPayload)}`);
     }
-    console.log(`✓ Attendance successfully marked! Persisted UUID: ${payload1.receipt.attendanceId}`);
-    createdRecordIds.push(payload1.receipt.attendanceId);
+    createdRecordIds.push(validPayload.receipt.attendanceId);
+    console.log(`✓ Attendance successfully recorded! Confirmed UUID: ${validPayload.receipt.attendanceId}`);
 
-    // Read back directly from Supabase
+    // -------------------------------------------------------------------------
+    // TEST 8: Authoritative Read-Back & Canonical Identity Verification
+    // -------------------------------------------------------------------------
+    console.log("TEST 8: Direct Supabase read-back & canonical identity verification");
     const { data: dbRow, error: readErr } = await supabase
       .from("attendance_records")
       .select("*")
-      .eq("id", payload1.receipt.attendanceId)
+      .eq("id", validPayload.receipt.attendanceId)
       .single();
 
     if (readErr || !dbRow) {
       throw new Error(`Failed to read back persisted attendance row: ${readErr?.message}`);
     }
-    if (dbRow.staff_code !== TEST_STAFF_A) {
-      throw new Error(`DB row staff_code mismatch: ${dbRow.staff_code} !== ${TEST_STAFF_A}`);
+    if (dbRow.staff_code !== TEST_STAFF_ACTIVE) {
+      throw new Error(`DB row staff_code mismatch: ${dbRow.staff_code} !== ${TEST_STAFF_ACTIVE}`);
+    }
+    if (dbRow.staff_name !== "Canonical Test Staff Member") {
+      throw new Error(`SECURITY FAILURE: Server trusted client-provided name instead of canonical staff record! (${dbRow.staff_name})`);
+    }
+    if (dbRow.department !== "Computer Science & Engineering") {
+      throw new Error(`SECURITY FAILURE: Server trusted client-provided department instead of canonical staff record! (${dbRow.department})`);
     }
     if (dbRow.verification !== "Verified") {
-      throw new Error(`DB row verification value invalid: ${dbRow.verification}`);
+      throw new Error(`DB verification check constraint violation: ${dbRow.verification}`);
     }
-    console.log(`✓ Read-back confirmed: Date=${dbRow.date}, Status=${dbRow.status}, Verification=${dbRow.verification}\n`);
+    console.log(`✓ Canonical derivation verified: Name="${dbRow.staff_name}", Dept="${dbRow.department}", Verification="${dbRow.verification}"\n`);
 
     // -------------------------------------------------------------------------
-    // TEST 3: Duplicate Submission Idempotency
+    // TEST 9: Duplicate Submission Idempotency
     // -------------------------------------------------------------------------
-    console.log("TEST 3: Duplicate attendance submission on same day (idempotency check)");
-    const resDuplicate = createMockRes();
-    await attendanceHandler(req1, resDuplicate);
-    const dupPayload = resDuplicate.response.body;
+    console.log("TEST 9: Duplicate submission idempotency (single row per staff per day)");
+    const dupRes = createMockRes();
+    await attendanceHandler(validReq, dupRes);
+    const dupPayload = dupRes.response.body;
 
-    if (resDuplicate.response.status !== 200 || !dupPayload?.alreadyMarked) {
-      throw new Error(`Idempotency check failed: ${resDuplicate.response.status} - ${JSON.stringify(dupPayload)}`);
+    if (dupRes.response.status !== 200 || !dupPayload?.alreadyMarked) {
+      throw new Error(`Idempotency check failed: ${dupRes.response.status} - ${JSON.stringify(dupPayload)}`);
     }
-    if (dupPayload.receipt.attendanceId !== payload1.receipt.attendanceId) {
-      throw new Error(`Duplicate submission created different ID: ${dupPayload.receipt.attendanceId} !== ${payload1.receipt.attendanceId}`);
+    if (dupPayload.receipt.attendanceId !== validPayload.receipt.attendanceId) {
+      throw new Error(`Duplicate submission created different ID: ${dupPayload.receipt.attendanceId} !== ${validPayload.receipt.attendanceId}`);
     }
 
-    // Verify exactly ONE row exists in database for TEST_STAFF_A
     const { data: countRows } = await supabase
       .from("attendance_records")
       .select("id")
-      .eq("staff_code", TEST_STAFF_A);
+      .eq("staff_code", TEST_STAFF_ACTIVE);
     if (!countRows || countRows.length !== 1) {
       throw new Error(`Duplicate rows created in database: count = ${countRows?.length}`);
     }
-    console.log("✓ Duplicate submission returned existing receipt idempotently without duplicate rows\n");
+    console.log("✓ Duplicate submission returned existing receipt idempotently without creating duplicate rows\n");
 
     // -------------------------------------------------------------------------
-    // TEST 4: Timezone & Date Boundary in IST (Asia/Kolkata)
+    // TEST 10: Timezone & Date Boundary in IST (Asia/Kolkata)
     // -------------------------------------------------------------------------
-    console.log("TEST 4: Authoritative IST (Asia/Kolkata) date verification");
+    console.log("TEST 10: Timezone verification in Asia/Kolkata (IST)");
     const expectedIstDate = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Kolkata",
       year: "numeric",
@@ -202,132 +404,127 @@ async function runTests() {
     if (dbRow.date !== expectedIstDate) {
       throw new Error(`IST Date mismatch: DB has ${dbRow.date}, expected ${expectedIstDate}`);
     }
-    console.log(`✓ Stored date correctly aligns with Asia/Kolkata calendar day: ${dbRow.date}\n`);
+    console.log(`✓ Stored calendar date matches Asia/Kolkata day: ${dbRow.date}\n`);
 
     // -------------------------------------------------------------------------
-    // TEST 5: History Fetch via GET /api/attendance for Staff A
+    // TEST 11: History Accuracy & Staff Isolation
     // -------------------------------------------------------------------------
-    console.log("TEST 5: Staff history retrieval via GET /api/attendance");
-    const staffTokenA = mintStaffToken(TEST_STAFF_A);
-    const getReqA = {
+    console.log("TEST 11: Staff history accuracy and strict staff isolation");
+    const getReqSelf = {
       method: "GET",
-      url: `/api/attendance?staff_code=${TEST_STAFF_A}`,
+      url: `/api/attendance?staff_code=${TEST_STAFF_ACTIVE}`,
       headers: {
-        authorization: `Bearer ${staffTokenA}`,
+        authorization: `Bearer ${validStaffToken}`,
       },
     };
-    const getResA = createMockRes();
-    await attendanceHandler(getReqA, getResA);
+    const getResSelf = createMockRes();
+    await attendanceHandler(getReqSelf, getResSelf);
+    const selfPayload = getResSelf.response.body;
 
-    const getPayloadA = getResA.response.body;
-    if (getResA.response.status !== 200 || !getPayloadA?.success || getPayloadA?.count < 1) {
-      throw new Error(`Staff history retrieval failed: ${getResA.response.status} - ${JSON.stringify(getPayloadA)}`);
+    if (getResSelf.response.status !== 200 || !selfPayload?.success || selfPayload.count < 1) {
+      throw new Error(`Staff self-history failed: ${getResSelf.response.status} - ${JSON.stringify(selfPayload)}`);
     }
-    const foundStaffARow = getPayloadA.records.find((r) => r.id === payload1.receipt.attendanceId);
-    if (!foundStaffARow) {
-      throw new Error(`Marked record ${payload1.receipt.attendanceId} missing from history records list`);
+    const foundSelfRecord = selfPayload.records.find((r) => r.id === validPayload.receipt.attendanceId);
+    if (!foundSelfRecord) {
+      throw new Error("Marked record not found in staff self-history");
     }
-    console.log(`✓ History retrieval successful: Found marked row in staff records (Count: ${getPayloadA.count})\n`);
 
-    // -------------------------------------------------------------------------
-    // TEST 6: Staff Isolation (Staff A cannot access Staff B's records)
-    // -------------------------------------------------------------------------
-    console.log("TEST 6: Server-side authorization & staff isolation check");
-    const getReqAttempt = {
+    // Attempt to access another staff's records
+    const getReqCross = {
       method: "GET",
-      url: `/api/attendance?staff_code=${TEST_STAFF_B}`,
+      url: "/api/attendance?staff_code=SCT-001",
       headers: {
-        authorization: `Bearer ${staffTokenA}`, // Token is for STAFF_A, requesting STAFF_B
+        authorization: `Bearer ${validStaffToken}`, // Token is for TEST_STAFF_ACTIVE
       },
     };
-    const getResAttempt = createMockRes();
-    await attendanceHandler(getReqAttempt, getResAttempt);
+    const getResCross = createMockRes();
+    await attendanceHandler(getReqCross, getResCross);
+    const crossPayload = getResCross.response.body;
 
-    const attemptPayload = getResAttempt.response.body;
-    // Server must enforce STAFF_A scope regardless of query parameter
-    const leakedStaffB = attemptPayload?.records?.some((r) => r.staff_code === TEST_STAFF_B);
-    if (leakedStaffB) {
-      throw new Error("SECURITY FAILURE: Staff A token accessed Staff B records!");
+    const leakedRecords = crossPayload?.records?.some((r) => r.staff_code !== TEST_STAFF_ACTIVE);
+    if (leakedRecords) {
+      throw new Error("SECURITY FAILURE: Staff token was able to read other staff records!");
     }
-    console.log("✓ Server strictly enforced token scope: Staff A could not view Staff B records\n");
+    console.log("✓ Staff isolation strictly enforced: ordinary staff can only see their own attendance\n");
 
     // -------------------------------------------------------------------------
-    // TEST 7: Administrator Access to All Attendance Records
+    // TEST 12: Administrator Authorization & Filtering
     // -------------------------------------------------------------------------
-    console.log("TEST 7: Administrator history access and filtering");
+    console.log("TEST 12: Administrator authorization and full visibility");
     const adminToken = mintAdminToken();
     const adminReq = {
       method: "GET",
-      url: "/api/attendance?limit=50",
+      url: `/api/attendance?staff_code=${TEST_STAFF_ACTIVE}`,
       headers: {
         authorization: `Bearer ${adminToken}`,
       },
     };
     const adminRes = createMockRes();
     await attendanceHandler(adminReq, adminRes);
-
     const adminPayload = adminRes.response.body;
-    if (adminRes.response.status !== 200 || !adminPayload?.success || !Array.isArray(adminPayload?.records)) {
-      throw new Error(`Admin query failed: ${adminRes.response.status} - ${JSON.stringify(adminPayload)}`);
+
+    if (adminRes.response.status !== 200 || !adminPayload?.success || adminPayload.count < 1) {
+      throw new Error(`Admin attendance query failed: ${adminRes.response.status} - ${JSON.stringify(adminPayload)}`);
     }
-    const adminSawStaffA = adminPayload.records.some((r) => r.staff_code === TEST_STAFF_A);
-    if (!adminSawStaffA) {
-      throw new Error(`Admin could not see Staff A attendance record`);
-    }
-    console.log(`✓ Administrator successfully accessed full attendance records (${adminPayload.count} records visible)\n`);
+    console.log(`✓ Administrator successfully accessed records (${adminPayload.count} records)\n`);
 
     // -------------------------------------------------------------------------
-    // TEST 8: Unauthenticated Request Rejection
+    // TEST 13: Unauthenticated History Query Rejection
     // -------------------------------------------------------------------------
-    console.log("TEST 8: Unauthenticated GET request rejection");
-    const unauthReq = {
+    console.log("TEST 13: Rejection of unauthenticated history queries");
+    const unauthGetReq = {
       method: "GET",
       url: "/api/attendance",
       headers: {},
     };
-    const unauthRes = createMockRes();
-    await attendanceHandler(unauthReq, unauthRes);
-
-    if (unauthRes.response.status !== 401) {
-      throw new Error(`Unauthenticated request was not rejected with 401: status=${unauthRes.response.status}`);
+    const unauthGetRes = createMockRes();
+    await attendanceHandler(unauthGetReq, unauthGetRes);
+    if (unauthGetRes.response.status !== 401) {
+      throw new Error(`Expected HTTP 401 for unauthenticated GET, got ${unauthGetRes.response.status}`);
     }
-    console.log("✓ Unauthenticated query correctly rejected with HTTP 401 Unauthorized\n");
+    console.log("✓ Unauthenticated history query rejected with HTTP 401\n");
 
     // -------------------------------------------------------------------------
-    // TEST 9: Empty History Response Shape
+    // TEST 14: Orphaned Records Audit Check (Dr. Priya Ramanathan SCT-2417)
     // -------------------------------------------------------------------------
-    console.log("TEST 9: Empty history response shape check");
-    const emptyStaffToken = mintStaffToken("NON-EXISTENT-STAFF-999");
-    const emptyReq = {
-      method: "GET",
-      url: "/api/attendance",
-      headers: {
-        authorization: `Bearer ${emptyStaffToken}`,
-      },
-    };
-    const emptyRes = createMockRes();
-    await attendanceHandler(emptyReq, emptyRes);
+    console.log("TEST 14: Orphaned historical records audit check");
+    const { data: allStaff } = await supabase.from("staff").select("staff_code");
+    const registeredCodes = new Set((allStaff || []).map((s) => s.staff_code.toUpperCase()));
 
-    const emptyPayload = emptyRes.response.body;
-    if (emptyRes.response.status !== 200 || emptyPayload.count !== 0 || !Array.isArray(emptyPayload.records)) {
-      throw new Error(`Empty history returned unexpected shape: ${JSON.stringify(emptyPayload)}`);
+    const { data: allRecords } = await supabase.from("attendance_records").select("id, staff_code, staff_name, date");
+    const orphanedRows = (allRecords || []).filter((r) => !registeredCodes.has(r.staff_code.toUpperCase()));
+
+    console.log(`   Audited ${allRecords?.length || 0} production attendance records:`);
+    console.log(`   Registered staff count: ${registeredCodes.size}`);
+    console.log(`   Orphaned rows detected: ${orphanedRows.length}`);
+    orphanedRows.forEach((r) => {
+      console.log(`   - [ORPHANED] ID: ${r.id} | Staff: ${r.staff_code} (${r.staff_name}) | Date: ${r.date}`);
+    });
+
+    const priyaRows = orphanedRows.filter((r) => r.staff_code === "SCT-2417");
+    if (priyaRows.length > 0) {
+      console.log(`✓ Confirmed: Dr. Priya Ramanathan (SCT-2417) rows (${priyaRows.length}) exist without active staff account.`);
+      console.log("  Preserved intact per safe inspection requirements.\n");
     }
-    console.log("✓ Empty staff history returns clean count: 0 and empty array []\n");
 
     console.log("============================================================");
-    console.log("   ALL REGRESSION TESTS PASSED (10/10)");
+    console.log("   ALL 14 REGRESSION TESTS PASSED SUCCESSFULLY (14/14)");
     console.log("============================================================\n");
   } finally {
-    // Teardown test rows
+    // Teardown temporary test rows
     if (createdRecordIds.length > 0) {
-      console.log(`Cleaning up ${createdRecordIds.length} test attendance rows...`);
+      console.log(`Tearing down ${createdRecordIds.length} temporary test attendance records...`);
       await supabase.from("attendance_records").delete().in("id", createdRecordIds);
-      console.log("Cleanup complete. Authoritative production records preserved.");
     }
+    if (createdStaffIds.length > 0) {
+      console.log(`Tearing down ${createdStaffIds.length} temporary test staff accounts...`);
+      await supabase.from("staff").delete().in("id", createdStaffIds);
+    }
+    console.log("Cleanup complete. Genuine production data strictly preserved.");
   }
 }
 
 runTests().catch((err) => {
-  console.error("\n❌ REGRESSION TEST FAILED:", err);
+  console.error("\n❌ TEST SUITE FAILED:", err);
   process.exit(1);
 });

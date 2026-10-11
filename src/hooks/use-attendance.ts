@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { currentStaff, type AttendanceStatus } from "@/mocks/data";
+import { type AttendanceStatus } from "@/mocks/data";
 import { useActiveStaff } from "@/lib/staff-auth";
 import { formatIndiaDate, formatIndiaTime, indiaDateKey } from "@/lib/india-time";
 
@@ -103,7 +103,7 @@ export function getWorkingDaysInMonth(year: number, monthZeroIndexed: number): n
 
 export function useAttendance(targetStaffCode?: string) {
   const activeStaff = useActiveStaff();
-  const effectiveStaffCode = targetStaffCode || activeStaff.staffId || currentStaff.staffId;
+  const effectiveStaffCode = targetStaffCode || activeStaff?.staffId || "";
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +111,12 @@ export function useAttendance(targetStaffCode?: string) {
   const fetchRecords = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+
+    if (!effectiveStaffCode && !activeStaff?.token) {
+      setRecords([]);
+      setIsLoading(false);
+      return;
+    }
 
     try {
       let rawRows: any[] | null = null;
@@ -124,7 +130,7 @@ export function useAttendance(targetStaffCode?: string) {
           const reqHeaders: Record<string, string> = {
             Accept: "application/json",
           };
-          if (activeStaff.token) {
+          if (activeStaff?.token) {
             reqHeaders["Authorization"] = `Bearer ${activeStaff.token}`;
           }
           if (effectiveStaffCode) {
@@ -194,9 +200,9 @@ export function useAttendance(targetStaffCode?: string) {
             id: idStr,
             rawId: r.id,
             staff_code: r.staff_code || effectiveStaffCode,
-            staff_name: r.staff_name || activeStaff.name || currentStaff.name,
-            department: r.department || activeStaff.department || currentStaff.department,
-            email: activeStaff.email || currentStaff.email,
+            staff_name: r.staff_name || activeStaff?.name || "Staff Member",
+            department: r.department || activeStaff?.department || "General",
+            email: r.email || activeStaff?.email || "",
             date: displayDate,
             rawDate,
             day: dayName,
@@ -222,7 +228,7 @@ export function useAttendance(targetStaffCode?: string) {
     } finally {
       setIsLoading(false);
     }
-  }, [targetStaffCode, effectiveStaffCode, activeStaff.token]);
+  }, [targetStaffCode, effectiveStaffCode, activeStaff?.token]);
 
   useEffect(() => {
     void fetchRecords();

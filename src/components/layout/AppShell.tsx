@@ -75,8 +75,8 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
           meta: `Administrator · ${authAdmin?.username || "moulish"}`,
         }
       : {
-          name: profile.name || activeStaff.name,
-          meta: `${activeStaff.designation} · ${activeStaff.staffId}`,
+          name: activeStaff ? profile.name || activeStaff.name : "Guest Staff",
+          meta: activeStaff ? `${activeStaff.designation} · ${activeStaff.staffId}` : "Not signed in",
         };
 
   // If viewing admin console while unauthorized, render restricted access barrier

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   AlertCircle,
   Camera,
@@ -99,7 +99,6 @@ const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15MB
 
 function StaffFaceEnrollmentPage() {
   const activeStaff = useActiveStaff();
-  const staffId = activeStaff.staffId;
 
   // Native hardware status
   const isNative = isNativeBiometricAvailable();
@@ -123,6 +122,25 @@ function StaffFaceEnrollmentPage() {
   const [isActivating, setIsActivating] = useState(false);
   const [activationError, setActivationError] = useState<string | null>(null);
   const activationInProgressRef = useRef(false);
+
+  if (!activeStaff) {
+    return (
+      <AppShell nav={staffNav} role="staff">
+        <PageHeader
+          title="Face Biometric Enrollment"
+          description="Hardware-bound biometric facial verification."
+        />
+        <div className="rounded-xl border border-border bg-card p-8 text-center">
+          <p className="text-sm text-muted-foreground">You must be signed in with a registered staff account to manage biometric enrollment.</p>
+          <Button className="mt-4" asChild>
+            <Link to="/">Sign In with Staff ID</Link>
+          </Button>
+        </div>
+      </AppShell>
+    );
+  }
+
+  const staffId = activeStaff.staffId;
   const hasActivatedTokenRef = useRef<string | null>(null);
 
   // File input ref for "Upload Photo Files"

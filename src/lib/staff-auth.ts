@@ -9,7 +9,6 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { currentStaff } from "@/mocks/data";
 
 export interface StaffSession {
   id: string;
@@ -39,42 +38,31 @@ const SESSION_EVENT = "campusattend:staff-session-change";
 const PROFILE_KEY = "campusattend.profile";
 const PROFILE_EVENT = "campusattend:profile-change";
 
-export const fallbackStaff: StaffSession = {
-  id: "staff-default-priya",
-  staff_code: currentStaff.staffId,
-  staffId: currentStaff.staffId,
-  name: currentStaff.name,
-  email: currentStaff.email,
-  department: currentStaff.department,
-  designation: currentStaff.designation,
-  role: "staff",
-};
-
 /**
- * Read the current staff session from localStorage, or return the default fallback.
+ * Read the current staff session from localStorage, or null if unauthenticated.
  */
-export function getActiveStaff(): StaffSession {
-  if (typeof window === "undefined") return fallbackStaff;
+export function getActiveStaff(): StaffSession | null {
+  if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return fallbackStaff;
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && (parsed.staffId || parsed.staff_code)) {
       return {
         id: parsed.id || parsed.staff_code || parsed.staffId,
         staff_code: parsed.staff_code || parsed.staffId,
         staffId: parsed.staffId || parsed.staff_code,
-        name: parsed.name || fallbackStaff.name,
-        email: parsed.email || fallbackStaff.email,
-        department: parsed.department || fallbackStaff.department,
-        designation: parsed.designation || fallbackStaff.designation,
+        name: parsed.name || "Staff Member",
+        email: parsed.email || "",
+        department: parsed.department || "General",
+        designation: parsed.designation || "Staff",
         role: "staff",
         token: parsed.token,
       };
     }
-    return fallbackStaff;
+    return null;
   } catch {
-    return fallbackStaff;
+    return null;
   }
 }
 
@@ -102,8 +90,8 @@ export function setActiveStaffSession(session: StaffSession | null) {
 /**
  * React hook to reactively track the actively authenticated staff member.
  */
-export function useActiveStaff(): StaffSession {
-  const [activeStaff, setActiveStaff] = useState<StaffSession>(getActiveStaff);
+export function useActiveStaff(): StaffSession | null {
+  const [activeStaff, setActiveStaff] = useState<StaffSession | null>(getActiveStaff);
 
   useEffect(() => {
     setActiveStaff(getActiveStaff());

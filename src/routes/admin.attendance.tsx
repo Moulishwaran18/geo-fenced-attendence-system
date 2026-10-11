@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { departments, todaysAttendance } from "@/mocks/data";
+import { departments } from "@/mocks/data";
 import { formatIndiaDate, useIndiaTime } from "@/lib/india-time";
 import { getAdminAuthHeaders } from "@/lib/admin-auth";
 import { supabase } from "@/lib/supabase";
@@ -121,10 +121,8 @@ function AdminAttendancePage() {
     void fetchRecords();
   }, [fetchRecords]);
 
-  // Combine database records with fallback data if database has no entries
   const effectiveSource = useMemo(() => {
-    if (dbRecords.length > 0) return dbRecords;
-    return todaysAttendance as DisplayAttendanceRow[];
+    return dbRecords;
   }, [dbRecords]);
 
   const rows = useMemo(

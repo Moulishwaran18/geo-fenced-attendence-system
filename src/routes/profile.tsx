@@ -16,7 +16,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { currentStaff } from "@/mocks/data";
 import { useProfile, validateProfile } from "@/lib/profile-store";
 import { useActiveStaff } from "@/lib/staff-auth";
 import { useDevice } from "@/lib/use-device";
@@ -54,13 +53,27 @@ function ProfilePage() {
     if (open) setDraft(profile);
   }, [open, profile]);
 
+  if (!activeStaff) {
+    return (
+      <AppShell nav={staffNav} role="staff">
+        <PageHeader title="Staff Profile" description="Account details and settings." />
+        <div className="rounded-xl border border-border bg-card p-8 text-center">
+          <p className="text-sm text-muted-foreground">You are not currently logged in.</p>
+          <Button className="mt-4" asChild>
+            <Link to="/">Sign In to CampusAttend</Link>
+          </Button>
+        </div>
+      </AppShell>
+    );
+  }
+
   const fields = [
     ["Staff Name", profile.name || activeStaff.name],
     ["Staff ID", activeStaff.staffId],
     ["Department", activeStaff.department],
     ["Designation", activeStaff.designation],
     ["Email", profile.email || activeStaff.email],
-    ["Phone", currentStaff.phone],
+    ["Phone", "—"],
   ];
 
   const handleSave = () => {
