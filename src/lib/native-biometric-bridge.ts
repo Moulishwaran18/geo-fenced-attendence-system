@@ -154,6 +154,95 @@ export async function enrollNativeTemplate(
 }
 
 /**
+ * Enroll multiple 512-dimensional face templates into Android Keystore local encrypted storage in a single atomic transaction.
+ * Does NOT send embeddings or raw photos to Supabase or cloud servers.
+ */
+export async function enrollNativeTemplatesBatch(
+  staffId: string,
+  embeddings: Array<number[] | Float32Array>,
+  labels?: string[],
+  oneTimeToken?: string | null,
+): Promise<NativeEnrollResult> {
+  const bridge = getBridge();
+  if (!bridge) {
+    return {
+      success: false,
+      error: "BRIDGE_UNAVAILABLE",
+      message: "Native Android biometric hardware bridge is not available.",
+    };
+  }
+
+  const deviceId = getNativeDeviceId() || "";
+  const samplesArray = embeddings.map((emb) => Array.from(emb));
+
+  // If bridge supports batch enrollment:
+  if (typeof bridge.enrollLocalTemplates === "function") {
+    try {
+      const raw = bridge.enrollLocalTemplates(
+        staffId,
+        deviceId,
+        JSON.stringify(samplesArray),
+        labels ? JSON.stringify(labels) : "[]",
+        oneTimeToken || "",
+      );
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return {
+        success: Boolean(parsed.success),
+        staffId: parsed.staffId,
+        deviceId: parsed.deviceId,
+        count: parsed.count,
+        error: parsed.error,
+        message: parsed.message,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: "ENROLLMENT_FAILED",
+        message: err?.message || "Bridge batch enrollment failed.",
+      };
+    }
+  }
+
+  // Fallback to sequential enrollLocalTemplate if batch method is not present
+  try {
+    let lastResult: NativeEnrollResult = { success: false, error: "NO_SAMPLES" };
+    for (let i = 0; i < embeddings.length; i++) {
+      const label = labels && labels[i] ? labels[i] : `sample_${i + 1}`;
+      const res = await enrollNativeTemplate(staffId, embeddings[i]!, label);
+      if (!res.success) {
+        return res;
+      }
+      lastResult = res;
+    }
+    return lastResult;
+  } catch (err: any) {
+    return {
+      success: false,
+      error: "ENROLLMENT_FAILED",
+      message: err?.message || "Bridge sequential enrollment failed.",
+    };
+  }
+}
+
+/**
+ * Verify that local encrypted templates are persistently stored and accessible in Android Keystore.
+ */
+export async function verifyNativePersistence(staffId: string): Promise<{
+  verified: boolean;
+  count: number;
+  deviceId?: string | undefined;
+  enrolledAt?: number | undefined;
+}> {
+  const status = await getNativeEnrollmentStatus(staffId);
+  return {
+    verified: Boolean(status.isAvailable && status.isEnrolled && status.count > 0),
+    count: status.count,
+    deviceId: status.deviceId,
+    enrolledAt: status.enrolledAt,
+  };
+}
+
+/**
  * Verify a live face embedding against this device's Android Keystore templates.
  * Returns match result and single-use cryptographic attendance attestation token.
  */

@@ -86,13 +86,163 @@ class AndroidBiometricBridge(
                 put("deviceId", deviceId)
                 put("isDeviceBound", true)
                 put("hardwareKeystore", true)
+                put("canEnroll", count == 0)
                 put("enrolledAt", latestTime)
             }.toString()
         }
     }
 
     /**
-     * Securely enroll a 512-dimensional face template locally on this device.
+     * Batch-enroll multiple 512-dimensional face templates locally in an atomic transaction.
+     * Enforces that once enrolled, templates cannot be silently overwritten without authorized replacement.
+     */
+    @JavascriptInterface
+    fun enrollLocalTemplates(
+        staffId: String,
+        deviceId: String,
+        embeddingsJson: String,
+        labelsJson: String?,
+        oneTimeToken: String?
+    ): String {
+        if (!isCallingOriginTrusted()) {
+            return JSONObject().apply {
+                put("success", false)
+                put("error", "UNTRUSTED_ORIGIN")
+            }.toString()
+        }
+
+        val cleanId = staffId.trim().uppercase()
+        val currentDeviceId = keystoreManager.getDeviceId()
+
+        if (deviceId.isNotBlank() && deviceId != currentDeviceId) {
+            return JSONObject().apply {
+                put("success", false)
+                put("error", "DEVICE_MISMATCH")
+                put("message", "Target deviceId does not match this hardware device.")
+            }.toString()
+        }
+
+        return try {
+            val embeddingsArr = JSONArray(embeddingsJson)
+            if (embeddingsArr.length() == 0) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "EMPTY_SAMPLES")
+                    put("message", "At least one face sample is required.")
+                }.toString()
+            }
+
+            val labelsArr = if (!labelsJson.isNullOrBlank()) try { JSONArray(labelsJson) } catch (_: Exception) { null } else null
+
+            val parsedEmbeddings = mutableListOf<FloatArray>()
+            for (sampleIdx in 0 until embeddingsArr.length()) {
+                val sampleArr = embeddingsArr.getJSONArray(sampleIdx)
+                if (sampleArr.length() != 512) {
+                    return JSONObject().apply {
+                        put("success", false)
+                        put("error", "INVALID_DIMENSION")
+                        put("message", "Sample at index $sampleIdx must contain exactly 512 float values.")
+                    }.toString()
+                }
+
+                val embedding = FloatArray(512)
+                for (i in 0 until 512) {
+                    embedding[i] = sampleArr.getDouble(i).toFloat()
+                }
+
+                var sumSq = 0.0
+                for (f in embedding) sumSq += f * f
+                val norm = sqrt(sumSq).toFloat()
+                if (norm !in 0.95f..1.05f) {
+                    for (i in embedding.indices) embedding[i] /= norm
+                }
+                parsedEmbeddings.add(embedding)
+            }
+
+            runBlocking {
+                val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
+                val isReplacement = !oneTimeToken.isNullOrBlank()
+
+                // Prevent silent re-enrollment if already enrolled and no replacement token
+                if (existingCount > 0 && !isReplacement) {
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "ALREADY_ENROLLED")
+                        put("message", "Face is already enrolled and locked on this device. Re-enrollment requires an authorized face-change approval.")
+                    }
+                }
+
+                // If authorized replacement, remove prior templates
+                if (existingCount > 0 && isReplacement) {
+                    repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                }
+
+                // Ensure staff entity exists
+                val existingStaff = repository.getStaffById(cleanId)
+                if (existingStaff == null) {
+                    repository.insertStaff(
+                        StaffEntity(
+                            id = cleanId,
+                            staffCode = cleanId,
+                            name = cleanId,
+                            active = true
+                        )
+                    )
+                }
+
+                // Encrypt each embedding with Android Keystore AES-256-GCM using AAD "$staffId:$deviceId"
+                for (idx in parsedEmbeddings.indices) {
+                    val embedding = parsedEmbeddings[idx]
+                    val label = if (labelsArr != null && idx < labelsArr.length()) {
+                        labelsArr.optString(idx, "sample_${idx + 1}")
+                    } else {
+                        "sample_${idx + 1}"
+                    }
+
+                    val encResult = keystoreManager.encryptEmbedding(cleanId, embedding)
+                    repository.insertEncryptedTemplate(
+                        EncryptedFaceTemplateEntity(
+                            staffId = cleanId,
+                            deviceId = currentDeviceId,
+                            encryptedTemplate = encResult.ciphertext,
+                            iv = encResult.iv,
+                            referenceLabel = label,
+                            templateVersion = 1,
+                            createdAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+
+                // Verify persistence in Room
+                val finalCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
+                if (finalCount == 0) {
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "PERSISTENCE_FAILED")
+                        put("message", "Failed to verify local encrypted templates in device storage.")
+                    }
+                }
+
+                JSONObject().apply {
+                    put("success", true)
+                    put("staffId", cleanId)
+                    put("deviceId", currentDeviceId)
+                    put("count", finalCount)
+                    put("message", "Face enrolled on this device. Templates securely encrypted with Android Keystore.")
+                }
+            }.toString()
+
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("success", false)
+                put("error", "ENROLLMENT_EXCEPTION")
+                put("message", e.message ?: "Failed to encrypt and store local templates.")
+            }.toString()
+        }
+    }
+
+    /**
+     * Securely enroll a single 512-dimensional face template locally on this device.
      * The template is encrypted with Android Keystore AES-256-GCM before database insertion.
      */
     @JavascriptInterface
@@ -149,6 +299,15 @@ class AndroidBiometricBridge(
 
             // 2. Ensure staff entity exists in local Room database
             runBlocking {
+                val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
+                if (existingCount >= 3) {
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "ALREADY_ENROLLED")
+                        put("message", "Face biometric is already enrolled and locked on this device ($existingCount templates). Re-enrollment requires authorized face-change approval.")
+                    }
+                }
+
                 val existingStaff = repository.getStaffById(cleanId)
                 if (existingStaff == null) {
                     repository.insertStaff(
