@@ -248,7 +248,10 @@ export async function activateNativePendingEnrollment(
       };
     }
     try {
-      const raw = bridge.activatePendingEnrollment(staffId, deviceId, oneTimeToken);
+      const cleanStaffId = String(staffId || "").trim();
+      const cleanDeviceId = String(deviceId || "").trim();
+      const cleanToken = String(oneTimeToken || "").trim();
+      const raw = bridge.activatePendingEnrollment(cleanStaffId, cleanDeviceId, cleanToken);
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       return {
         success: Boolean(parsed.success),
@@ -259,10 +262,14 @@ export async function activateNativePendingEnrollment(
         message: parsed.message,
       };
     } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const isJavaException = errMsg.includes("Java exception") || errMsg.includes("activatePendingEnrollment");
       return {
         success: false,
-        error: "ACTIVATION_FAILED",
-        message: err?.message || "Failed to activate pending templates in Android Keystore.",
+        error: isJavaException ? "NATIVE_ACTIVATION_EXCEPTION" : "ACTIVATION_FAILED",
+        message: isJavaException
+          ? "Native activation encountered an unexpected bridge error. Please tap Re-capture Photos to enroll with your approved token."
+          : errMsg,
       };
     }
   }

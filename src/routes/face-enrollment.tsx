@@ -789,11 +789,13 @@ function StaffFaceEnrollmentPage() {
       token &&
       !isActivating &&
       !activationInProgressRef.current &&
-      hasActivatedTokenRef.current !== token
+      hasActivatedTokenRef.current !== token &&
+      !isReplacementMode &&
+      !activationError
     ) {
       void handleActivateApprovedProfile(token);
     }
-  }, [serverStatus, isEnrolledOnDevice, nativeStatus, isActivating, handleActivateApprovedProfile]);
+  }, [serverStatus, isEnrolledOnDevice, nativeStatus, isActivating, handleActivateApprovedProfile, isReplacementMode, activationError]);
 
   const validCount = samples.filter((s) => s.status === "valid").length;
   const hasRejected = samples.some((s) => s.status === "rejected");
@@ -942,7 +944,7 @@ function StaffFaceEnrollmentPage() {
               </span>
             </div>
           </div>
-        ) : isApproved && (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment) ? (
+        ) : isApproved && !isReplacementMode && (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment) ? (
           /* STATE: Administrator Approval Detected — Automatic Activation Flow */
           <div className="space-y-6">
             {activationError ? (
@@ -982,7 +984,10 @@ function StaffFaceEnrollmentPage() {
 
                   <div className="flex flex-col sm:flex-row gap-2 shrink-0 self-start">
                     <Button
-                      onClick={() => void handleActivateApprovedProfile()}
+                      onClick={() => {
+                        setActivationError(null);
+                        void handleActivateApprovedProfile();
+                      }}
                       disabled={isActivating}
                       className="bg-primary hover:bg-primary/90 text-primary-foreground"
                     >
@@ -1001,6 +1006,7 @@ function StaffFaceEnrollmentPage() {
                     <Button
                       variant="outline"
                       onClick={() => {
+                        setActivationError(null);
                         setIsReplacementMode(true);
                         setSamples([]);
                       }}
@@ -1143,6 +1149,21 @@ function StaffFaceEnrollmentPage() {
         ) : (
           /* STATE 2: Face Enrollment & Image Upload Interface (1 to 5 Reference Photos) */
           <div className="space-y-6">
+            {/* Show Approved Authorization Alert when re-capturing with approved token */}
+            {isApproved && (
+              <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5 shadow-sm">
+                <div className="flex items-start gap-3.5">
+                  <KeyRound className="size-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-semibold text-foreground">Administrator Approval Active</h4>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Your single-use approval token is active on this device. Add 1 to 5 photos below and click <strong>Save Face Registration</strong> to lock your biometric profile with Android Keystore encryption.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Show Rejection Alert if previously rejected */}
             {isRejected && (
               <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-5 shadow-sm">

@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var locationService: NativeLocationService
     private var webView: WebView? = null
     private var wifiBridge: AndroidWifiBridge? = null
+    private var biometricBridge: AndroidBiometricBridge? = null
 
     private val defaultServerUrl = "https://geo-fenced-attendence-system.vercel.app/mark-attendance"
 
@@ -317,6 +318,8 @@ class MainActivity : ComponentActivity() {
                                             ) {
                                                 super.onPageStarted(view, url, favicon)
                                                 isLoadError = false
+                                                wifiBridge?.setCurrentUrl(url)
+                                                biometricBridge?.setCurrentUrl(url)
                                             }
 
                                             override fun onReceivedSslError(
@@ -345,13 +348,17 @@ class MainActivity : ComponentActivity() {
                                             "AndroidLocationBridge"
                                         )
                                         val bridge = AndroidWifiBridge(ctx, this)
+                                        bridge.setCurrentUrl(currentUrl)
                                         wifiBridge = bridge
                                         addJavascriptInterface(
                                             bridge,
                                             "AndroidWifiBridge"
                                         )
+                                        val bioBridge = AndroidBiometricBridge(ctx, this)
+                                        bioBridge.setCurrentUrl(currentUrl)
+                                        biometricBridge = bioBridge
                                         addJavascriptInterface(
-                                            AndroidBiometricBridge(ctx, this),
+                                            bioBridge,
                                             "AndroidBiometricBridge"
                                         )
 

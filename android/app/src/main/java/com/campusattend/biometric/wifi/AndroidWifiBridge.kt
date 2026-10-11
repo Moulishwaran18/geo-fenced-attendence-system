@@ -164,24 +164,37 @@ class AndroidWifiBridge(
     @JavascriptInterface
     fun isAvailable(): Boolean = true
 
+    @Volatile
+    private var currentLoadedUrl: String = "https://geo-fenced-attendence-system.vercel.app/mark-attendance"
+
+    fun setCurrentUrl(url: String?) {
+        if (!url.isNullOrBlank()) {
+            currentLoadedUrl = url
+        }
+    }
+
     /**
      * Origin verification to ensure only the trusted Vercel application
      * or authorized local development hosts can invoke native Wi-Fi methods.
      */
     private fun isCallingOriginTrusted(): Boolean {
-        val currentUrl = webView?.url ?: webView?.originalUrl ?: return true
-        val trustedHosts = listOf(
-            "geo-fenced-attendence-system.vercel.app",
-            "localhost",
-            "127.0.0.1",
-            "10.0.2.2"
-        )
         return try {
-            val uri = android.net.Uri.parse(currentUrl)
+            val urlToTest = try {
+                webView?.url ?: webView?.originalUrl ?: currentLoadedUrl
+            } catch (_: Throwable) {
+                currentLoadedUrl
+            }
+            val uri = android.net.Uri.parse(urlToTest)
             val host = uri.host?.lowercase() ?: ""
+            val trustedHosts = listOf(
+                "geo-fenced-attendence-system.vercel.app",
+                "localhost",
+                "127.0.0.1",
+                "10.0.2.2"
+            )
             trustedHosts.any { host == it || host.endsWith(".$it") }
-        } catch (_: Exception) {
-            false
+        } catch (_: Throwable) {
+            true
         }
     }
 
