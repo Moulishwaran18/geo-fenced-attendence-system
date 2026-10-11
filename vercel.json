@@ -1,8 +1,24 @@
 {
   "rewrites": [
     {
-      "source": "/api/admin/staff/:match*",
+      "source": "/api/admin/logout",
       "destination": "/api/admin/staff"
+    },
+    {
+      "source": "/api/admin/db-diagnostic",
+      "destination": "/api/admin/staff"
+    },
+    {
+      "source": "/api/admin/staff/:subpath+",
+      "destination": "/api/admin/staff"
+    },
+    {
+      "source": "/api/admin/face-requests/:subpath+",
+      "destination": "/api/admin/face-requests"
+    },
+    {
+      "source": "/api/staff/face/:subpath+",
+      "destination": "/api/staff/face"
     }
   ]
 }

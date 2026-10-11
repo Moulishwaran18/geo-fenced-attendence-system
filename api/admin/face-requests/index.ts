@@ -98,21 +98,37 @@ function extractAdminToken(req: any): string | null {
   return null;
 }
 
-function verifyAdminSession(tokenStr?: string | null): {
+function isTableMissingError(error: any): boolean {
+  if (!error) return false;
+  const code = typeof error === "object" ? String(error.code || "") : "";
+  const msg = typeof error === "object" ? String(error.message || "") : String(error);
+  if (code === "PGRST205" || code === "PGRST204" || code === "42P01") return true;
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("does not exist") ||
+    lower.includes("schema cache") ||
+    lower.includes("could not find the table") ||
+    (lower.includes("relation") && lower.includes("does not exist"))
+  );
+}
+
+async function verifyAdminSession(tokenStr?: string | null, supabase?: any): Promise<{
   valid: boolean;
   payload?: any;
+  statusCode?: number;
+  errorCode?: string;
   error?: string;
-} {
+}> {
   if (!tokenStr || typeof tokenStr !== "string") {
-    return { valid: false, error: "Missing administrator session token." };
+    return { valid: false, statusCode: 401, errorCode: "TOKEN_MISSING", error: "Missing administrator session token." };
   }
   const parts = tokenStr.trim().split(".");
   if (parts.length !== 2) {
-    return { valid: false, error: "Malformed administrator session token." };
+    return { valid: false, statusCode: 401, errorCode: "TOKEN_MALFORMED", error: "Malformed administrator session token." };
   }
   const [payloadStr, signature] = parts;
   if (!payloadStr || !signature) {
-    return { valid: false, error: "Invalid token components." };
+    return { valid: false, statusCode: 401, errorCode: "TOKEN_INVALID", error: "Invalid token components." };
   }
   const expectedSignature = crypto
     .createHmac("sha256", ADMIN_TOKEN_SECRET)
@@ -121,20 +137,72 @@ function verifyAdminSession(tokenStr?: string | null): {
   const sigBuffer = Buffer.from(signature);
   const expBuffer = Buffer.from(expectedSignature);
   if (sigBuffer.length !== expBuffer.length || !crypto.timingSafeEqual(sigBuffer, expBuffer)) {
-    return { valid: false, error: "Invalid administrator session signature." };
+    return { valid: false, statusCode: 401, errorCode: "SIGNATURE_INVALID", error: "Invalid administrator session signature." };
   }
   try {
     const jsonStr = Buffer.from(payloadStr, "base64url").toString("utf-8");
     const payload = JSON.parse(jsonStr);
     if (payload.role !== "admin" || payload.username !== "moulish") {
-      return { valid: false, error: "Token does not possess administrator privileges." };
+      return { valid: false, statusCode: 401, errorCode: "PRIVILEGES_REQUIRED", error: "Token does not possess administrator privileges." };
     }
     if (Date.now() > payload.expiresAt) {
-      return { valid: false, error: "Administrator session has expired." };
+      return { valid: false, statusCode: 401, errorCode: "TOKEN_EXPIRED", error: "Administrator session has expired." };
     }
+
+    if (supabase) {
+      const tokenId = payload.nonce || crypto.createHash("sha256").update(signature).digest("hex");
+      try {
+        const { data: dedicated, error: dedicatedErr } = await supabase
+          .from("admin_token_revocations")
+          .select("token_id")
+          .eq("token_id", tokenId)
+          .maybeSingle();
+
+        if (dedicatedErr) {
+          if (!isTableMissingError(dedicatedErr)) {
+            console.warn("[face-requests] Dedicated table query warning:", dedicatedErr);
+          }
+        } else if (dedicated && dedicated.token_id) {
+          return { valid: false, statusCode: 401, errorCode: "TOKEN_REVOKED", error: "Administrator session has been revoked. Please log in again." };
+        }
+      } catch (dedEx: any) {
+        if (!isTableMissingError(dedEx)) {
+          console.warn("[face-requests] Exception querying admin_token_revocations:", dedEx);
+        }
+      }
+
+      try {
+        const { data: secEvents, error: secErr } = await supabase
+          .from("security_events")
+          .select("id")
+          .eq("event", `ADMIN_TOKEN_REVOKED|${tokenId}`)
+          .limit(1);
+
+        if (secErr) {
+          return {
+            valid: false,
+            statusCode: 503,
+            errorCode: "SESSION_REVOCATION_UNAVAILABLE",
+            error: "Authentication service temporarily unavailable. Revocation status could not be verified.",
+          };
+        }
+
+        if (secEvents && secEvents.length > 0) {
+          return { valid: false, statusCode: 401, errorCode: "TOKEN_REVOKED", error: "Administrator session has been revoked. Please log in again." };
+        }
+      } catch (secEx: any) {
+        return {
+          valid: false,
+          statusCode: 503,
+          errorCode: "SESSION_REVOCATION_UNAVAILABLE",
+          error: "Authentication service temporarily unavailable. Revocation status could not be verified.",
+        };
+      }
+    }
+
     return { valid: true, payload };
   } catch {
-    return { valid: false, error: "Failed to decode administrator session token." };
+    return { valid: false, statusCode: 401, errorCode: "DECODE_FAILED", error: "Failed to decode administrator session token." };
   }
 }
 
@@ -157,11 +225,16 @@ export default async function handler(req: any, res?: any) {
   const isInternalTest = !req.headers || req.headers["x-internal-test"] === "true";
   if (!isInternalTest) {
     const token = extractAdminToken(req);
-    const auth = verifyAdminSession(token);
+    const auth = await verifyAdminSession(token, supabase);
     if (!auth.valid) {
-      return sendJsonResponse(res, 401, {
+      const status = auth.statusCode || 401;
+      return sendJsonResponse(res, status, {
         success: false,
-        error: auth.error || "Administrator authentication required.",
+        code: auth.errorCode || "UNAUTHORIZED",
+        error:
+          status === 503
+            ? auth.error || "Authentication service temporarily unavailable."
+            : auth.error || "Administrator authentication required.",
       });
     }
   }
@@ -222,17 +295,34 @@ export default async function handler(req: any, res?: any) {
         return sendJsonResponse(res, 500, { success: false, error: qErr.message });
       }
 
-      // Query staff details and embedding counts to enrich request records
+      // Query staff details and enrollment records
       const { data: staffList } = await supabase
         .from("staff")
-        .select("id, staff_code, name, department, face_embeddings(id)");
+        .select("id, staff_code, name, department");
+
+      const { data: enrollEvents } = await supabase
+        .from("security_events")
+        .select("staff, device, event")
+        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%");
+
+      const enrollMap = new Map<string, number>();
+      (enrollEvents || []).forEach((ev: any) => {
+        const staffKey = (ev.staff || "").toUpperCase();
+        const countMatch = (ev.device || "").match(/count:(\d+)/);
+        const cnt = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 3;
+        if (!enrollMap.has(staffKey)) {
+          enrollMap.set(staffKey, cnt);
+        }
+      });
 
       const staffMap = new Map<string, any>();
-      (staffList || []).forEach((s) => {
-        staffMap.set(s.staff_code.toUpperCase(), {
+      (staffList || []).forEach((s: any) => {
+        const key = (s.staff_code || "").toUpperCase();
+        const devCount = enrollMap.get(key) || 0;
+        staffMap.set(key, {
           name: s.name,
           department: s.department,
-          embeddingCount: s.face_embeddings?.length || 0,
+          embeddingCount: devCount,
         });
       });
 
@@ -241,13 +331,24 @@ export default async function handler(req: any, res?: any) {
         const staffCode = (r.staff || "").toUpperCase();
         const staffMeta = staffMap.get(staffCode) || {};
 
-        let status: "pending" | "approved" | "consumed" | "rejected" = "pending";
+        const tokenMatch = r.device ? r.device.match(/token:([^|]+)/) : null;
+        const expiresMatch = r.device ? r.device.match(/expires_at:([^|\s]+)/) : null;
+        const approvedMatch = r.device ? r.device.match(/approved_at:([^|\s]+)/) : null;
+        const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
+        const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
+        const nowMs = Date.now();
+        const expiresMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
+        const isExpired = expiresMs > 0 && nowMs > expiresMs;
+
+        let status: "pending" | "approved" | "consumed" | "rejected" | "expired" = "pending";
         if (r.result === "Flagged" || (r.device && r.device.includes("status:pending"))) {
           status = "pending";
           pendingCount++;
         } else if (r.result === "Allowed") {
           if (r.device && r.device.includes("status:consumed")) {
             status = "consumed";
+          } else if (isExpired) {
+            status = "expired";
           } else {
             status = "approved";
           }
@@ -256,7 +357,6 @@ export default async function handler(req: any, res?: any) {
         }
 
         const reason = r.event.replace(/^FACE_CHANGE_REQUEST:\s*/, "");
-        const tokenMatch = r.device ? r.device.match(/token:([^|]+)/) : null;
         const adminNotes = r.location?.replace(/^AdminNote:\s*/, "") || "";
 
         return {
@@ -268,6 +368,10 @@ export default async function handler(req: any, res?: any) {
           reason,
           status,
           created_at: r.created_at || r.time,
+          approved_at: approvedAtIso,
+          expires_at: expiresAtIso,
+          is_expired: isExpired,
+          remaining_seconds: isExpired || !expiresMs ? 0 : Math.max(0, Math.floor((expiresMs - nowMs) / 1000)),
           admin_notes: adminNotes,
           has_one_time_token: Boolean(tokenMatch),
         };
@@ -283,7 +387,7 @@ export default async function handler(req: any, res?: any) {
 
     // -------------------------------------------------------------------------
     // 2. POST /api/admin/face-requests/:id/approve
-    // Approve Face Change Request and Issue One-Time Authorization Token
+    // Approve Face Change Request and Issue 24-Hour One-Time Authorization Token
     // -------------------------------------------------------------------------
     const approveMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/approve\/?$/);
     const isFlatApprove = (pathname === "/api/admin/face-requests/approve" || pathname.endsWith("/approve")) && (body?.id || body?.requestId);
@@ -304,17 +408,20 @@ export default async function handler(req: any, res?: any) {
         });
       }
 
-      // Mint secure one-time cryptographic token
+      // Mint secure one-time cryptographic token valid for exactly 24 hours
       const oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
-      const nowIso = new Date().toISOString();
+      const approvedAtDate = new Date();
+      const approvedAtIso = approvedAtDate.toISOString();
+      const expiresAtDate = new Date(approvedAtDate.getTime() + 24 * 60 * 60 * 1000);
+      const expiresAtIso = expiresAtDate.toISOString();
 
       const { error: updErr } = await supabase
         .from("security_events")
         .update({
           result: "Allowed", // 'Allowed' indicates Approved
-          device: `token:${oneTimeToken}|status:approved`,
+          device: `token:${oneTimeToken}|status:approved|approved_at:${approvedAtIso}|expires_at:${expiresAtIso}`,
           location: `AdminNote: ${adminNotes || "Approved by administrator moulish"}`,
-          time: nowIso,
+          time: approvedAtIso,
           severity: "Low",
         })
         .eq("id", requestId);
@@ -328,10 +435,10 @@ export default async function handler(req: any, res?: any) {
 
       // Security audit log
       await supabase.from("security_events").insert({
-        time: nowIso,
+        time: approvedAtIso,
         staff: targetReq.staff,
-        event: `FACE_CHANGE_APPROVED: Approved one-time token issued for ${targetReq.staff}`,
-        device: `token_issued:true`,
+        event: `FACE_CHANGE_APPROVED: Approved 24-hour one-time token issued for ${targetReq.staff}`,
+        device: `token_issued:${oneTimeToken}|expires_at:${expiresAtIso}`,
         location: adminNotes || "Admin Console Approval",
         result: "Allowed",
         severity: "Low",
@@ -339,10 +446,12 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 200, {
         success: true,
-        message: `Face change request for ${targetReq.staff} approved successfully. Single-use authorization token granted.`,
+        message: `Face change request for ${targetReq.staff} approved successfully. Single-use authorization valid for 24 hours granted.`,
         requestId,
         staff_code: targetReq.staff,
         oneTimeToken,
+        approvedAt: approvedAtIso,
+        expiresAt: expiresAtIso,
       });
     }
 

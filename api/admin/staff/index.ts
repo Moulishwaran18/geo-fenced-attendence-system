@@ -55,21 +55,252 @@ function extractAdminToken(req: any): string | null {
   return null;
 }
 
-function verifyAdminSessionToken(tokenStr?: string | null): {
+interface RevokedTokenEntry {
+  tokenId: string;
+  username: string;
+  expiresAt: number;
+  revokedAt: number;
+  reason: string;
+}
+
+const inMemoryRevokedTokens = new Map<string, RevokedTokenEntry>();
+
+function cleanExpiredRevocations() {
+  const now = Date.now();
+  for (const [id, entry] of inMemoryRevokedTokens.entries()) {
+    if (now > entry.expiresAt) {
+      inMemoryRevokedTokens.delete(id);
+    }
+  }
+}
+
+function getAdminTokenIdentifier(tokenStr?: string | null): {
+  tokenId: string;
+  payload: any;
+  signature: string;
+} | null {
+  if (!tokenStr || typeof tokenStr !== "string") return null;
+  const parts = tokenStr.trim().split(".");
+  if (parts.length !== 2) return null;
+
+  const [payloadStr, signature] = parts;
+  if (!payloadStr || !signature) return null;
+
+  const expectedSignature = crypto
+    .createHmac("sha256", ADMIN_TOKEN_SECRET)
+    .update(payloadStr)
+    .digest("base64url");
+
+  const sigBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+
+  if (
+    sigBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(sigBuffer, expectedBuffer)
+  ) {
+    return null;
+  }
+
+  try {
+    const jsonStr = Buffer.from(payloadStr, "base64url").toString("utf-8");
+    const payload = JSON.parse(jsonStr);
+    const tokenId = payload.nonce || crypto.createHash("sha256").update(signature).digest("hex");
+    return { tokenId, payload, signature };
+  } catch {
+    return null;
+  }
+}
+
+function isTableMissingError(error: any): boolean {
+  if (!error) return false;
+  const code = typeof error === "object" ? String(error.code || "") : "";
+  const msg = typeof error === "object" ? String(error.message || "") : String(error);
+  if (code === "PGRST205" || code === "PGRST204" || code === "42P01") return true;
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("does not exist") ||
+    lower.includes("schema cache") ||
+    lower.includes("could not find the table") ||
+    (lower.includes("relation") && lower.includes("does not exist"))
+  );
+}
+
+async function revokeAdminSessionToken(
+  tokenStr: string,
+  reason = "User logout",
+  supabase?: any,
+): Promise<boolean> {
+  const tokenInfo = getAdminTokenIdentifier(tokenStr);
+  if (!tokenInfo) return false;
+
+  const { tokenId, payload } = tokenInfo;
+  const now = Date.now();
+
+  // 1. In-memory revocation cache
+  cleanExpiredRevocations();
+  inMemoryRevokedTokens.set(tokenId, {
+    tokenId,
+    username: payload.username,
+    expiresAt: payload.expiresAt,
+    revokedAt: now,
+    reason,
+  });
+
+  // 2. Persistent store via Supabase
+  if (supabase) {
+    let dedicatedSuccess = false;
+    let fallbackSuccess = false;
+
+    // 2A. Dedicated admin_token_revocations table
+    try {
+      const { error: dedicatedErr } = await supabase.from("admin_token_revocations").insert({
+        token_id: tokenId,
+        username: payload.username,
+        expires_at: new Date(payload.expiresAt).toISOString(),
+        revoked_at: new Date(now).toISOString(),
+        reason,
+      });
+
+      if (!dedicatedErr) {
+        dedicatedSuccess = true;
+      } else if (!isTableMissingError(dedicatedErr)) {
+        console.warn("[admin/staff] Supabase admin_token_revocations write warning:", dedicatedErr);
+      }
+    } catch (dedEx: any) {
+      if (!isTableMissingError(dedEx)) {
+        console.warn("[admin/staff] Exception inserting into admin_token_revocations:", dedEx);
+      }
+    }
+
+    // 2B. security_events persistent audit log
+    try {
+      const { error: secErr } = await supabase.from("security_events").insert({
+        time: new Date(now).toISOString(),
+        staff: payload.username.toUpperCase(),
+        event: `ADMIN_TOKEN_REVOKED|${tokenId}`,
+        device: `session_expiry:${payload.expiresAt}`,
+        location: "Campus Administration",
+        result: "Blocked",
+        severity: "Low",
+      });
+
+      if (!secErr) {
+        fallbackSuccess = true;
+      } else {
+        console.error("[admin/staff] Failed to persist revocation to security_events:", secErr);
+      }
+    } catch (secEx) {
+      console.error("[admin/staff] Exception persisting revocation to security_events:", secEx);
+    }
+
+    return dedicatedSuccess || fallbackSuccess;
+  }
+
+  return true;
+}
+
+async function isTokenRevoked(
+  tokenId: string,
+  supabase?: any,
+): Promise<{ revoked: boolean; unavailable?: boolean; error?: string }> {
+  if (!tokenId) return { revoked: false };
+
+  // 1. In-memory check
+  cleanExpiredRevocations();
+  if (inMemoryRevokedTokens.has(tokenId)) {
+    return { revoked: true };
+  }
+
+  // 2. Supabase persistent check
+  if (supabase) {
+    // 2A. Dedicated table check
+    try {
+      const { data: dedicated, error: dedicatedErr } = await supabase
+        .from("admin_token_revocations")
+        .select("token_id, expires_at")
+        .eq("token_id", tokenId)
+        .maybeSingle();
+
+      if (dedicatedErr) {
+        if (!isTableMissingError(dedicatedErr)) {
+          console.warn("[admin/staff] Dedicated table query warning:", dedicatedErr);
+        }
+      } else if (dedicated && dedicated.token_id) {
+        inMemoryRevokedTokens.set(tokenId, {
+          tokenId,
+          username: "moulish",
+          expiresAt: new Date(dedicated.expires_at).getTime(),
+          revokedAt: Date.now(),
+          reason: "User logout",
+        });
+        return { revoked: true };
+      }
+    } catch (dedEx: any) {
+      if (!isTableMissingError(dedEx)) {
+        console.warn("[admin/staff] Exception querying admin_token_revocations:", dedEx);
+      }
+    }
+
+    // 2B. security_events fallback check
+    try {
+      const { data: secEvents, error: secErr } = await supabase
+        .from("security_events")
+        .select("event")
+        .eq("event", `ADMIN_TOKEN_REVOKED|${tokenId}`)
+        .limit(1);
+
+      if (secErr) {
+        console.error("[admin/staff] Error reading security_events for revocation:", secErr);
+        return {
+          revoked: false,
+          unavailable: true,
+          error: `Database outage during revocation verification: ${secErr.message || secErr.code}`,
+        };
+      }
+
+      if (secEvents && secEvents.length > 0) {
+        inMemoryRevokedTokens.set(tokenId, {
+          tokenId,
+          username: "moulish",
+          expiresAt: Date.now() + 86400000,
+          revokedAt: Date.now(),
+          reason: "User logout",
+        });
+        return { revoked: true };
+      }
+    } catch (secEx: any) {
+      console.error("[admin/staff] Exception reading security_events for revocation:", secEx);
+      return {
+        revoked: false,
+        unavailable: true,
+        error: `Database unreachable during revocation verification: ${secEx?.message || String(secEx)}`,
+      };
+    }
+  }
+
+  return { revoked: false };
+}
+
+async function verifyAdminSessionToken(
+  tokenStr?: string | null,
+  supabase?: any,
+): Promise<{
   valid: boolean;
   payload?: any;
+  statusCode?: number;
+  errorCode?: string;
   error?: string;
-} {
+}> {
   if (!tokenStr || typeof tokenStr !== "string") {
-    return { valid: false, error: "Missing administrator session token." };
+    return { valid: false, statusCode: 401, errorCode: "TOKEN_MISSING", error: "Missing administrator session token." };
   }
   const parts = tokenStr.trim().split(".");
   if (parts.length !== 2) {
-    return { valid: false, error: "Malformed administrator session token." };
+    return { valid: false, statusCode: 401, errorCode: "TOKEN_MALFORMED", error: "Malformed administrator session token." };
   }
   const [payloadStr, signature] = parts;
   if (!payloadStr || !signature) {
-    return { valid: false, error: "Invalid token components." };
+    return { valid: false, statusCode: 401, errorCode: "TOKEN_INVALID", error: "Invalid token components." };
   }
   const expectedSignature = crypto
     .createHmac("sha256", ADMIN_TOKEN_SECRET)
@@ -81,20 +312,42 @@ function verifyAdminSessionToken(tokenStr?: string | null): {
     sigBuffer.length !== expectedBuffer.length ||
     !crypto.timingSafeEqual(sigBuffer, expectedBuffer)
   ) {
-    return { valid: false, error: "Invalid administrator session signature." };
+    return { valid: false, statusCode: 401, errorCode: "SIGNATURE_INVALID", error: "Invalid administrator session signature." };
   }
   try {
     const jsonStr = Buffer.from(payloadStr, "base64url").toString("utf-8");
     const payload = JSON.parse(jsonStr);
     if (payload.role !== "admin" || payload.username !== "moulish") {
-      return { valid: false, error: "Token does not possess administrator privileges." };
+      return { valid: false, statusCode: 401, errorCode: "PRIVILEGES_REQUIRED", error: "Token does not possess administrator privileges." };
     }
     if (Date.now() > payload.expiresAt) {
-      return { valid: false, error: "Administrator session has expired." };
+      return { valid: false, statusCode: 401, errorCode: "TOKEN_EXPIRED", error: "Administrator session has expired." };
     }
+
+    const tokenId = payload.nonce || crypto.createHash("sha256").update(signature).digest("hex");
+    const check = await isTokenRevoked(tokenId, supabase);
+
+    if (check.unavailable) {
+      return {
+        valid: false,
+        statusCode: 503,
+        errorCode: "SESSION_REVOCATION_UNAVAILABLE",
+        error: "Authentication service temporarily unavailable. Revocation status could not be verified.",
+      };
+    }
+
+    if (check.revoked) {
+      return {
+        valid: false,
+        statusCode: 401,
+        errorCode: "TOKEN_REVOKED",
+        error: "Administrator session has been revoked. Please log in again.",
+      };
+    }
+
     return { valid: true, payload };
   } catch {
-    return { valid: false, error: "Failed to decode administrator session token." };
+    return { valid: false, statusCode: 401, errorCode: "DECODE_FAILED", error: "Failed to decode administrator session token." };
   }
 }
 
@@ -273,10 +526,12 @@ export default async function handler(req: any, res?: any) {
       method === "GET"
     ) {
       const token = extractAdminToken(req);
-      const sessionRes = verifyAdminSessionToken(token);
+      const sessionRes = await verifyAdminSessionToken(token, supabase);
       if (!sessionRes.valid || !sessionRes.payload) {
-        return sendJsonResponse(res, 401, {
+        const status = sessionRes.statusCode || 401;
+        return sendJsonResponse(res, status, {
           authenticated: false,
+          code: sessionRes.errorCode || "UNAUTHORIZED",
           error: sessionRes.error || "Unauthorized",
         });
       }
@@ -291,8 +546,20 @@ export default async function handler(req: any, res?: any) {
       (pathname === "/api/admin/logout" || pathname === "/api/admin/auth/logout") &&
       method === "POST"
     ) {
+      const token = extractAdminToken(req);
+      let revoked = true;
+      if (token) {
+        revoked = await revokeAdminSessionToken(token, "User logout", supabase);
+      }
       if (res && typeof res.setHeader === "function") {
         res.setHeader("Set-Cookie", "admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+      }
+      if (!revoked) {
+        return sendJsonResponse(res, 500, {
+          success: false,
+          code: "REVOCATION_PERSISTENCE_FAILED",
+          error: "Failed to persistently revoke administrator session. Client session cookie evicted.",
+        });
       }
       return sendJsonResponse(res, 200, { success: true, message: "Logged out successfully" });
     }
@@ -301,11 +568,18 @@ export default async function handler(req: any, res?: any) {
     const isInternalTest = !req.headers || req.headers["x-internal-test"] === "true";
     if (!isInternalTest) {
       const token = extractAdminToken(req);
-      const authCheck = verifyAdminSessionToken(token);
+      const authCheck = await verifyAdminSessionToken(token, supabase);
       if (!authCheck.valid) {
-        return sendJsonResponse(res, 401, {
+        const status = authCheck.statusCode || 401;
+        return sendJsonResponse(res, status, {
           success: false,
-          error: "Unauthorized: Administrator authentication required to access this endpoint.",
+          code: authCheck.errorCode || "UNAUTHORIZED",
+          error:
+            status === 503
+              ? authCheck.error || "Authentication service temporarily unavailable."
+              : authCheck.error
+                ? `Unauthorized: ${authCheck.error}`
+                : "Unauthorized: Administrator authentication required to access this endpoint.",
         });
       }
     }
@@ -315,7 +589,7 @@ export default async function handler(req: any, res?: any) {
       const { data, error } = await supabase
         .from("staff")
         .select(
-          "id, staff_code, name, email, department, designation, active, created_at, updated_at, face_embeddings(id, staff_id, reference_image_path, photo_data, created_at)",
+          "id, staff_code, name, email, department, designation, active, created_at, updated_at",
         )
         .order("staff_code", { ascending: true });
 
@@ -323,26 +597,50 @@ export default async function handler(req: any, res?: any) {
         return sendJsonResponse(res, 500, { success: false, error: error.message });
       }
 
-      const staffList = (data || []).map((s: any) => ({
-        id: s.id,
-        staff_code: s.staff_code,
-        name: s.name,
-        email: s.email,
-        department: s.department,
-        designation: s.designation,
-        active: s.active,
-        created_at: s.created_at,
-        updated_at: s.updated_at,
-        embeddingCount: s.face_embeddings?.length || 0,
-        referenceSamples: (s.face_embeddings || []).map((f: any) => ({
-          id: f.id,
-          staff_id: f.staff_id,
-          embedding: [], // Omit raw vector for privacy
-          reference_image_path: f.reference_image_path,
-          photo_data: f.photo_data,
-          created_at: f.created_at,
-        })),
-      }));
+      // Query device enrollment events from security_events
+      const { data: enrollEvents } = await supabase
+        .from("security_events")
+        .select("staff, device, event, created_at, time")
+        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%")
+        .order("time", { ascending: false });
+
+      const enrollMap = new Map<string, { count: number; deviceId: string; enrolledAt: string }>();
+      (enrollEvents || []).forEach((ev: any) => {
+        const staffKey = (ev.staff || "").toUpperCase();
+        if (!enrollMap.has(staffKey)) {
+          const countMatch = (ev.device || "").match(/count:(\d+)/);
+          const devMatch = (ev.device || "").match(/device_id:([^|\s]+)/);
+          const cnt = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 3;
+          enrollMap.set(staffKey, {
+            count: cnt,
+            deviceId: devMatch ? devMatch[1] : "android-keystore",
+            enrolledAt: ev.created_at || ev.time,
+          });
+        }
+      });
+
+      const staffList = (data || []).map((s: any) => {
+        const staffKey = (s.staff_code || "").toUpperCase();
+        const enrollInfo = enrollMap.get(staffKey);
+        const count = enrollInfo ? enrollInfo.count : 0;
+        return {
+          id: s.id,
+          staff_code: s.staff_code,
+          name: s.name,
+          email: s.email,
+          department: s.department,
+          designation: s.designation,
+          active: s.active,
+          created_at: s.created_at,
+          updated_at: s.updated_at,
+          embeddingCount: count,
+          templateCount: count,
+          isEnrolled: count > 0,
+          deviceId: enrollInfo ? enrollInfo.deviceId : null,
+          enrolledAt: enrollInfo ? enrollInfo.enrolledAt : null,
+          referenceSamples: [], // Device-only policy: zero raw photos or vectors stored/returned
+        };
+      });
 
       return sendJsonResponse(res, 200, {
         success: true,
@@ -387,109 +685,52 @@ export default async function handler(req: any, res?: any) {
     // 3. Database diagnostics: /api/admin/db-diagnostic
     if (pathname.includes("/db-diagnostic") && method === "GET") {
       const { count: staffCount } = await supabase.from("staff").select("*", { count: "exact", head: true });
-      const { count: embCount } = await supabase.from("face_embeddings").select("*", { count: "exact", head: true });
 
       return sendJsonResponse(res, 200, {
         success: true,
         data: {
           status: "CONNECTED",
-          databaseType: "Supabase (Cloud Managed PostgreSQL + pgvector)",
+          databaseType: "Supabase (Cloud Managed PostgreSQL)",
           host: "qvjcxoznvhoagclbyhad.supabase.co",
           port: 443,
           databaseName: "postgres",
           staffCount: staffCount ?? 0,
-          totalEmbeddingCount: embCount ?? 0,
-          activeEmbeddingCount: embCount ?? 0,
-          pgvector: "ENABLED",
+          biometricStorage: "DEVICE_ONLY_ANDROID_KEYSTORE",
+          cloudVectorStorage: "DISABLED",
+          totalEmbeddingCount: 0,
+          activeEmbeddingCount: 0,
           activeSource: "Supabase Cloud Database (Live Production)",
         },
       });
     }
 
-    // 4. Enroll face: /api/admin/staff/:id/enroll OR /face-enrollment
+    // 4. Enroll face: /api/admin/staff/:id/enroll OR /face-enrollment (PROHIBITED ON SERVER)
     const enrollMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:enroll|face-enrollment)\/?$/);
     if (enrollMatch && method === "POST") {
-      const idOrCode = decodeURIComponent(enrollMatch[1]!);
-      const embedding = body?.embedding || body?.descriptor;
-
-      if (!Array.isArray(embedding) || embedding.length !== 512) {
-        return sendJsonResponse(res, 400, {
-          success: false,
-          error: "Invalid face embedding. Expected 512-dimensional array.",
-        });
-      }
-
-      // Resolve staff id
-      let staffId = idOrCode;
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
-      if (!isUuid) {
-        const { data: s } = await supabase.from("staff").select("id").eq("staff_code", idOrCode.toUpperCase()).single();
-        if (s?.id) staffId = s.id;
-        else {
-          return sendJsonResponse(res, 404, { success: false, error: `Staff member not found for code: ${idOrCode}` });
-        }
-      }
-
-      let refPath = body.referenceImagePath || "enrollment/live_capture.jpg";
-      let photoData = body.photoData || null;
-      if (typeof refPath === "string" && refPath.startsWith("data:image/")) {
-        if (!photoData) photoData = refPath;
-        refPath = `enrollment/webcam_${Date.now()}.jpg`;
-      }
-
-      const { data: newEmb, error: embError } = await supabase
-        .from("face_embeddings")
-        .insert({
-          staff_id: staffId,
-          embedding,
-          reference_image_path: refPath,
-          photo_data: photoData,
-        })
-        .select()
-        .single();
-
-      if (embError) {
-        return sendJsonResponse(res, 500, { success: false, error: embError.message });
-      }
-
-      return sendJsonResponse(res, 200, {
-        success: true,
-        message: "Face embedding enrolled successfully",
-        data: {
-          id: newEmb.id,
-          staff_id: newEmb.staff_id,
-          reference_image_path: newEmb.reference_image_path,
-          created_at: newEmb.created_at,
-        },
+      return sendJsonResponse(res, 400, {
+        success: false,
+        code: "BIOMETRIC_CLOUD_STORAGE_PROHIBITED",
+        error:
+          "Biometric templates, vectors, and photos must remain exclusively on the staff member's device. Uploading biometric data to the server is strictly prohibited.",
       });
     }
 
     // 5. Delete single embedding: /api/admin/staff/:id/embedding/:embeddingId OR /embeddings/:id
     const deleteMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:embedding|embeddings)\/([^/]+)\/?$/);
     if (deleteMatch && method === "DELETE") {
-      const embeddingId = decodeURIComponent(deleteMatch[2]!);
-      const { error: delError } = await supabase.from("face_embeddings").delete().eq("id", embeddingId);
-      if (delError) {
-        return sendJsonResponse(res, 500, { success: false, error: delError.message });
-      }
-      return sendJsonResponse(res, 200, { success: true, message: "Embedding deleted successfully" });
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message: "Device-only biometric policy: zero cloud templates exist on server.",
+      });
     }
 
     // 5b. Clear all embeddings for staff: DELETE /api/admin/staff/:id/clear-templates or /clear-all
     const clearMatch = pathname.match(/\/api\/admin\/staff\/([^/]+)\/(?:clear|clear-templates|clear-all)\/?$/);
     if (clearMatch && method === "DELETE") {
-      const idOrCode = decodeURIComponent(clearMatch[1]!);
-      let staffId = idOrCode;
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
-      if (!isUuid) {
-        const { data: s } = await supabase.from("staff").select("id").eq("staff_code", idOrCode.toUpperCase()).single();
-        if (s?.id) staffId = s.id;
-      }
-      const { error: clearError } = await supabase.from("face_embeddings").delete().eq("staff_id", staffId);
-      if (clearError) {
-        return sendJsonResponse(res, 500, { success: false, error: clearError.message });
-      }
-      return sendJsonResponse(res, 200, { success: true, message: "All face templates cleared successfully" });
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message: "Device-only biometric policy: zero cloud templates exist on server.",
+      });
     }
 
     // 6. Toggle status: /api/admin/staff/:id/status
@@ -520,9 +761,7 @@ export default async function handler(req: any, res?: any) {
 
       let query = supabase
         .from("staff")
-        .select(
-          "id, staff_code, name, email, department, designation, active, created_at, updated_at, face_embeddings(id, staff_id, reference_image_path, photo_data, created_at)",
-        );
+        .select("id, staff_code, name, email, department, designation, active, created_at, updated_at");
       if (isUuid) {
         query = query.eq("id", idOrCode);
       } else {
@@ -533,19 +772,37 @@ export default async function handler(req: any, res?: any) {
         return sendJsonResponse(res, 404, { success: false, error: "Staff member not found" });
       }
 
+      const staffKey = (staffMember.staff_code || "").toUpperCase();
+      const { data: enrollEvents } = await supabase
+        .from("security_events")
+        .select("staff, device, event, created_at, time")
+        .eq("staff", staffKey)
+        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%")
+        .order("time", { ascending: false })
+        .limit(1);
+
+      let count = 0;
+      let deviceId = null;
+      let enrolledAt = null;
+      if (enrollEvents && enrollEvents.length > 0) {
+        const ev = enrollEvents[0];
+        const countMatch = (ev?.device || "").match(/count:(\d+)/);
+        const devMatch = (ev?.device || "").match(/device_id:([^|\s]+)/);
+        count = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 3;
+        deviceId = devMatch ? devMatch[1] : "android-keystore";
+        enrolledAt = ev?.created_at || ev?.time;
+      }
+
       return sendJsonResponse(res, 200, {
         success: true,
         data: {
           ...staffMember,
-          embeddingCount: staffMember.face_embeddings?.length || 0,
-          referenceSamples: (staffMember.face_embeddings || []).map((f: any) => ({
-            id: f.id,
-            staff_id: f.staff_id,
-            embedding: [],
-            reference_image_path: f.reference_image_path,
-            photo_data: f.photo_data,
-            created_at: f.created_at,
-          })),
+          embeddingCount: count,
+          templateCount: count,
+          isEnrolled: count > 0,
+          deviceId,
+          enrolledAt,
+          referenceSamples: [], // Device-only policy: zero raw photos or vectors stored/returned
         },
       });
     }
