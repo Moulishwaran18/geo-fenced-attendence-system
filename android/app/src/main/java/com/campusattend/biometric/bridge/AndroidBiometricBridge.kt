@@ -270,7 +270,8 @@ class AndroidBiometricBridge(
 
     /**
      * Activate staged pending templates on this device after administrator approval.
-     * Inserts the encrypted templates into Room DB and removes the pending stage file.
+     * Inserts the encrypted templates into Room DB within a database transaction and removes the pending stage file.
+     * Strictly idempotent: if templates are already persisted and verified in Room, safely continues without re-inserting.
      */
     @JavascriptInterface
     fun activatePendingEnrollment(
@@ -305,80 +306,140 @@ class AndroidBiometricBridge(
         }
 
         val pendingFile = java.io.File(context.filesDir, "pending_face_${cleanId}.json")
-        if (!pendingFile.exists()) {
-            return JSONObject().apply {
-                put("success", false)
-                put("error", "NO_PENDING_ENROLLMENT")
-                put("message", "No staged pending face enrollment found on this device.")
-            }.toString()
-        }
 
         return try {
-            val content = pendingFile.readText(Charsets.UTF_8)
-            val json = JSONObject(content)
-            val templatesArray = json.getJSONArray("templates")
-
-            if (templatesArray.length() == 0) {
-                return JSONObject().apply {
-                    put("success", false)
-                    put("error", "EMPTY_PENDING_SAMPLES")
-                    put("message", "Pending enrollment file contained 0 templates.")
-                }.toString()
-            }
-
             runBlocking {
-                // Ensure staff entity exists
-                val existingStaff = repository.getStaffById(cleanId)
-                if (existingStaff == null) {
-                    repository.insertStaff(
-                        StaffEntity(
-                            id = cleanId,
-                            staffCode = cleanId,
-                            name = cleanId,
-                            active = true
-                        )
-                    )
-                }
+                // 1. Idempotency Check: Are templates ALREADY persisted and verified in Room DB?
+                val existingTemplates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                if (existingTemplates.isNotEmpty()) {
+                    var allVerified = true
+                    for (tmpl in existingTemplates) {
+                        if (tmpl.encryptedTemplate.isEmpty() || tmpl.iv.isEmpty() || tmpl.iv.size != 12) {
+                            allVerified = false
+                            break
+                        }
+                        val testDec = keystoreManager.decryptEmbedding(cleanId, currentDeviceId, tmpl.encryptedTemplate, tmpl.iv)
+                        if (testDec == null || testDec.size != 512) {
+                            allVerified = false
+                            break
+                        }
+                    }
 
-                // Delete any previous templates for staff + device
-                repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                    if (allVerified) {
+                        // Templates are ALREADY verified and active in Room DB!
+                        // Remove lingering pending file if present to keep storage clean
+                        if (pendingFile.exists()) {
+                            try { pendingFile.delete() } catch (_: Exception) {}
+                        }
 
-                for (i in 0 until templatesArray.length()) {
-                    val tmpl = templatesArray.getJSONObject(i)
-                    val ciphertext = android.util.Base64.decode(tmpl.getString("ciphertext"), android.util.Base64.NO_WRAP)
-                    val iv = android.util.Base64.decode(tmpl.getString("iv"), android.util.Base64.NO_WRAP)
-                    val label = tmpl.optString("label", "sample_${i + 1}")
-
-                    repository.insertEncryptedTemplate(
-                        EncryptedFaceTemplateEntity(
-                            staffId = cleanId,
-                            deviceId = currentDeviceId,
-                            encryptedTemplate = ciphertext,
-                            iv = iv,
-                            referenceLabel = label,
-                            templateVersion = 1,
-                            createdAt = System.currentTimeMillis()
-                        )
-                    )
-                }
-
-                val finalCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
-                if (finalCount == 0) {
-                    return@runBlocking JSONObject().apply {
-                        put("success", false)
-                        put("error", "PERSISTENCE_FAILED")
-                        put("message", "Failed to verify local encrypted templates in device storage.")
+                        return@runBlocking JSONObject().apply {
+                            put("success", true)
+                            put("alreadyPersisted", true)
+                            put("staffId", cleanId)
+                            put("deviceId", currentDeviceId)
+                            put("count", existingTemplates.size)
+                            put("message", "Templates already securely persisted and verified in device storage.")
+                        }
                     }
                 }
 
-                // Remove staged pending file upon successful Room insertion
+                // 2. Pending file check
+                if (!pendingFile.exists()) {
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "NO_PENDING_ENROLLMENT")
+                        put("message", "No staged pending face enrollment found on this device.")
+                    }
+                }
+
+                val content = pendingFile.readText(Charsets.UTF_8)
+                val json = JSONObject(content)
+                val templatesArray = json.getJSONArray("templates")
+
+                if (templatesArray.length() == 0) {
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "EMPTY_PENDING_SAMPLES")
+                        put("message", "Pending enrollment file contained 0 templates.")
+                    }
+                }
+
+                // 3. Insert inside database transaction
+                CampusAttendApp.instance.database.runInTransaction {
+                    runBlocking {
+                        // Ensure staff entity exists
+                        val existingStaff = repository.getStaffById(cleanId)
+                        if (existingStaff == null) {
+                            repository.insertStaff(
+                                StaffEntity(
+                                    id = cleanId,
+                                    staffCode = cleanId,
+                                    name = cleanId,
+                                    active = true
+                                )
+                            )
+                        }
+
+                        // Delete any previous templates for staff + device
+                        repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+
+                        for (i in 0 until templatesArray.length()) {
+                            val tmpl = templatesArray.getJSONObject(i)
+                            val ciphertext = android.util.Base64.decode(tmpl.getString("ciphertext"), android.util.Base64.NO_WRAP)
+                            val iv = android.util.Base64.decode(tmpl.getString("iv"), android.util.Base64.NO_WRAP)
+                            val label = tmpl.optString("label", "sample_${i + 1}")
+
+                            repository.insertEncryptedTemplate(
+                                EncryptedFaceTemplateEntity(
+                                    staffId = cleanId,
+                                    deviceId = currentDeviceId,
+                                    encryptedTemplate = ciphertext,
+                                    iv = iv,
+                                    referenceLabel = label,
+                                    templateVersion = 1,
+                                    createdAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 4. Read-back persistence and cryptographic integrity verification
+                val insertedTemplates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                if (insertedTemplates.size != templatesArray.length() || insertedTemplates.isEmpty()) {
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "PERSISTENCE_COUNT_MISMATCH")
+                        put("message", "Failed to verify local encrypted template count in device storage.")
+                    }
+                }
+
+                for (tmpl in insertedTemplates) {
+                    if (tmpl.encryptedTemplate.isEmpty() || tmpl.iv.isEmpty() || tmpl.iv.size != 12) {
+                        return@runBlocking JSONObject().apply {
+                            put("success", false)
+                            put("error", "CORRUPTED_CIPHERTEXT")
+                            put("message", "Persisted encrypted template ciphertext or IV is invalid.")
+                        }
+                    }
+                    val testDec = keystoreManager.decryptEmbedding(cleanId, currentDeviceId, tmpl.encryptedTemplate, tmpl.iv)
+                    if (testDec == null || testDec.size != 512) {
+                        return@runBlocking JSONObject().apply {
+                            put("success", false)
+                            put("error", "DECRYPTION_VERIFY_FAILED")
+                            put("message", "Local persistence verification failed. Templates could not be verified by Android Keystore AEAD.")
+                        }
+                    }
+                }
+
+                // 5. Remove staged pending file ONLY AFTER successful read-back verification
                 pendingFile.delete()
 
                 JSONObject().apply {
                     put("success", true)
                     put("staffId", cleanId)
                     put("deviceId", currentDeviceId)
-                    put("count", finalCount)
+                    put("count", insertedTemplates.size)
                     put("message", "Face registration approved and activated on this device.")
                 }
             }.toString()
@@ -388,6 +449,87 @@ class AndroidBiometricBridge(
                 put("error", "ACTIVATION_EXCEPTION")
                 put("message", e.message ?: "Failed to activate pending templates.")
             }.toString()
+        }
+    }
+
+    /**
+     * Read-back and verify cryptographic integrity of persisted face templates in Room storage.
+     * Validates that ciphertext is present, non-empty, and can be decrypted with Android Keystore AES-256-GCM.
+     * Never returns or logs raw biometric vectors.
+     */
+    @JavascriptInterface
+    fun verifyPersistence(staffId: String): String {
+        if (!isCallingOriginTrusted()) {
+            return JSONObject().apply {
+                put("verified", false)
+                put("count", 0)
+                put("error", "UNTRUSTED_ORIGIN")
+            }.toString()
+        }
+
+        val cleanId = staffId.trim().uppercase()
+        val currentDeviceId = keystoreManager.getDeviceId()
+
+        return runBlocking {
+            try {
+                val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                if (templates.isEmpty()) {
+                    return@runBlocking JSONObject().apply {
+                        put("verified", false)
+                        put("count", 0)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("error", "NO_TEMPLATES")
+                        put("message", "No encrypted templates found in local storage.")
+                    }.toString()
+                }
+
+                var validDecryptions = 0
+                for (tmpl in templates) {
+                    if (tmpl.encryptedTemplate.isEmpty() || tmpl.iv.isEmpty() || tmpl.iv.size != 12) {
+                        return@runBlocking JSONObject().apply {
+                            put("verified", false)
+                            put("count", 0)
+                            put("error", "CORRUPTED_TEMPLATE")
+                            put("message", "Template data or IV is malformed.")
+                        }.toString()
+                    }
+
+                    val dec = keystoreManager.decryptEmbedding(
+                        cleanId,
+                        currentDeviceId,
+                        tmpl.encryptedTemplate,
+                        tmpl.iv
+                    )
+                    if (dec == null || dec.size != 512) {
+                        return@runBlocking JSONObject().apply {
+                            put("verified", false)
+                            put("count", 0)
+                            put("error", "DECRYPTION_VERIFY_FAILED")
+                            put("message", "Hardware Keystore AEAD verification failed.")
+                        }.toString()
+                    }
+                    validDecryptions++
+                }
+
+                val latestTime = templates.maxOfOrNull { it.createdAt } ?: 0L
+
+                JSONObject().apply {
+                    put("verified", validDecryptions == templates.size && validDecryptions > 0)
+                    put("count", validDecryptions)
+                    put("staffId", cleanId)
+                    put("deviceId", currentDeviceId)
+                    put("enrolledAt", latestTime)
+                    put("message", "$validDecryptions template(s) verified in secure Android Keystore storage.")
+                }.toString()
+            } catch (e: Exception) {
+                JSONObject().apply {
+                    put("verified", false)
+                    put("count", 0)
+                    put("error", "VERIFY_EXCEPTION")
+                    put("message", e.message ?: "Persistence verification failed.")
+                }.toString()
+            }
         }
     }
 

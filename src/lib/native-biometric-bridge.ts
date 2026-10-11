@@ -124,7 +124,14 @@ export async function stageNativePendingEnrollment(
   const deviceId = getNativeDeviceId() || "android-keystore";
   const samplesArray = embeddings.map((emb) => Array.from(emb));
 
-  if (bridge && typeof bridge.stagePendingEnrollment === "function") {
+  if (bridge) {
+    if (typeof bridge.stagePendingEnrollment !== "function") {
+      return {
+        success: false,
+        error: "BRIDGE_STAGE_UNAVAILABLE",
+        message: "Installed CampusAttend app does not support biometric staging. Please update to the latest APK.",
+      };
+    }
     try {
       const raw = bridge.stagePendingEnrollment(
         staffId,
@@ -150,7 +157,7 @@ export async function stageNativePendingEnrollment(
     }
   }
 
-  // Web fallback simulation
+  // Web fallback simulation ONLY when running in desktop/standard browser without native hardware bridge
   try {
     if (typeof window !== "undefined" && window.sessionStorage) {
       window.sessionStorage.setItem(
@@ -186,19 +193,22 @@ export async function getNativePendingEnrollmentStatus(
   staffId: string
 ): Promise<{ hasPending: boolean; count: number; deviceId?: string | undefined; stagedAt?: number | undefined }> {
   const bridge = getBridge();
-  if (bridge && typeof bridge.getPendingEnrollmentStatus === "function") {
-    try {
-      const raw = bridge.getPendingEnrollmentStatus(staffId);
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return {
-        hasPending: Boolean(parsed.hasPending),
-        count: Number(parsed.count || 0),
-        deviceId: parsed.deviceId,
-        stagedAt: parsed.stagedAt ? Number(parsed.stagedAt) : undefined,
-      };
-    } catch {
-      return { hasPending: false, count: 0 };
+  if (bridge) {
+    if (typeof bridge.getPendingEnrollmentStatus === "function") {
+      try {
+        const raw = bridge.getPendingEnrollmentStatus(staffId);
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return {
+          hasPending: Boolean(parsed.hasPending),
+          count: Number(parsed.count || 0),
+          deviceId: parsed.deviceId,
+          stagedAt: parsed.stagedAt ? Number(parsed.stagedAt) : undefined,
+        };
+      } catch {
+        return { hasPending: false, count: 0 };
+      }
     }
+    return { hasPending: false, count: 0 };
   }
 
   if (typeof window !== "undefined" && window.sessionStorage) {
@@ -229,7 +239,14 @@ export async function activateNativePendingEnrollment(
   const bridge = getBridge();
   const deviceId = getNativeDeviceId() || "android-keystore";
 
-  if (bridge && typeof bridge.activatePendingEnrollment === "function") {
+  if (bridge) {
+    if (typeof bridge.activatePendingEnrollment !== "function") {
+      return {
+        success: false,
+        error: "BRIDGE_ACTIVATION_UNAVAILABLE",
+        message: "Installed CampusAttend Android app does not support biometric activation. Please install the latest APK.",
+      };
+    }
     try {
       const raw = bridge.activatePendingEnrollment(staffId, deviceId, oneTimeToken);
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -250,7 +267,7 @@ export async function activateNativePendingEnrollment(
     }
   }
 
-  // Web fallback simulation
+  // Web fallback simulation ONLY when bridge is null
   if (typeof window !== "undefined" && window.sessionStorage) {
     window.sessionStorage.removeItem(`pending_face_${staffId.trim().toUpperCase()}`);
   }
@@ -268,14 +285,17 @@ export async function activateNativePendingEnrollment(
  */
 export async function clearNativePendingEnrollment(staffId: string): Promise<boolean> {
   const bridge = getBridge();
-  if (bridge && typeof bridge.clearPendingEnrollment === "function") {
-    try {
-      const raw = bridge.clearPendingEnrollment(staffId);
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return Boolean(parsed.success);
-    } catch {
-      return false;
+  if (bridge) {
+    if (typeof bridge.clearPendingEnrollment === "function") {
+      try {
+        const raw = bridge.clearPendingEnrollment(staffId);
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return Boolean(parsed.success);
+      } catch {
+        return false;
+      }
     }
+    return true;
   }
 
   if (typeof window !== "undefined" && window.sessionStorage) {
@@ -403,13 +423,39 @@ export async function enrollNativeTemplatesBatch(
 
 /**
  * Verify that local encrypted templates are persistently stored and accessible in Android Keystore.
+ * Reads back and verifies cryptographic integrity without logging or exposing decrypted biometric vectors.
  */
 export async function verifyNativePersistence(staffId: string): Promise<{
   verified: boolean;
   count: number;
   deviceId?: string | undefined;
   enrolledAt?: number | undefined;
+  error?: string | undefined;
+  message?: string | undefined;
 }> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.verifyPersistence === "function") {
+    try {
+      const raw = bridge.verifyPersistence(staffId);
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return {
+        verified: Boolean(parsed.verified),
+        count: Number(parsed.count || 0),
+        deviceId: parsed.deviceId,
+        enrolledAt: parsed.enrolledAt ? Number(parsed.enrolledAt) : undefined,
+        error: parsed.error,
+        message: parsed.message,
+      };
+    } catch (err: any) {
+      return {
+        verified: false,
+        count: 0,
+        error: "VERIFY_EXCEPTION",
+        message: err?.message || "Failed to verify persistence on native Android bridge.",
+      };
+    }
+  }
+
   const status = await getNativeEnrollmentStatus(staffId);
   return {
     verified: Boolean(status.isAvailable && status.isEnrolled && status.count > 0),

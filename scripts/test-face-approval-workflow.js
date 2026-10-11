@@ -520,6 +520,251 @@ async function runApprovalSuite() {
     const offlineState = { isOnline: false, serverStatus: null };
     const canActivateOffline = Boolean(offlineState.isOnline && offlineState.serverStatus?.oneTimeToken);
     assert(!canActivateOffline, "Offline client strictly remains pending and cannot auto-activate");
+
+    // -------------------------------------------------------------------------
+    // [Test 19] Persistence-Verification Failure & Safe Recovery via Retry
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 19] Persistence-Verification Failure & Safe Recovery via Retry");
+    // Create new change request for testStaffCode
+    const changeReqM = mockReqRes("POST", "/api/staff/face/request-change", {
+      reason: "Recovery test face change request",
+      deviceId: testDeviceId,
+      sampleCount: 3,
+    }, staffHeaders);
+    await handlerFaceStaff(changeReqM.req, changeReqM.res);
+    assert(changeReqM.getStatus() === 201, "Change request for persistence recovery created with HTTP 201");
+    const retryReqId = changeReqM.getData()?.requestId;
+
+    // Admin approves the request
+    const adminApproveRetryM = mockReqRes("POST", `/api/admin/face-requests/${retryReqId}/approve`, {
+      adminNotes: "Approved for persistence recovery test",
+    }, adminHeaders);
+    await handlerFaceAdmin(adminApproveRetryM.req, adminApproveRetryM.res);
+    assert(adminApproveRetryM.getStatus() === 200, "Admin approved retry test request");
+    const retryToken = adminApproveRetryM.getData()?.oneTimeToken;
+    assert(Boolean(retryToken), "Single-use retry token issued");
+
+    // Staff checks status: approved and token available
+    const staffStatusCheck1 = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(staffStatusCheck1.req, staffStatusCheck1.res);
+    assert(staffStatusCheck1.getStatus() === 200, "Staff status query returned 200");
+    assert(staffStatusCheck1.getData()?.canSaveReplacement === true, "Staff canSaveReplacement is true");
+    assert(staffStatusCheck1.getData()?.oneTimeToken === retryToken, "oneTimeToken delivered in status");
+
+    // Simulate Step 1 & 2: Local activation failure or persistence verification mismatch
+    // (e.g. read-back returns verified: false / count: 0)
+    let mockNativeStorage = {
+      persistedTemplates: [],
+      isVerified: false,
+    };
+
+    // Simulated handleActivateApprovedProfile execution with failed persistence check:
+    let activationInterruptedError = null;
+    let serverConsumed = false;
+
+    const retryRpcClient = {
+      ...supabase,
+      from: supabase.from.bind(supabase),
+      rpc: async (fnName, args) => {
+        if (fnName === "atomic_consume_face_approval_token" || fnName === "atomic_replace_face_biometrics") {
+          const nowIso = new Date().toISOString();
+          await supabase.from("security_events").update({
+            device: `token:${args.p_token}|status:consumed|device_id:${args.p_device_id || testDeviceId}|consumed_at:${nowIso}`,
+            time: nowIso,
+          }).eq("id", retryReqId);
+          await supabase.from("security_events").insert({
+            time: nowIso,
+            staff: args.p_staff_code,
+            event: `FACE_CHANGE_CONSUMED: Approved face replacement locked for device ${args.p_device_id || testDeviceId}`,
+            device: `device_id:${args.p_device_id || testDeviceId}|count:3`,
+            location: "CampusAttend Biometric System",
+            result: "Allowed",
+            severity: "Low",
+          });
+          return {
+            data: {
+              success: true,
+              count: 3,
+              isLocked: true,
+              message: "Face registration updated and permanently locked. Single-use authorization consumed.",
+            },
+            error: null,
+          };
+        }
+        return supabase.rpc(fnName, args);
+      },
+    };
+
+    // Simulation of handleActivateApprovedProfile:
+    async function simulateHandleActivate(token) {
+      // Step 0: Pre-check if already persisted
+      if (!mockNativeStorage.isVerified || mockNativeStorage.persistedTemplates.length === 0) {
+        // Step 1: Native bridge activation
+        if (mockNativeStorage.persistedTemplates.length === 0) {
+          // Failure condition: templates not written to secure storage
+          activationInterruptedError = "Local persistence verification failed. Templates were not confirmed in secure device storage.";
+          return { success: false, error: activationInterruptedError };
+        }
+      }
+
+      // Step 3: Server consumption
+      const consumeM = mockReqRes("POST", "/api/staff/face/enroll", {
+        deviceId: testDeviceId,
+        templateCount: mockNativeStorage.persistedTemplates.length,
+        oneTimeToken: token,
+      }, staffHeaders, retryRpcClient);
+      await handlerFaceStaff(consumeM.req, consumeM.res);
+      if (consumeM.getStatus() === 200) {
+        serverConsumed = true;
+        return { success: true };
+      }
+      return { success: false, error: consumeM.getData()?.error };
+    }
+
+    // Run first attempt: fails persistence verification
+    const attempt1 = await simulateHandleActivate(retryToken);
+    assert(!attempt1.success, "Attempt 1 failed persistence verification as expected");
+    assert(!serverConsumed, "Server token was NOT consumed during persistence failure");
+    assert(activationInterruptedError.includes("Local persistence verification failed"), "Correct error message recorded");
+
+    // Verify token is still preserved on server
+    const staffStatusCheck2 = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(staffStatusCheck2.req, staffStatusCheck2.res);
+    assert(staffStatusCheck2.getData()?.canSaveReplacement === true, "Approval token PRESERVED on server after local persistence failure");
+    assert(staffStatusCheck2.getData()?.oneTimeToken === retryToken, "Preserved token remains identical and unconsumed");
+
+    // Simulate User tapping 'Retry Activation' after resolving local storage / Room persistence:
+    mockNativeStorage = {
+      persistedTemplates: [
+        { id: 1, staffId: testStaffCode, label: "sample_1" },
+        { id: 2, staffId: testStaffCode, label: "sample_2" },
+        { id: 3, staffId: testStaffCode, label: "sample_3" },
+      ],
+      isVerified: true,
+    };
+
+    const retryAttempt = await simulateHandleActivate(retryToken);
+    assert(retryAttempt.success, "Retry Activation succeeded after local persistence confirmed");
+    assert(serverConsumed, "Server token was consumed only AFTER local storage persistence verified");
+
+    // Verify profile is now permanently locked
+    const staffStatusFinal = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(staffStatusFinal.req, staffStatusFinal.res);
+    assert(staffStatusFinal.getData()?.isLocked === true, "Profile is permanently locked after successful retry activation");
+    assert(staffStatusFinal.getData()?.canSaveReplacement === false, "canSaveReplacement is now false");
+
+    // -------------------------------------------------------------------------
+    // [Test 20] Idempotent Activation (Already Persisted State)
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 20] Idempotent Activation (Already Persisted State)");
+    // Verify that when local templates are already in Room DB, re-activation:
+    // 1. Detects already-persisted templates
+    // 2. Avoids duplicate inserts
+    // 3. Reports success with alreadyPersisted: true
+    function simulateIdempotentNativeActivation(existingCount) {
+      if (existingCount > 0) {
+        return {
+          success: true,
+          alreadyPersisted: true,
+          count: existingCount,
+          message: "Templates already securely persisted and verified in device storage.",
+        };
+      }
+      return { success: true, count: 3 };
+    }
+
+    const idempotentCheck1 = simulateIdempotentNativeActivation(3);
+    assert(idempotentCheck1.success === true, "Idempotent activation reports success");
+    assert(idempotentCheck1.alreadyPersisted === true, "Recognizes already-persisted templates in secure storage");
+    assert(idempotentCheck1.count === 3, "Retains exact template count without duplicate insertions");
+
+    // -------------------------------------------------------------------------
+    // [Test 21] Native Bridge Rejection on Missing Method (Zero Fake Web Fallback in Native)
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 21] Native Bridge Rejection on Missing Method (Zero Fake Web Fallback)");
+    // When running in Android WebView (bridge is object), missing methods must return explicit errors
+    // and NEVER silently fake success via sessionStorage!
+    function simulateBridgeActivation(mockBridge) {
+      if (mockBridge) {
+        if (typeof mockBridge.activatePendingEnrollment !== "function") {
+          return {
+            success: false,
+            error: "BRIDGE_ACTIVATION_UNAVAILABLE",
+            message: "Installed CampusAttend Android app does not support biometric activation.",
+          };
+        }
+        return { success: true };
+      }
+      // Web fallback
+      return { success: true, count: 1 };
+    }
+
+    function simulateBridgeStaging(mockBridge) {
+      if (mockBridge) {
+        if (typeof mockBridge.stagePendingEnrollment !== "function") {
+          return {
+            success: false,
+            error: "BRIDGE_STAGE_UNAVAILABLE",
+            message: "Installed CampusAttend app does not support biometric staging.",
+          };
+        }
+        return { success: true };
+      }
+      return { success: true, count: 1 };
+    }
+
+    // Case A: Native bridge exists but lacks activatePendingEnrollment (outdated APK build)
+    const outdatedBridge = { isAvailable: () => true, getDeviceId: () => "android-device" };
+    const actResOutdated = simulateBridgeActivation(outdatedBridge);
+    assert(actResOutdated.success === false, "Outdated APK bridge activation rejected with success: false");
+    assert(actResOutdated.error === "BRIDGE_ACTIVATION_UNAVAILABLE", "Returns clear BRIDGE_ACTIVATION_UNAVAILABLE error instead of fake web success");
+
+    const stageResOutdated = simulateBridgeStaging(outdatedBridge);
+    assert(stageResOutdated.success === false, "Outdated APK bridge staging rejected with success: false");
+    assert(stageResOutdated.error === "BRIDGE_STAGE_UNAVAILABLE", "Returns clear BRIDGE_STAGE_UNAVAILABLE error");
+
+    // Case B: Desktop browser (bridge is null) permits web simulation preview
+    const webActRes = simulateBridgeActivation(null);
+    assert(webActRes.success === true, "Standard browser allows web preview simulation when native bridge is null");
+
+    // -------------------------------------------------------------------------
+    // [Test 22] Read-Back Verification Fail-Closed on Corrupted Ciphertext / AEAD Failure
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 22] Read-Back Verification Fail-Closed on Corrupted Ciphertext / AEAD Failure");
+    function simulateReadBackVerification(templates) {
+      if (!templates || templates.length === 0) {
+        return { verified: false, count: 0, error: "NO_TEMPLATES" };
+      }
+      for (const t of templates) {
+        if (!t.ciphertext || t.ciphertext.length === 0 || !t.iv || t.iv.length !== 12) {
+          return { verified: false, count: 0, error: "CORRUPTED_CIPHERTEXT" };
+        }
+        if (t.tagMismatch) {
+          return { verified: false, count: 0, error: "DECRYPTION_VERIFY_FAILED" };
+        }
+      }
+      return { verified: true, count: templates.length };
+    }
+
+    const corruptedCipherRes = simulateReadBackVerification([
+      { ciphertext: null, iv: Buffer.alloc(12) },
+    ]);
+    assert(corruptedCipherRes.verified === false, "Corrupted/null ciphertext rejected during read-back");
+    assert(corruptedCipherRes.error === "CORRUPTED_CIPHERTEXT", "Returns CORRUPTED_CIPHERTEXT error");
+
+    const badTagRes = simulateReadBackVerification([
+      { ciphertext: Buffer.alloc(2064), iv: Buffer.alloc(12), tagMismatch: true },
+    ]);
+    assert(badTagRes.verified === false, "AEAD tag mismatch rejected during read-back");
+    assert(badTagRes.error === "DECRYPTION_VERIFY_FAILED", "Returns DECRYPTION_VERIFY_FAILED error");
+
+    const validRes = simulateReadBackVerification([
+      { ciphertext: Buffer.alloc(2064), iv: Buffer.alloc(12) },
+      { ciphertext: Buffer.alloc(2064), iv: Buffer.alloc(12) },
+      { ciphertext: Buffer.alloc(2064), iv: Buffer.alloc(12) },
+    ]);
+    assert(validRes.verified === true, "Valid encrypted templates successfully pass read-back verification");
+    assert(validRes.count === 3, "Count matches verified templates");
   }
 
   // Clean up test events

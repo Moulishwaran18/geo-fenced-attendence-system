@@ -648,29 +648,36 @@ function StaffFaceEnrollmentPage() {
       setActivationError(null);
 
       try {
-        // 1. Native bridge activates staged templates into Room DB
-        const actResult = await activateNativePendingEnrollment(staffId, token);
-        if (!actResult.success) {
-          const errMsg = actResult.message || "Failed to activate templates on this device.";
-          setActivationError(errMsg);
-          toast.error(errMsg);
-          return;
-        }
+        // Step 0: Check if templates are ALREADY verified and active in local storage (Idempotency)
+        const preCheck = await verifyNativePersistence(staffId);
+        let templateCount = preCheck.count;
 
-        // 2. Verify persistence in Android Keystore Room DB
-        const verifyCheck = await verifyNativePersistence(staffId);
-        if (!verifyCheck.verified || verifyCheck.count === 0) {
-          const errMsg = "Local persistence verification failed. Templates were not confirmed in secure device storage.";
-          setActivationError(errMsg);
-          toast.error(errMsg);
-          return;
+        if (!preCheck.verified || preCheck.count === 0) {
+          // 1. Native bridge activates staged templates into Room DB
+          const actResult = await activateNativePendingEnrollment(staffId, token);
+          if (!actResult.success) {
+            const errMsg = actResult.message || actResult.error || "Failed to activate templates on this device.";
+            setActivationError(errMsg);
+            toast.error(errMsg);
+            return;
+          }
+
+          // 2. Read-back verification in Android Keystore Room DB
+          const verifyCheck = await verifyNativePersistence(staffId);
+          if (!verifyCheck.verified || verifyCheck.count === 0) {
+            const errMsg = verifyCheck.message || "Local persistence verification failed. Templates were not confirmed in secure device storage.";
+            setActivationError(errMsg);
+            toast.error(errMsg);
+            return;
+          }
+          templateCount = verifyCheck.count;
         }
 
         // 3. Notify server to consume single-use token and mark locked
         const serverRes = await submitStaffFaceEnrollment(
           {
             deviceId: nativeDeviceId || undefined,
-            templateCount: verifyCheck.count,
+            templateCount,
             oneTimeToken: token,
           },
           token
@@ -687,7 +694,7 @@ function StaffFaceEnrollmentPage() {
         setActivationError(null);
 
         toast.success("Face Registration Approved and Active!", {
-          description: `${verifyCheck.count} template(s) permanently locked with AES-256-GCM. You may now mark attendance with face recognition.`,
+          description: `${templateCount} template(s) permanently locked with AES-256-GCM. You may now mark attendance with face recognition.`,
         });
 
         await checkStatus();
@@ -973,23 +980,36 @@ function StaffFaceEnrollmentPage() {
                     </div>
                   </div>
 
-                  <Button
-                    onClick={() => void handleActivateApprovedProfile()}
-                    disabled={isActivating}
-                    className="bg-primary hover:bg-primary/90 text-primary-foreground shrink-0 self-start"
-                  >
-                    {isActivating ? (
-                      <>
-                        <Loader2 className="mr-2 size-4 animate-spin" />
-                        Retrying…
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="mr-2 size-4" />
-                        Retry Activation
-                      </>
-                    )}
-                  </Button>
+                  <div className="flex flex-col sm:flex-row gap-2 shrink-0 self-start">
+                    <Button
+                      onClick={() => void handleActivateApprovedProfile()}
+                      disabled={isActivating}
+                      className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                    >
+                      {isActivating ? (
+                        <>
+                          <Loader2 className="mr-2 size-4 animate-spin" />
+                          Retrying…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="mr-2 size-4" />
+                          Retry Activation
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setIsReplacementMode(true);
+                        setSamples([]);
+                      }}
+                      className="border-primary/40 text-primary hover:bg-primary/5"
+                    >
+                      <Camera className="mr-1.5 size-4" />
+                      Re-capture Photos
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : (
