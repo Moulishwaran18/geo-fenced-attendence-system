@@ -78,7 +78,7 @@ fun LocationVerificationScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Native GPS & 5-Point Geofence",
+                            text = "Native GPS & 19-Point Geofence",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -148,8 +148,8 @@ fun LocationVerificationScreen(
                         }
 
                         val statusText = when (sessionState.status) {
-                            "INSIDE" -> "INSIDE 5-POINT POLYGON (GPS PASS)"
-                            "OUTSIDE" -> "OUTSIDE 5-POINT POLYGON (GPS REJECTED)"
+                            "INSIDE" -> "INSIDE 19-POINT POLYGON (GPS PASS)"
+                            "OUTSIDE" -> "OUTSIDE 19-POINT POLYGON (GPS REJECTED)"
                             "INSUFFICIENT_ACCURACY" -> "GPS ACCURACY INSUFFICIENT (>20m)"
                             "LOCATION_DISABLED" -> "LOCATION HARDWARE DISABLED"
                             "PERMISSION_DENIED" -> "PRECISE LOCATION PERMISSION REQUIRED"
@@ -241,7 +241,7 @@ fun LocationVerificationScreen(
                         MetricRow(
                             label = "9. Geofence Containment",
                             value = when (sessionState.isInsideGeofence) {
-                                true -> "INSIDE 5-POINT POLYGON"
+                                true -> "INSIDE 19-POINT POLYGON"
                                 false -> "OUTSIDE POLYGON"
                                 else -> "Evaluating…"
                             },

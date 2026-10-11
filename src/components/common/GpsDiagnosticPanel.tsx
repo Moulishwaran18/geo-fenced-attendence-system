@@ -238,10 +238,10 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           </span>
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-foreground">
-              Live GPS Telemetry, 2D Kalman Filter &amp; 5-Point Polygon Verification
+              Live GPS Telemetry, 2D Kalman Filter &amp; 19-Point Polygon Verification
             </h3>
             <p className="text-[11px] text-muted-foreground">
-              Raw GPS quality gating · Local tangent-plane 2D Kalman smoothing · 5-point point-in-polygon
+              Raw GPS quality gating · Local tangent-plane 2D Kalman smoothing · 19-point point-in-polygon
             </p>
           </div>
         </div>
@@ -501,13 +501,13 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
               <>
                 <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
                 <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                  INSIDE 5-POINT POLYGON
+                  INSIDE 19-POINT POLYGON
                 </span>
               </>
             ) : isInside === false ? (
               <>
                 <ShieldAlert className="size-4 text-destructive shrink-0" />
-                <span className="text-destructive font-bold">OUTSIDE 5-POINT POLYGON</span>
+                <span className="text-destructive font-bold">OUTSIDE 19-POINT POLYGON</span>
               </>
             ) : (
               <>
@@ -523,7 +523,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
             )}
           </div>
           <div className="text-[10px] text-muted-foreground truncate">
-            {evaluation ? `${evaluation.distanceToBoundaryMeters}m to 5-pt perimeter` : "5-point Ray-casting"}
+            {evaluation ? `${evaluation.distanceToBoundaryMeters}m to perimeter` : "19-point Ray-casting"}
           </div>
         </div>
       </div>
@@ -731,7 +731,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
           onClick={() => setShowCoords((s) => !s)}
           className="flex w-full items-center justify-between px-4 py-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/40 transition-colors"
         >
-          <span>Authoritative Geofence Boundary (5 Vertices: C1 → C5 → C1)</span>
+          <span>Authoritative Geofence Boundary (19 Vertices: C1 → C19 → C1)</span>
           {showCoords ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         </button>
 
@@ -751,7 +751,7 @@ export function GpsDiagnosticPanel({ geofence, className = "" }: GpsDiagnosticPa
               ))}
             </div>
             <p className="mt-2 text-[10px] text-muted-foreground">
-              * The attendance system evaluates point-in-polygon containment using the exact ray-casting Jordan Curve algorithm across all 5 vertices (C1 → C5 → C1).
+              * The attendance system evaluates point-in-polygon containment using the exact ray-casting Jordan Curve algorithm across all 19 vertices (C1 → C19 → C1).
             </p>
           </div>
         )}

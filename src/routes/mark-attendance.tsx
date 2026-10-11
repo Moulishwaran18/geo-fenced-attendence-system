@@ -578,7 +578,7 @@ function MarkAttendancePage() {
         description:
           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
             ? `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Acquiring a better GPS fix...`
-            : "Your device GPS position is outside the authoritative 5-point campus polygon.",
+            : "Your device GPS position is outside the authoritative 19-point campus polygon.",
       });
       return;
     }
@@ -706,7 +706,7 @@ function MarkAttendancePage() {
 
       <PageHeader
         title="Mark Attendance"
-        description="3-Factor Presence Verification: Wi-Fi Authorization + 5-Point GPS Polygon + ArcFace Biometric Recognition."
+        description="3-Factor Presence Verification: Wi-Fi Authorization + 19-Point GPS Polygon + ArcFace Biometric Recognition."
         actions={
           <div className="flex items-center gap-2">
             <Button

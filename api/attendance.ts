@@ -493,21 +493,27 @@ function getCookie(req: any, name: string): string | null {
   return decodeURIComponent(match[1]);
 }
 
-// Authoritative 13-point Campus Polygon Coordinates (C1 -> ... -> C13 -> C1)
+// Authoritative 19-point Campus Polygon Coordinates (C1 -> ... -> C18 -> C19)
 const AUTHORIZED_GEOFENCE_POLYGON = [
-  { lat: 11.675651510482604, lng: 78.12402220170895 }, // C1
-  { lat: 11.675657082681333, lng: 78.12382305416799 }, // C2
-  { lat: 11.675768526632474, lng: 78.12359545697831 }, // C3
-  { lat: 11.675857681761121, lng: 78.12339630943734 }, // C4
-  { lat: 11.676125146975094, lng: 78.1228443862524 }, // C5
-  { lat: 11.676370323194567, lng: 78.12244609117047 }, // C6
-  { lat: 11.676414900665728, lng: 78.12241764152176 }, // C7
-  { lat: 11.676448333764391, lng: 78.12143897360616 }, // C8
-  { lat: 11.676905252375372, lng: 78.12147880311436 }, // C9
-  { lat: 11.676977690622595, lng: 78.12159260170921 }, // C10
-  { lat: 11.67708913404289, lng: 78.12222418391055 }, // C11
-  { lat: 11.677990932044441, lng: 78.12235439874642 }, // C12
-  { lat: 11.677979915759753, lng: 78.1237830407748 }, // C13
+  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C1
+  { lat: 11.679160653348573, lng: 78.1251229550977 },  // C2
+  { lat: 11.679072439799588, lng: 78.12580219547301 }, // C3
+  { lat: 11.678915085838511, lng: 78.12659829439393 }, // C4
+  { lat: 11.67857653610425,  lng: 78.12706572862274 }, // C5
+  { lat: 11.677855225878366, lng: 78.1268821218973 },  // C6
+  { lat: 11.677005135877979, lng: 78.12680385127157 }, // C7
+  { lat: 11.676963779359658, lng: 78.12619810348153 }, // C8
+  { lat: 11.675808384169112, lng: 78.12611721999878 }, // C9
+  { lat: 11.67548101155477,  lng: 78.12632747328921 }, // C10
+  { lat: 11.675225395251344, lng: 78.12546783441684 }, // C11
+  { lat: 11.674880184146973, lng: 78.12470095781757 }, // C12
+  { lat: 11.67506203954446,  lng: 78.12467072803454 }, // C13
+  { lat: 11.675345395390822, lng: 78.12439973963578 }, // C14
+  { lat: 11.675557255409673, lng: 78.1241730162712 },  // C15
+  { lat: 11.676220110497038, lng: 78.12411693452746 }, // C16
+  { lat: 11.677404862894116, lng: 78.12403601056346 }, // C17
+  { lat: 11.678027388807743, lng: 78.12399041301013 }, // C18
+  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C19
 ];
 
 function isPointInPolygon(point: { lat: number; lng: number }): boolean {
@@ -528,6 +534,11 @@ function isPointInPolygon(point: { lat: number; lng: number }): boolean {
     const yi = AUTHORIZED_GEOFENCE_POLYGON[i]!.lat;
     const xj = AUTHORIZED_GEOFENCE_POLYGON[j]!.lng;
     const yj = AUTHORIZED_GEOFENCE_POLYGON[j]!.lat;
+
+    // Skip degenerate 0-length closing segment (C19 == C1)
+    if (xi === xj && yi === yj) {
+      continue;
+    }
 
     const intersect =
       yi > y !== yj > y &&

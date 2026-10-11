@@ -275,7 +275,7 @@ function AdminDashboard() {
             <div className="rounded-lg border border-border bg-secondary/60 p-4 text-sm">
               <p className="font-medium">Boundary status</p>
               <p className="mt-1 text-muted-foreground">
-                Authoritative 13-point campus polygon geofence active. Server network gate enabled.
+                Authoritative 19-point campus polygon geofence active. Server network gate enabled.
               </p>
             </div>
           </div>
