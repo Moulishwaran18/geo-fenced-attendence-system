@@ -251,12 +251,12 @@ export default async function handler(req: any, res?: any) {
         embeddingCount = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 3;
       }
 
-      // Query any face change requests in security_events
+      // Query any face change or enrollment requests in security_events
       const { data: requests, error: reqErr } = await supabase
         .from("security_events")
         .select("id, time, staff, event, device, location, result, severity, created_at")
         .eq("staff", staffCode)
-        .ilike("event", "FACE_CHANGE_REQUEST%")
+        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
         .order("created_at", { ascending: false })
         .limit(5);
 
@@ -267,26 +267,38 @@ export default async function handler(req: any, res?: any) {
 
       if (requests && requests.length > 0) {
         for (const r of requests) {
-          const isPending = r.result === "Flagged" || (r.device && r.device.includes("status:pending"));
-          const isApproved = r.result === "Allowed" && r.device && r.device.includes("status:approved");
-          const isConsumed = r.device && r.device.includes("status:consumed");
-          const isRejected = r.result === "Blocked" || (r.device && r.device.includes("status:rejected"));
+          const isConsumed = Boolean(r.device && r.device.includes("status:consumed"));
+          const isApproved = r.result === "Allowed" && Boolean(r.device && r.device.includes("status:approved"));
+          const isRejected = r.result === "Blocked" || (Boolean(r.device && r.device.includes("status:rejected")) && !isApproved);
+          const isPending = r.result === "Flagged" || (!isApproved && !isRejected && !isConsumed && Boolean(r.device && r.device.includes("status:pending")));
 
           const tokenMatch = r.device ? r.device.match(/token:([^|]+)/) : null;
           const expiresMatch = r.device ? r.device.match(/expires_at:([^|\s]+)/) : null;
           const approvedMatch = r.device ? r.device.match(/approved_at:([^|\s]+)/) : null;
+          const devMatch = r.device ? r.device.match(/device_id:([^|]+)/) : null;
+          const countMatch = r.device ? r.device.match(/count:(\d+)/) : null;
+          const typeMatch = r.device ? r.device.match(/type:([^|]+)/) : null;
+
           const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
           const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
           const nowMs = Date.now();
           const expiresMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
           const isExpired = expiresMs > 0 && nowMs > expiresMs;
 
+          const cleanReason = r.event
+            .replace(/^FACE_(?:CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
+            .replace(/^FACE_REQUEST_[^:]+:\s*/i, "");
+
+          const reqType = typeMatch ? typeMatch[1] : (r.event.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
+
           if (isPending && !pendingRequest) {
-            const reason = r.event.replace(/^FACE_CHANGE_REQUEST:\s*/, "");
             pendingRequest = {
               id: r.id,
-              reason,
+              reason: cleanReason,
               status: "pending",
+              deviceId: devMatch ? devMatch[1] : null,
+              sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
+              requestType: reqType,
               created_at: r.created_at || r.time,
             };
           } else if (isApproved && !isConsumed && !approvedRequest) {
@@ -304,6 +316,9 @@ export default async function handler(req: any, res?: any) {
                 id: r.id,
                 status: "approved",
                 oneTimeToken: tokenMatch ? tokenMatch[1] : null,
+                deviceId: devMatch ? devMatch[1] : null,
+                sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
+                requestType: reqType,
                 created_at: r.created_at || r.time,
                 approved_at: approvedAtIso,
                 expires_at: expiresAtIso,
@@ -330,32 +345,45 @@ export default async function handler(req: any, res?: any) {
       let oneTimeToken: string | null = null;
 
       if (!isEnrolled) {
-        status = "not_registered";
-        isLocked = false;
-        canEdit = true; // Eligible for initial face enrollment
+        if (pendingRequest) {
+          status = "pending_approval";
+          isLocked = true;
+          canEdit = false;
+        } else if (approvedRequest && approvedRequest.oneTimeToken) {
+          status = "approved";
+          isLocked = false;
+          canEdit = true;
+          oneTimeToken = approvedRequest.oneTimeToken;
+        } else if (rejectedRequest) {
+          status = "rejected";
+          isLocked = false;
+          canEdit = true; // Eligible to retry enrollment
+        } else {
+          status = "not_registered";
+          isLocked = false;
+          canEdit = true; // Eligible for initial face enrollment
+        }
       } else {
         // Enrolled on device -> permanently locked unless admin approved change request within 24h
         isLocked = true;
         status = "approved"; // Registered and approved for attendance
+        canEdit = false;
 
         if (approvedRequest && approvedRequest.oneTimeToken) {
           // Admin approved change request within 24 hours -> grant single-use editing window
           isLocked = false;
           canEdit = true;
           oneTimeToken = approvedRequest.oneTimeToken;
-        } else if (expiredRequest && !pendingRequest) {
-          status = "expired";
-          isLocked = true;
-          canEdit = false;
         } else if (pendingRequest) {
           status = "pending_approval";
           isLocked = true;
           canEdit = false;
-        } else if (rejectedRequest) {
-          status = "rejected";
+        } else if (expiredRequest && !pendingRequest) {
+          status = "expired";
           isLocked = true;
           canEdit = false;
-        } else {
+        } else if (rejectedRequest) {
+          status = "rejected";
           isLocked = true;
           canEdit = false;
         }
@@ -431,17 +459,8 @@ export default async function handler(req: any, res?: any) {
 
       let approvedRow: any = null;
 
-      // If already registered: ENFORCE SERVER-SIDE LOCK & 24-HOUR WINDOW
-      if (isReplacement) {
-        if (!candidateToken) {
-          return sendJsonResponse(res, 403, {
-            success: false,
-            error: "Your face registration is locked. Request administrator approval to change it.",
-            code: "FACE_REGISTRATION_LOCKED",
-            isLocked: true,
-          });
-        }
-
+      // If a candidate token is provided (initial or replacement approval) OR if replacement is locked:
+      if (candidateToken) {
         // Verify the one-time token matches an unconsumed approved request for this staff member
         const { data: rowData, error: checkRowErr } = await supabase
           .from("security_events")
@@ -461,6 +480,27 @@ export default async function handler(req: any, res?: any) {
             isLocked: true,
           });
         }
+
+        // Verify device identity binding
+        const devMatch = (approvedRow.device || "").match(/device_id:([^|]+)/);
+        if (devMatch && devMatch[1] && deviceId && devMatch[1] !== deviceId) {
+          return sendJsonResponse(res, 403, {
+            success: false,
+            error: "Face approval request is bound to a different device identity.",
+            code: "DEVICE_MISMATCH",
+            isLocked: true,
+          });
+        }
+      } else if (isReplacement) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "Your face registration is locked. Request administrator approval to change it.",
+          code: "FACE_REGISTRATION_LOCKED",
+          isLocked: true,
+        });
+      }
+
+      if (approvedRow) {
 
         // Enforce 24-hour expiration based on server time (FAIL CLOSED)
         const expiresMatch = (approvedRow.device || "").match(/expires_at:([^|\s]+)/);
@@ -583,10 +623,30 @@ export default async function handler(req: any, res?: any) {
     }
 
     // -------------------------------------------------------------------------
-    // ENDPOINT 3: POST /api/staff/face/request-change
-    // Submit Face Change Request to Administrator
+    // ENDPOINT 3: POST /api/staff/face/request OR /api/staff/face/request-change
+    // Submit Face Approval Request to Administrator (Initial or Replacement)
     // -------------------------------------------------------------------------
-    if (pathname.endsWith("/request-change") && method === "POST") {
+    if (
+      (pathname.endsWith("/request") ||
+        pathname.endsWith("/request-change") ||
+        pathname.endsWith("/request-enrollment")) &&
+      method === "POST"
+    ) {
+      if (
+        body?.samples !== undefined ||
+        body?.embedding !== undefined ||
+        body?.descriptor !== undefined ||
+        body?.photoData !== undefined ||
+        body?.photo_data !== undefined
+      ) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          code: "BIOMETRIC_CLOUD_STORAGE_PROHIBITED",
+          error:
+            "Biometric templates, vectors, and photos must remain exclusively on the staff member's device. Uploading biometric data to the server is strictly prohibited.",
+        });
+      }
+
       const { data: priorEvents } = await supabase
         .from("security_events")
         .select("id")
@@ -596,20 +656,19 @@ export default async function handler(req: any, res?: any) {
 
       const hasEnrollment = Boolean(priorEvents && priorEvents.length > 0);
 
-      if (!hasEnrollment) {
+      // Preserve legacy /request-change contract: requires prior enrollment
+      if (pathname.endsWith("/request-change") && !pathname.endsWith("/request") && !hasEnrollment) {
         return sendJsonResponse(res, 400, {
           success: false,
           error: "You have not registered a face yet. Use initial face enrollment.",
         });
       }
 
-      const reasonCandidate = (body?.reason || "").toString().trim();
-      if (!reasonCandidate) {
-        return sendJsonResponse(res, 400, {
-          success: false,
-          error: "Please provide a reason for the face change request.",
-        });
-      }
+      const rawReason = (body?.reason || "").toString().trim();
+      const defaultReason = hasEnrollment
+        ? "Face biometric re-enrollment request"
+        : "Initial face biometric registration";
+      const reasonCandidate = rawReason || defaultReason;
 
       if (reasonCandidate.length < 5 || reasonCandidate.length > 250) {
         return sendJsonResponse(res, 400, {
@@ -624,24 +683,36 @@ export default async function handler(req: any, res?: any) {
         .select("id, created_at")
         .eq("staff", staffCode)
         .eq("result", "Flagged")
-        .ilike("event", "FACE_CHANGE_REQUEST%")
+        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%")
         .maybeSingle();
 
       if (existingPending) {
         return sendJsonResponse(res, 409, {
           success: false,
-          error: "A face change request is already pending administrator approval. Please wait for a decision.",
+          error: "A face approval request is already pending administrator approval. Please wait for a decision.",
+          requestId: existingPending.id,
         });
       }
 
+      const deviceId = (body?.deviceId || req.headers?.["x-device-id"] || "android-device").toString().trim();
+      const sampleCount =
+        typeof body?.sampleCount === "number"
+          ? body.sampleCount
+          : typeof body?.templateCount === "number"
+          ? body.templateCount
+          : 1;
+
       const nowIso = new Date().toISOString();
+      const reqType = hasEnrollment ? "replacement" : "initial";
+      const eventPrefix = hasEnrollment ? "FACE_CHANGE_REQUEST" : "FACE_ENROLLMENT_REQUEST";
+
       const { data: createdReq, error: reqInsErr } = await supabase
         .from("security_events")
         .insert({
           time: nowIso,
           staff: staffCode,
-          event: `FACE_CHANGE_REQUEST: ${reasonCandidate.slice(0, 180)}`,
-          device: "status:pending",
+          event: `${eventPrefix}: ${reasonCandidate.slice(0, 180)}`,
+          device: `status:pending|device_id:${deviceId}|count:${sampleCount}|type:${reqType}`,
           location: `Staff: ${staffRecord.name.slice(0, 80)}`,
           result: "Flagged", // 'Flagged' indicates Pending Approval
           severity: "Medium",
@@ -650,21 +721,26 @@ export default async function handler(req: any, res?: any) {
         .single();
 
       if (reqInsErr) {
-        console.error("[request-change] Insert error:", reqInsErr);
+        console.error("[face-request] Insert error:", reqInsErr);
         return sendJsonResponse(res, 500, {
           success: false,
-          error: "Failed to submit face change request.",
+          error: "Failed to submit face approval request.",
         });
       }
 
       return sendJsonResponse(res, 201, {
         success: true,
-        message: "Face change request submitted successfully. Awaiting administrator approval.",
+        message: hasEnrollment
+          ? "Face change request submitted successfully. Awaiting administrator approval."
+          : "Face enrollment request submitted successfully. Awaiting administrator approval.",
         requestId: createdReq.id,
         request: {
           id: createdReq.id,
           status: "pending",
           reason: reasonCandidate,
+          deviceId,
+          sampleCount,
+          requestType: reqType,
           created_at: createdReq.created_at || nowIso,
         },
       });
@@ -672,7 +748,7 @@ export default async function handler(req: any, res?: any) {
 
     // -------------------------------------------------------------------------
     // ENDPOINT 4: POST /api/staff/face/cancel-request
-    // Cancel Pending Face Change Request
+    // Cancel Pending Face Approval Request
     // -------------------------------------------------------------------------
     if (pathname.endsWith("/cancel-request") && method === "POST") {
       const { error: cancelErr } = await supabase
@@ -680,18 +756,18 @@ export default async function handler(req: any, res?: any) {
         .delete()
         .eq("staff", staffCode)
         .eq("result", "Flagged")
-        .ilike("event", "FACE_CHANGE_REQUEST%");
+        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%");
 
       if (cancelErr) {
         return sendJsonResponse(res, 500, {
           success: false,
-          error: "Failed to cancel face change request.",
+          error: "Failed to cancel face approval request.",
         });
       }
 
       return sendJsonResponse(res, 200, {
         success: true,
-        message: "Pending face change request cancelled.",
+        message: "Pending face approval request cancelled.",
       });
     }
 

@@ -47,12 +47,18 @@ import {
   getNativeDeviceId,
   enrollNativeTemplatesBatch,
   verifyNativePersistence,
+  stageNativePendingEnrollment,
+  getNativePendingEnrollmentStatus,
+  activateNativePendingEnrollment,
+  clearNativePendingEnrollment,
   type NativeEnrollmentStatus,
 } from "@/lib/native-biometric-bridge";
 import {
   getStaffFaceStatus,
+  requestStaffFaceEnrollment,
   requestStaffFaceChange,
   cancelStaffFaceChange,
+  submitStaffFaceEnrollment,
   type StaffFaceStatusResponse,
 } from "@/lib/staff-face";
 import { useActiveStaff } from "@/lib/staff-auth";
@@ -113,6 +119,8 @@ function StaffFaceEnrollmentPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isReplacementMode, setIsReplacementMode] = useState(false);
+
+  const [isActivating, setIsActivating] = useState(false);
 
   // File input ref for "Upload Photo Files"
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -178,7 +186,7 @@ function StaffFaceEnrollmentPage() {
         });
       }
 
-      // Check server metadata for authorized face-change request state (NO biometrics)
+      // Check server metadata for authorized face request state (NO biometrics)
       try {
         const srv = await getStaffFaceStatus();
         setServerStatus(srv);
@@ -327,7 +335,6 @@ function StaffFaceEnrollmentPage() {
   const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) {
-      // User canceled or cleared selection
       return;
     }
 
@@ -429,7 +436,6 @@ function StaffFaceEnrollmentPage() {
     }
 
     setIsProcessing(false);
-    // CRITICAL: Reset input so the user can re-select files or pick again
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -504,7 +510,7 @@ function StaffFaceEnrollmentPage() {
     setSamples((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Save biometric enrollment locally to Android Keystore
+  // Save biometric enrollment locally & submit approval request to administrator
   const handleSaveRegistration = async () => {
     const validSamples = samples.filter((s) => s.status === "valid" && s.embedding);
 
@@ -529,50 +535,147 @@ function StaffFaceEnrollmentPage() {
       return;
     }
 
-    if (!isNative) {
-      toast.error("Local Android enrollment requires the installed CampusAttend APK with hardware Keystore.");
-      return;
-    }
-
     setIsSaving(true);
     try {
       const embeddings = validSamples.map((s) => s.embedding!);
       const labels = validSamples.map((s, idx) => `sample_${idx + 1}`);
       const oneTimeToken = serverStatus?.oneTimeToken || null;
 
-      // 1. Batch-enroll encrypted templates directly into local SQLite Room database
-      const enrollResult = await enrollNativeTemplatesBatch(staffId, embeddings, labels, oneTimeToken);
+      // PATH A: Administrator has ALREADY granted approval (single-use token active)
+      if (oneTimeToken) {
+        // 1. Batch-enroll encrypted templates directly into local SQLite Room database
+        const enrollResult = await enrollNativeTemplatesBatch(staffId, embeddings, labels, oneTimeToken);
 
-      if (!enrollResult.success) {
-        toast.error(
-          enrollResult.error === "ALREADY_ENROLLED"
-            ? "Face is already enrolled and locked on this device. Re-enrollment requires an authorized face-change approval."
-            : enrollResult.message || "Failed to save templates to Android Keystore."
+        if (!enrollResult.success) {
+          toast.error(
+            enrollResult.error === "ALREADY_ENROLLED"
+              ? "Face is already enrolled and locked on this device. Re-enrollment requires an authorized face-change approval."
+              : enrollResult.message || "Failed to save templates to Android Keystore."
+          );
+          return;
+        }
+
+        // 2. CRITICAL: Verify persistence in native Keystore before confirming success
+        const verifyCheck = await verifyNativePersistence(staffId);
+        if (!verifyCheck.verified || verifyCheck.count === 0) {
+          toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+          return;
+        }
+
+        // 3. Notify server to consume the single-use token and mark permanently locked
+        const serverEnrollRes = await submitStaffFaceEnrollment(
+          {
+            deviceId: nativeDeviceId || undefined,
+            templateCount: verifyCheck.count,
+            oneTimeToken,
+          },
+          oneTimeToken
         );
+
+        if (!serverEnrollRes.success) {
+          toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server.");
+          return;
+        }
+
+        // 4. Confirm success
+        toast.success("Face registration successfully approved and locked!", {
+          description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore.`,
+        });
+
+        stopCamera();
+        setSamples([]);
+        setIsReplacementMode(false);
+        await checkStatus();
         return;
       }
 
-      // 2. CRITICAL: Verify persistence in native Keystore before confirming success
+      // PATH B: Standard workflow: Initial registration or replacement submission requiring administrator approval
+      // 1. Stage encrypted templates locally in app-private storage via Android Keystore AES-256-GCM
+      // (Never sends biometric vectors or photos to the server)
+      const stageRes = await stageNativePendingEnrollment(staffId, embeddings, labels);
+      if (!stageRes.success) {
+        toast.error(stageRes.message || "Failed to encrypt and stage templates in Android Keystore.");
+        return;
+      }
+
+      // 2. Submit approval request to server (metadata ONLY: Staff ID, deviceId, count, reason)
+      const requestReasonText = isReplacementMode
+        ? (requestReason.trim() || "Biometric face re-enrollment request")
+        : "Initial institutional face registration";
+
+      const reqRes = await requestStaffFaceEnrollment({
+        deviceId: nativeDeviceId || "android-device",
+        sampleCount: validSamples.length,
+        reason: requestReasonText,
+      });
+
+      if (!reqRes.success) {
+        toast.error(reqRes.error || "Failed to submit face approval request to administrator.");
+        return;
+      }
+
+      toast.success("Face registration submitted for administrator approval!", {
+        description: `Request ID: ${reqRes.requestId || reqRes.request?.id || "Pending"}. Your templates are safely encrypted on this device.`,
+      });
+
+      stopCamera();
+      setIsReplacementMode(false);
+      await checkStatus();
+    } catch (err: any) {
+      toast.error("Failed to save biometric enrollment", { description: err?.message || String(err) });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Activate pending templates staged locally after administrator approval
+  const handleActivateApprovedProfile = async () => {
+    if (!serverStatus?.oneTimeToken) {
+      toast.error("Missing administrator approval token.");
+      return;
+    }
+
+    setIsActivating(true);
+    try {
+      const token = serverStatus.oneTimeToken;
+      // 1. Native bridge activates staged templates into Room DB
+      const actResult = await activateNativePendingEnrollment(staffId, token);
+      if (!actResult.success) {
+        toast.error(actResult.message || "Failed to activate templates on this device.");
+        return;
+      }
+
+      // 2. Verify persistence in Android Keystore Room DB
       const verifyCheck = await verifyNativePersistence(staffId);
       if (!verifyCheck.verified || verifyCheck.count === 0) {
         toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
         return;
       }
 
-      // 3. Confirm success
-      toast.success("Face registration successfully saved and locked!", {
-        description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore.`,
+      // 3. Notify server to consume single-use token and mark locked
+      const serverRes = await submitStaffFaceEnrollment(
+        {
+          deviceId: nativeDeviceId || undefined,
+          templateCount: verifyCheck.count,
+          oneTimeToken: token,
+        },
+        token
+      );
+
+      if (!serverRes.success) {
+        toast.error(serverRes.error || "Failed to complete server lock registration.");
+        return;
+      }
+
+      toast.success("Face Registration Approved and Active!", {
+        description: `${verifyCheck.count} template(s) permanently locked with AES-256-GCM. You may now mark attendance with face recognition.`,
       });
 
-      // Reset state and reload locked status
-      stopCamera();
-      setSamples([]);
-      setIsReplacementMode(false);
       await checkStatus();
     } catch (err: any) {
-      toast.error("Failed to save local biometric enrollment", { description: err?.message || String(err) });
+      toast.error("Activation failed", { description: err?.message || String(err) });
     } finally {
-      setIsSaving(false);
+      setIsActivating(false);
     }
   };
 
@@ -585,7 +688,10 @@ function StaffFaceEnrollmentPage() {
 
     setIsSubmittingRequest(true);
     try {
-      const res = await requestStaffFaceChange(requestReason.trim());
+      const res = await requestStaffFaceChange(requestReason.trim(), {
+        deviceId: nativeDeviceId || undefined,
+        sampleCount: validCount || 1,
+      });
       if (res.success) {
         toast.success("Face change request submitted to administrator!");
         setRequestModalOpen(false);
@@ -606,7 +712,7 @@ function StaffFaceEnrollmentPage() {
     try {
       const res = await cancelStaffFaceChange();
       if (res.success) {
-        toast.success("Face change request cancelled.");
+        toast.success("Face approval request cancelled.");
         await checkStatus();
       } else {
         toast.error(res.error || "Failed to cancel request.");
@@ -617,15 +723,20 @@ function StaffFaceEnrollmentPage() {
   };
 
   const isEnrolledOnDevice = nativeStatus?.isEnrolled === true;
-  const isApprovedForReplacement =
+  const isApproved =
     serverStatus?.canSaveReplacement === true ||
     (serverStatus?.status === "approved" && Boolean(serverStatus?.oneTimeToken));
-  const isPendingApproval = serverStatus?.hasPendingRequest === true || serverStatus?.status === "pending_approval";
+  const isApprovedForReplacement = isApproved && isEnrolledOnDevice;
+  const isPendingApproval =
+    serverStatus?.hasPendingRequest === true ||
+    serverStatus?.status === "pending_approval" ||
+    serverStatus?.enrollmentStatus === "pending_approval";
+  const isRejected = serverStatus?.status === "rejected" || serverStatus?.enrollmentStatus === "rejected";
 
   const validCount = samples.filter((s) => s.status === "valid").length;
   const hasRejected = samples.some((s) => s.status === "rejected");
   const isValidating = samples.some((s) => s.status === "validating") || isProcessing;
-  const canSave = validCount >= MIN_SAMPLES && validCount <= MAX_SAMPLES && !hasRejected && !isValidating && !isSaving && isNative;
+  const canSave = validCount >= MIN_SAMPLES && validCount <= MAX_SAMPLES && !hasRejected && !isValidating && !isSaving;
 
   return (
     <AppShell nav={staffNav} role="staff">
@@ -679,30 +790,148 @@ function StaffFaceEnrollmentPage() {
           </div>
         </div>
 
+        {/* Browser Simulation Notice when not in Android WebView */}
+        {!isNative && (
+          <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-5 shadow-sm">
+            <div className="flex items-start gap-4">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-sky-500/20 text-sky-600 dark:text-sky-400">
+                <Smartphone className="size-5" />
+              </span>
+              <div className="space-y-1 text-xs">
+                <h4 className="font-semibold text-foreground text-sm">Browser Preview Mode</h4>
+                <p className="text-muted-foreground leading-relaxed">
+                  In this web browser session, biometric enrollment operates in browser isolation simulation mode.
+                  On your Android phone, facial templates are encrypted using <strong>Android Keystore AES-256-GCM</strong> in app-private storage.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Loading state indicator */}
         {loadingNative ? (
           <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-6 shadow-sm">
             <Loader2 className="size-5 animate-spin text-primary" />
             <p className="text-sm text-muted-foreground">Inspecting device hardware keystore biometric status…</p>
           </div>
-        ) : !isNative ? (
-          /* Notice for Desktop / Web browser users */
-          <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-6 shadow-sm">
-            <div className="flex items-start gap-4">
-              <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-sky-500/20 text-sky-600 dark:text-sky-400">
-                <Smartphone className="size-6" />
+        ) : isPendingApproval ? (
+          /* STATE: Pending Administrator Approval */
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-6 shadow-sm">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-4">
+                  <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-amber-500/20 text-amber-600 dark:text-amber-400">
+                    <Clock className="size-6" />
+                  </span>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-semibold text-foreground">Pending Administrator Approval</h3>
+                      <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
+                        Awaiting Review
+                      </Badge>
+                      <Badge variant="outline" className="font-mono text-xs">
+                        Req ID: {serverStatus?.pendingRequest?.id || serverStatus?.activeRequest?.id || "Pending"}
+                      </Badge>
+                    </div>
+
+                    <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                      Your facial biometric templates have been safely encrypted using AES-256-GCM and staged in app-private storage on this device.
+                      Your request is currently awaiting institutional administrator review.
+                      Zero photos or facial vectors were uploaded to cloud servers.
+                    </p>
+
+                    <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Staff ID:</span> {staffId}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Staged Templates:</span>{" "}
+                        {nativeStatus?.pendingCount || serverStatus?.pendingRequest?.sampleCount || (validCount > 0 ? validCount : 1)} sample(s)
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Hardware Device ID:</span>{" "}
+                        {serverStatus?.pendingRequest?.deviceId || nativeDeviceId || "Active Device"}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Submitted At:</span>{" "}
+                        {serverStatus?.pendingRequest?.created_at ? new Date(serverStatus.pendingRequest.created_at).toLocaleString() : "Just now"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-row sm:flex-col gap-2 shrink-0">
+                  <Button variant="outline" size="sm" onClick={() => void checkStatus()} disabled={loadingNative}>
+                    <RefreshCw className={`mr-1.5 size-3.5 ${loadingNative ? "animate-spin" : ""}`} />
+                    Refresh Approval
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={handleCancelRequest} className="text-muted-foreground hover:text-destructive">
+                    Withdraw Request
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Offline / Fail-Closed Guarantee */}
+            <div className="rounded-xl border border-border bg-card p-4 text-xs text-muted-foreground flex items-center gap-3">
+              <ShieldCheck className="size-4 text-primary shrink-0" />
+              <span>
+                Templates remain safely encrypted in local storage until administrator approval is verified. Biometric attendance matching will activate immediately upon approval.
               </span>
-              <div className="space-y-2">
-                <h3 className="font-semibold text-foreground">Android Device Required for Hardware Keystore</h3>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  CampusAttend enforces <strong>zero cloud biometric storage</strong>. Facial templates and embeddings are{" "}
-                  <strong>NEVER stored in Supabase, PostgreSQL, or any remote server</strong>.
-                </p>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Face enrollment is stored strictly within the private app storage of your Android phone, encrypted using
-                  <strong> AES-256-GCM via Android Keystore</strong> with hardware-bound Authenticated Additional Data (AAD).
-                  Please open CampusAttend inside the Android mobile APK on your device to enroll and save your face.
-                </p>
+            </div>
+          </div>
+        ) : isApproved && (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment) ? (
+          /* STATE: Administrator Approval Granted — Ready to Activate */
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6 shadow-sm">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-4">
+                  <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                    <KeyRound className="size-6" />
+                  </span>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-semibold text-foreground">Administrator Approval Granted</h3>
+                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                        Authorized
+                      </Badge>
+                      <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                        Single-Use Token Active
+                      </Badge>
+                    </div>
+
+                    <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+                      Your facial biometric enrollment has been approved by the administrator. Click below to activate your encrypted templates in Android Keystore on this device and permanently lock your biometric profile.
+                    </p>
+
+                    <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Staff ID:</span> {staffId}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
+                        <span className="font-medium text-foreground">Device Bound:</span> {nativeDeviceId || "Active Device"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <Button
+                  onClick={handleActivateApprovedProfile}
+                  disabled={isActivating}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 self-start"
+                >
+                  {isActivating ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                      Activating Keystore…
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="mr-2 size-4" />
+                      Activate Approved Profile & Lock
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
           </div>
@@ -766,9 +995,8 @@ function StaffFaceEnrollmentPage() {
                     variant="outline"
                     className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
                     onClick={() => setRequestModalOpen(true)}
-                    disabled={isPendingApproval}
                   >
-                    {isPendingApproval ? "Change Request Pending" : "Request Face Change"}
+                    Request Face Change
                   </Button>
                 )}
               </div>
@@ -789,28 +1017,27 @@ function StaffFaceEnrollmentPage() {
                 </div>
               </div>
             )}
-
-            {/* Pending change request banner */}
-            {isPendingApproval && (
-              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5 shadow-sm flex items-center justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <Clock className="size-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                  <div>
-                    <h4 className="text-sm font-semibold text-foreground">Change Request Under Administrator Review</h4>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Existing approved templates on this device remain active for attendance until a decision is made.
-                    </p>
-                  </div>
-                </div>
-                <Button variant="ghost" size="sm" onClick={handleCancelRequest} className="text-muted-foreground hover:text-destructive shrink-0">
-                  Withdraw Request
-                </Button>
-              </div>
-            )}
           </div>
         ) : (
           /* STATE 2: Face Enrollment & Image Upload Interface (1 to 5 Reference Photos) */
           <div className="space-y-6">
+            {/* Show Rejection Alert if previously rejected */}
+            {isRejected && (
+              <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-5 shadow-sm">
+                <div className="flex items-start gap-3.5">
+                  <XCircle className="size-5 text-destructive shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-semibold text-foreground">Face Registration Request Rejected</h4>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      {serverStatus?.rejectedRequest?.adminNotes || "The administrator declined the previous face registration request."}
+                    </p>
+                    <p className="text-xs text-muted-foreground font-medium">
+                      Please capture or upload 1 to 5 clear, well-lit reference photos and submit a new request.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
             <Section
               title="Add Reference Face Photos"
               description="Capture 1 to 5 clear, well-lit photos using your camera or upload image files."

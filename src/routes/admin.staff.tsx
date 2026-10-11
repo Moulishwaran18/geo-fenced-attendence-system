@@ -416,7 +416,7 @@ function AdminStaffPage() {
                 ["Email", viewing.email || "—"],
                 ["Department", viewing.department || "—"],
                 ["Designation", viewing.designation || "—"],
-                ["Reference Embeddings", `${viewing.embeddingCount} stored`],
+                ["Device Biometrics", viewing.embeddingCount > 0 ? `${viewing.embeddingCount} samples on device` : "Not enrolled"],
                 ["Account Status", viewing.active ? "Active" : "Inactive"],
                 ["Registered At", viewing.registeredAt ? new Date(viewing.registeredAt).toLocaleDateString() : "—"],
               ].map(([k, v]) => (
@@ -428,18 +428,19 @@ function AdminStaffPage() {
           </dl>
           <div className="mt-4 border-t border-border pt-4">
             <h4 className="mb-2 text-xs font-semibold text-muted-foreground uppercase">
-              Reference Photos ({viewing?.referenceSamples.length || 0})
+              Biometric Storage & Privacy
             </h4>
-            {viewing?.referenceSamples && viewing.referenceSamples.length > 0 ? (
-              <div className="grid grid-cols-4 gap-2">
-                {viewing.referenceSamples.map((r, i) => (
-                  <div key={r.id || i} className="aspect-square overflow-hidden rounded-lg border border-border bg-muted">
-                    <img src={r.photoUrl} alt={`Reference ${i + 1}`} className="size-full object-cover" />
-                  </div>
-                ))}
+            {viewing?.embeddingCount && viewing.embeddingCount > 0 ? (
+              <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+                <p className="font-medium text-foreground">
+                  {viewing.embeddingCount} Biometric Templates Enrolled on Device
+                </p>
+                <p className="text-[11px]">
+                  Templates are encrypted inside the staff member's Android Keystore. Raw facial photos and vectors are never stored on cloud servers.
+                </p>
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">No reference photos enrolled yet.</p>
+              <p className="text-xs text-muted-foreground">No device biometric enrollment recorded yet.</p>
             )}
           </div>
         </DialogContent>

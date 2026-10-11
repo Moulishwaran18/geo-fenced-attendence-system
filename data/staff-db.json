@@ -3735,5 +3735,133 @@
       "created_at": "2026-10-10T05:42:11.916Z",
       "updated_at": "2026-10-10T05:42:11.916Z"
     }
+  ],
+  "admin_revocations": [
+    {
+      "token_id": "5505f15b8d73b00fde115a223f447a6e",
+      "username": "moulish",
+      "expires_at": 1791740929482,
+      "revoked_at": "2026-10-10T17:48:51.637Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "d16f5a916b041250f947b72049c7a711",
+      "username": "moulish",
+      "expires_at": 1791740931728,
+      "revoked_at": "2026-10-10T17:48:52.141Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "52154a14529b61f55f076812d02ab6c3",
+      "username": "moulish",
+      "expires_at": 1791741199373,
+      "revoked_at": "2026-10-10T17:53:21.380Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "c644ce4578752e0d296f3f338e962f16",
+      "username": "moulish",
+      "expires_at": 1791741201478,
+      "revoked_at": "2026-10-10T17:53:22.069Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "287f21116d1311bf6713a7a3c9a70256",
+      "username": "moulish",
+      "expires_at": 1791741532482,
+      "revoked_at": "2026-10-10T17:58:54.562Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "2792f451401338f30727c254991c1f80",
+      "username": "moulish",
+      "expires_at": 1791741534857,
+      "revoked_at": "2026-10-10T17:58:55.247Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "e94e907cd24bd2084ef18a092be8c61c",
+      "username": "moulish",
+      "expires_at": 1791741550723,
+      "revoked_at": "2026-10-10T17:59:12.049Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "3b252932e4026435306d19e1b1f15999",
+      "username": "moulish",
+      "expires_at": 1791741552258,
+      "revoked_at": "2026-10-10T17:59:12.691Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "7dab0918725fad8ba2a6fe553235238e",
+      "username": "moulish",
+      "expires_at": 1791741987836,
+      "revoked_at": "2026-10-10T18:06:29.614Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "2e0c61fa94d3fe0bc4864f41d5abbf93",
+      "username": "moulish",
+      "expires_at": 1791741989924,
+      "revoked_at": "2026-10-10T18:06:30.420Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "5d5d78a13a6d31a0b191767aafd5cac1",
+      "username": "moulish",
+      "expires_at": 1791742504242,
+      "revoked_at": "2026-10-10T18:15:05.812Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "390bdda4ac8d8d05c61797eb535ef8c8",
+      "username": "moulish",
+      "expires_at": 1791742506059,
+      "revoked_at": "2026-10-10T18:15:07.030Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "f24621d54d819a1a69fb9d3431ea247b",
+      "username": "moulish",
+      "expires_at": 1791742569272,
+      "revoked_at": "2026-10-10T18:16:10.522Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "84bbfec96c1820075ff3e5906c616fa4",
+      "username": "moulish",
+      "expires_at": 1791742570799,
+      "revoked_at": "2026-10-10T18:16:11.439Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "0857223465edabb27a8adbd7c1501fde",
+      "username": "moulish",
+      "expires_at": 1791742571661,
+      "revoked_at": "2026-10-10T18:16:11.844Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "684ea728f36dab7f8da5807612059e69",
+      "username": "moulish",
+      "expires_at": 1791742656490,
+      "revoked_at": "2026-10-10T18:17:38.111Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "4daf763aba47680e10b9cbd42c618f65",
+      "username": "moulish",
+      "expires_at": 1791742658480,
+      "revoked_at": "2026-10-10T18:17:39.099Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "f5ee1690d9131bce0ce54a81ad065783",
+      "username": "moulish",
+      "expires_at": 1791742659364,
+      "revoked_at": "2026-10-10T18:17:39.556Z",
+      "reason": "User logout"
+    }
   ]
 }

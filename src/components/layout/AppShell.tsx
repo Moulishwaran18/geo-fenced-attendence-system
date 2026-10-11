@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
@@ -38,11 +38,33 @@ interface AppShellProps {
 
 export function AppShell({ nav, children, role, showSearch = role === "admin" }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [pendingFaceRequestsCount, setPendingFaceRequestsCount] = useState<number>(0);
   const { profile } = useProfile();
   const activeStaff = useActiveStaff();
   const { admin: authAdmin, authenticated, loading: adminLoading } = useAdminAuth();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (role !== "admin" || !authenticated) return;
+    let isMounted = true;
+    fetch("/api/admin/face-requests", {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data?.success && typeof data?.pendingCount === "number") {
+          setPendingFaceRequestsCount(data.pendingCount);
+        }
+      })
+      .catch(() => {
+        // Silently ignore navigation badge fetch errors
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [role, authenticated, pathname]);
 
   const isActive = (to: string) => (to === "/admin" ? pathname === "/admin" : pathname.startsWith(to));
 
@@ -210,7 +232,7 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
       <div className="flex">
         {/* Desktop sidebar */}
         <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] w-64 shrink-0 border-r border-border bg-sidebar p-3 lg:block">
-          <SidebarNav nav={nav} isActive={isActive} />
+          <SidebarNav nav={nav} isActive={isActive} pendingFaceRequestsCount={pendingFaceRequestsCount} />
         </aside>
 
         {/* Mobile drawer */}
@@ -231,7 +253,12 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
                   <X className="size-5" />
                 </Button>
               </div>
-              <SidebarNav nav={nav} isActive={isActive} onNavigate={() => setMobileOpen(false)} />
+              <SidebarNav
+                nav={nav}
+                isActive={isActive}
+                pendingFaceRequestsCount={pendingFaceRequestsCount}
+                onNavigate={() => setMobileOpen(false)}
+              />
             </nav>
           </div>
         )}
@@ -268,31 +295,42 @@ export function AppShell({ nav, children, role, showSearch = role === "admin" }:
 function SidebarNav({
   nav,
   isActive,
+  pendingFaceRequestsCount,
   onNavigate,
 }: {
   nav: NavItem[];
   isActive: (to: string) => boolean;
+  pendingFaceRequestsCount?: number;
   onNavigate?: () => void;
 }) {
   return (
     <ul className="space-y-1">
-      {nav.map((item) => (
-        <li key={item.to}>
-          <Link
-            to={item.to as "/"}
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-              isActive(item.to)
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "text-sidebar-foreground hover:bg-muted",
-            )}
-          >
-            <item.icon className="size-4.5 shrink-0" aria-hidden />
-            {item.label}
-          </Link>
-        </li>
-      ))}
+      {nav.map((item) => {
+        const isFaceApprovals = item.to === "/admin/face-requests";
+        const badgeValue = isFaceApprovals && pendingFaceRequestsCount ? pendingFaceRequestsCount : item.badge;
+        return (
+          <li key={item.to}>
+            <Link
+              to={item.to as "/"}
+              onClick={onNavigate}
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                isActive(item.to)
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground hover:bg-muted",
+              )}
+            >
+              <item.icon className="size-4.5 shrink-0" aria-hidden />
+              <span className="flex-1 truncate">{item.label}</span>
+              {Boolean(badgeValue && Number(badgeValue) > 0) && (
+                <span className="ml-auto inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                  {badgeValue}
+                </span>
+              )}
+            </Link>
+          </li>
+        );
+      })}
     </ul>
   );
 }

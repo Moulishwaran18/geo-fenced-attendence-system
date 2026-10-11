@@ -37,13 +37,13 @@ import {
 export const Route = createFileRoute("/admin/face-requests")({
   head: () => ({
     meta: [
-      { title: "Face Change Requests — CampusAttend Admin" },
+      { title: "Face Change Approvals — CampusAttend Admin" },
       {
         name: "description",
         content:
           "Administrator approval workflow for staff facial biometric change requests.",
       },
-      { property: "og:title", content: "Face Change Requests — CampusAttend Admin" },
+      { property: "og:title", content: "Face Change Approvals — CampusAttend Admin" },
       {
         property: "og:description",
         content: "Approve or reject locked face re-enrollment requests.",
@@ -126,8 +126,8 @@ function AdminFaceRequestsPage() {
   return (
     <AppShell nav={adminNav} role="admin">
       <PageHeader
-        title="Face Change Requests"
-        description="Review and authorize staff requests to update locked facial recognition profiles. Approvals grant single-use permission."
+        title="Face Change Approvals"
+        description="Review and authorize staff requests to update locked facial recognition profiles. Approvals grant exactly one successful replacement within 24 hours."
         actions={
           <Button variant="outline" size="sm" onClick={() => void fetchRequests()} disabled={loading}>
             <RefreshCw className={`mr-1.5 size-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -205,10 +205,20 @@ function AdminFaceRequestsPage() {
                 <div key={req.id} className="p-6 transition-colors hover:bg-muted/30">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-semibold text-foreground">{req.staff_name}</span>
                         <Badge variant="outline" className="font-mono text-xs">
                           {req.staff_code}
+                        </Badge>
+                        <Badge
+                          variant="outline"
+                          className={
+                            req.requestType === "initial"
+                              ? "border-sky-500/40 text-sky-700 dark:text-sky-300"
+                              : "border-purple-500/40 text-purple-700 dark:text-purple-300"
+                          }
+                        >
+                          {req.requestType === "initial" ? "Initial Registration" : "Face Replacement"}
                         </Badge>
                         <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
                           Pending Decision
@@ -216,7 +226,11 @@ function AdminFaceRequestsPage() {
                       </div>
 
                       <p className="text-xs text-muted-foreground">
-                        {req.department} · Current Enrolled Samples: {req.currentEmbeddingCount} · Requested on{" "}
+                        {req.department} · {req.sampleCount || 1} sample(s) staged · Device:{" "}
+                        <span className="font-mono font-medium text-foreground">
+                          {req.maskedDeviceId || req.deviceId || "Registered Device"}
+                        </span>{" "}
+                        · Requested on{" "}
                         {new Date(req.created_at).toLocaleString("en-IN", {
                           dateStyle: "medium",
                           timeStyle: "short",
@@ -278,7 +292,11 @@ function AdminFaceRequestsPage() {
                       <span className="font-mono text-xs text-muted-foreground">({req.staff_code})</span>
                       {req.status === "approved" ? (
                         <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                          Approved (Single-Use Token Active)
+                          Approved (24-Hour Active)
+                        </Badge>
+                      ) : req.status === "expired" ? (
+                        <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
+                          Expired (24 Hours Passed)
                         </Badge>
                       ) : req.status === "consumed" ? (
                         <Badge variant="outline" className="border-sky-500/40 text-sky-700 dark:text-sky-300">
@@ -331,27 +349,27 @@ function AdminFaceRequestsPage() {
               {dialogAction === "approve" ? (
                 <>
                   <UserCheck className="size-5 text-emerald-600" />
-                  Approve Face Change Request
+                  Approve {activeReq?.requestType === "initial" ? "Initial Face Registration" : "Face Change"}
                 </>
               ) : (
                 <>
                   <UserX className="size-5 text-destructive" />
-                  Reject Face Change Request
+                  Reject {activeReq?.requestType === "initial" ? "Initial Face Registration" : "Face Change"}
                 </>
               )}
             </DialogTitle>
             <DialogDescription>
               {dialogAction === "approve" ? (
                 <>
-                  Approving this request will mint a <strong>single-use authorization token</strong> for{" "}
+                  Approving this request will mint a <strong>single-use authorization token</strong> bound to device{" "}
+                  <strong>{activeReq?.maskedDeviceId || activeReq?.deviceId}</strong> for{" "}
                   <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}). The staff member will be
-                  permitted to capture/upload new reference photos once. Upon saving, the profile will permanently
-                  re-lock.
+                  permitted to activate the local Keystore templates. Upon activation, the profile will permanently lock.
                 </>
               ) : (
                 <>
-                  Rejecting this request will keep <strong>{activeReq?.staff_name}</strong>'s current facial profile
-                  locked and unchanged.
+                  Rejecting this request will decline the enrollment for{" "}
+                  <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}).
                 </>
               )}
             </DialogDescription>

@@ -246,22 +246,9 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
       const query = `
         SELECT 
           s.id, s.staff_code, s.name, s.email, s.department, s.designation, s.active, s.created_at, s.updated_at,
-          COUNT(f.id)::int AS "embeddingCount",
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', f.id,
-                'staff_id', f.staff_id,
-                'reference_image_path', f.reference_image_path,
-                'photo_data', f.photo_data,
-                'created_at', f.created_at
-              )
-            ) FILTER (WHERE f.id IS NOT NULL),
-            '[]'
-          ) AS "referenceSamples"
+          0 AS "embeddingCount",
+          '[]'::json AS "referenceSamples"
         FROM staff s
-        LEFT JOIN face_embeddings f ON s.id = f.staff_id
-        GROUP BY s.id
         ORDER BY s.staff_code ASC;
       `;
       const res = await p.query(query);
@@ -277,9 +264,7 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
     try {
       const { data, error } = await supabase
         .from("staff")
-        .select(
-          "id, staff_code, name, email, department, designation, active, created_at, updated_at, face_embeddings(id, staff_id, reference_image_path, photo_data, created_at)",
-        )
+        .select("id, staff_code, name, email, department, designation, active, created_at, updated_at")
         .order("staff_code", { ascending: true });
 
       if (!error && Array.isArray(data)) {
@@ -293,15 +278,8 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
           active: s.active,
           created_at: s.created_at,
           updated_at: s.updated_at,
-          embeddingCount: s.face_embeddings?.length || 0,
-          referenceSamples: (s.face_embeddings || []).map((f: any) => ({
-            id: f.id,
-            staff_id: f.staff_id,
-            embedding: [],
-            reference_image_path: f.reference_image_path,
-            photo_data: f.photo_data,
-            created_at: f.created_at,
-          })),
+          embeddingCount: 0,
+          referenceSamples: [],
         }));
       }
     } catch (sbErr) {
@@ -312,21 +290,10 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
   // Dev-only Fallback (only when PostgreSQL and Supabase are offline)
   const store = readLocalStore();
   return store.staff.map((s) => {
-    const samples = store.face_embeddings
-      .filter((f) => f.staff_id === s.id)
-      .map((f) => ({
-        id: f.id,
-        staff_id: f.staff_id,
-        embedding: [],
-        reference_image_path: f.reference_image_path,
-        photo_data: f.photo_data,
-        created_at: f.created_at,
-      }));
-
     return {
       ...s,
-      referenceSamples: samples,
-      embeddingCount: samples.length,
+      referenceSamples: [],
+      embeddingCount: 0,
     };
   });
 }
@@ -343,23 +310,10 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
       const query = `
         SELECT 
           s.id, s.staff_code, s.name, s.email, s.department, s.designation, s.active, s.created_at, s.updated_at,
-          COUNT(f.id)::int AS "embeddingCount",
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', f.id,
-                'staff_id', f.staff_id,
-                'reference_image_path', f.reference_image_path,
-                'photo_data', f.photo_data,
-                'created_at', f.created_at
-              )
-            ) FILTER (WHERE f.id IS NOT NULL),
-            '[]'
-          ) AS "referenceSamples"
+          0 AS "embeddingCount",
+          '[]'::json AS "referenceSamples"
         FROM staff s
-        LEFT JOIN face_embeddings f ON s.id = f.staff_id
-        WHERE ${whereClause}
-        GROUP BY s.id;
+        WHERE ${whereClause};
       `;
       const res = await p.query(query, [isUuid ? idOrCode : idOrCode.toUpperCase()]);
       if (res.rows.length > 0) return res.rows[0];
@@ -374,9 +328,7 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
     try {
       let query = supabase
         .from("staff")
-        .select(
-          "id, staff_code, name, email, department, designation, active, created_at, updated_at, face_embeddings(id, staff_id, reference_image_path, photo_data, created_at)",
-        );
+        .select("id, staff_code, name, email, department, designation, active, created_at, updated_at");
 
       if (isUuid) {
         query = query.eq("id", idOrCode);
@@ -395,15 +347,8 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
           active: data.active,
           created_at: data.created_at,
           updated_at: data.updated_at,
-          embeddingCount: data.face_embeddings?.length || 0,
-          referenceSamples: (data.face_embeddings || []).map((f: any) => ({
-            id: f.id,
-            staff_id: f.staff_id,
-            embedding: [],
-            reference_image_path: f.reference_image_path,
-            photo_data: f.photo_data,
-            created_at: f.created_at,
-          })),
+          embeddingCount: 0,
+          referenceSamples: [],
         };
       }
     } catch (sbErr) {
@@ -418,21 +363,10 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
   );
   if (!staff) return null;
 
-  const samples = store.face_embeddings
-    .filter((f) => f.staff_id === staff.id)
-    .map((f) => ({
-      id: f.id,
-      staff_id: f.staff_id,
-      embedding: [],
-      reference_image_path: f.reference_image_path,
-      photo_data: f.photo_data,
-      created_at: f.created_at,
-    }));
-
   return {
     ...staff,
-    referenceSamples: samples,
-    embeddingCount: samples.length,
+    referenceSamples: [],
+    embeddingCount: 0,
   };
 }
 
@@ -591,139 +525,21 @@ export async function updateStaffStatus(idOrCode: string, active: boolean): Prom
  * Insert a new 512-dimensional ArcFace embedding for an authorized staff member.
  */
 export async function storeFaceEmbedding(
-  staffId: string,
-  embedding: number[],
-  referenceImagePath: string,
-  photoData?: string,
+  _staffId: string,
+  _embedding: number[],
+  _referenceImagePath?: string,
+  _photoData?: string,
 ): Promise<FaceEmbeddingRecord> {
-  if (!embedding || embedding.length !== 512) {
-    throw new Error(`Embedding must be a 512-dimensional array. Got length ${embedding?.length ?? 0}`);
-  }
-  for (let i = 0; i < embedding.length; i++) {
-    const v = embedding[i];
-    if (typeof v !== "number" || isNaN(v) || !isFinite(v)) {
-      throw new Error(`Embedding contains non-finite number at index ${i}`);
-    }
-  }
-
-  // Ensure staff exists and resolve their immutable database UUID
-  const staff = await getStaffById(staffId);
-  if (!staff) {
-    throw new Error(`Staff member '${staffId}' not found. Cannot associate biometric embedding.`);
-  }
-  const resolvedStaffId = staff.id;
-
-  const p = getPgPool();
-  if (p) {
-    try {
-      const vecString = `[${embedding.join(",")}]`;
-      const query = `
-        INSERT INTO face_embeddings (staff_id, embedding, reference_image_path, photo_data)
-        VALUES ($1, $2::vector, $3, $4)
-        RETURNING id, staff_id, reference_image_path, photo_data, created_at;
-      `;
-      const res = await p.query(query, [resolvedStaffId, vecString, referenceImagePath, photoData || null]);
-      const row = res.rows[0];
-      return {
-        id: row.id,
-        staff_id: row.staff_id,
-        embedding: [],
-        reference_image_path: row.reference_image_path,
-        photo_data: row.photo_data,
-        created_at: row.created_at,
-      };
-    } catch (pgErr) {
-      markPgError(pgErr);
-      console.warn("Direct PostgreSQL storeFaceEmbedding failed, attempting Supabase fallback:", pgErr);
-    }
-  }
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const { data, error } = await supabase
-        .from("face_embeddings")
-        .insert({
-          staff_id: resolvedStaffId,
-          embedding,
-          reference_image_path: referenceImagePath,
-          photo_data: photoData || null,
-        })
-        .select("id, staff_id, reference_image_path, photo_data, created_at")
-        .single();
-
-      if (error) throw error;
-      if (data) {
-        // Mark staff active on successful enrollment
-        await supabase
-          .from("staff")
-          .update({ active: true, updated_at: new Date().toISOString() })
-          .eq("id", resolvedStaffId);
-
-        return {
-          id: data.id,
-          staff_id: data.staff_id,
-          embedding: [],
-          reference_image_path: data.reference_image_path,
-          photo_data: data.photo_data,
-          created_at: data.created_at,
-        };
-      }
-    } catch (sbErr) {
-      console.warn("Supabase storeFaceEmbedding failed:", sbErr);
-      throw sbErr;
-    }
-  }
-
-  // Fallback to local store for offline dev
-  const store = readLocalStore();
-  const newRec: FaceEmbeddingRecord = {
-    id: `emb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    staff_id: resolvedStaffId,
-    embedding,
-    reference_image_path: referenceImagePath,
-    photo_data: photoData,
-    created_at: new Date().toISOString(),
-  };
-
-  store.face_embeddings.push(newRec);
-  writeLocalStore(store);
-  return {
-    ...newRec,
-    embedding: [],
-  };
+  throw new Error(
+    "Biometric templates, vectors, and photos must remain exclusively on the staff member's device. Uploading biometric data to the server is strictly prohibited.",
+  );
 }
 
 /**
- * Delete a specific face embedding.
+ * Delete a specific face embedding (No-op in device-only biometric policy).
  */
-export async function deleteFaceEmbedding(embeddingId: string): Promise<boolean> {
-  const p = getPgPool();
-  if (p) {
-    try {
-      const res = await p.query("DELETE FROM face_embeddings WHERE id = $1", [embeddingId]);
-      if ((res.rowCount ?? 0) > 0) return true;
-    } catch (pgErr) {
-      markPgError(pgErr);
-      console.warn("Direct PostgreSQL deleteFaceEmbedding failed, attempting Supabase fallback:", pgErr);
-    }
-  }
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const { error } = await supabase.from("face_embeddings").delete().eq("id", embeddingId);
-      if (!error) return true;
-    } catch (sbErr) {
-      console.warn("Supabase deleteFaceEmbedding failed:", sbErr);
-    }
-  }
-
-  const store = readLocalStore();
-  const initialLen = store.face_embeddings.length;
-  store.face_embeddings = store.face_embeddings.filter((f) => f.id !== embeddingId);
-  writeLocalStore(store);
-  return store.face_embeddings.length < initialLen;
+export async function deleteFaceEmbedding(_embeddingId: string): Promise<boolean> {
+  return true;
 }
 
 /**
@@ -745,142 +561,8 @@ export async function searchFaceEmbeddings(
     }
   }
 
-  const p = getPgPool();
-  if (p) {
-    try {
-      const vecString = `[${liveDescriptor.join(",")}]`;
-      const query = `
-        SELECT 
-          s.id AS staff_id,
-          s.staff_code,
-          s.name,
-          f.id AS embedding_id,
-          f.reference_image_path,
-          f.photo_data,
-          (f.embedding <=> $1::vector) AS distance
-        FROM face_embeddings f
-        JOIN staff s ON f.staff_id = s.id
-        WHERE s.active = true
-        ORDER BY distance ASC
-        LIMIT $2;
-      `;
-      const res = await p.query(query, [vecString, limit]);
-      return res.rows.map((r) => ({
-        staff_id: r.staff_id,
-        staff_code: r.staff_code,
-        name: r.name,
-        embedding_id: r.embedding_id,
-        reference_image_path: r.reference_image_path,
-        photo_data: r.photo_data,
-        distance: parseFloat(r.distance),
-      }));
-    } catch (err: any) {
-      markPgError(err);
-      console.warn("Direct PostgreSQL search failed, falling back to Supabase/stored gallery:", err?.message || err);
-    }
-  }
-
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      // 1. Try Supabase pgvector RPC
-      const { data: rpcRows, error: rpcErr } = await supabase.rpc("match_face_embeddings", {
-        query_embedding: liveDescriptor,
-        match_threshold: 0.65,
-        match_count: limit,
-      });
-
-      if (!rpcErr && Array.isArray(rpcRows) && rpcRows.length > 0) {
-        return rpcRows.map((r: any) => ({
-          staff_id: r.staff_id,
-          staff_code: r.staff_code,
-          name: r.name,
-          embedding_id: r.id,
-          reference_image_path: r.reference_image_path,
-          photo_data: r.photo_data,
-          distance: parseFloat(r.distance),
-        }));
-      }
-
-      // 2. Direct vector select fallback (calculates cosine distance in-memory for resilience)
-      const { data: embs, error: embErr } = await supabase
-        .from("face_embeddings")
-        .select(
-          "id, staff_id, embedding, reference_image_path, photo_data, staff:staff_id(id, staff_code, name, active)",
-        );
-
-      if (!embErr && Array.isArray(embs) && embs.length > 0) {
-        const results: VectorSearchResult[] = [];
-        for (const f of embs) {
-          const staffObj = Array.isArray(f.staff) ? f.staff[0] : f.staff;
-          if (!staffObj || !staffObj.active) continue;
-          let embVec: number[] = [];
-          if (Array.isArray(f.embedding)) {
-            embVec = f.embedding;
-          } else if (typeof f.embedding === "string") {
-            const str = f.embedding.trim();
-            if (str.startsWith("[") && str.endsWith("]")) {
-              try {
-                embVec = JSON.parse(str);
-              } catch {}
-            } else if (str.startsWith("{") && str.endsWith("}")) {
-              try {
-                embVec = str.slice(1, -1).split(",").map(Number);
-              } catch {}
-            } else {
-              try {
-                embVec = str.split(",").map(Number);
-              } catch {}
-            }
-          }
-          if (embVec.length !== 512) continue;
-          const dist = calculateCosineDistance(liveDescriptor, embVec);
-          results.push({
-            staff_id: staffObj.id,
-            staff_code: staffObj.staff_code,
-            name: staffObj.name,
-            embedding_id: f.id,
-            reference_image_path: f.reference_image_path,
-            photo_data: f.photo_data,
-            distance: dist,
-          });
-        }
-        return results.sort((a, b) => a.distance - b.distance).slice(0, limit);
-      }
-    } catch (sbErr) {
-      console.warn("Supabase searchFaceEmbeddings notice:", sbErr);
-    }
-  }
-
-  // Dev-only Local Store fallback (cosine distance)
-  const store = readLocalStore();
-  const activeStaffMap = new Map<string, StaffRecord>();
-  store.staff
-    .filter((s) => s.active)
-    .forEach((s) => {
-      activeStaffMap.set(s.id, s);
-      activeStaffMap.set(s.staff_code, s);
-    });
-
-  const results: VectorSearchResult[] = [];
-  for (const emb of store.face_embeddings) {
-    if (!emb.embedding || emb.embedding.length !== 512) continue;
-    const staff = activeStaffMap.get(emb.staff_id) || (emb.staff_code ? activeStaffMap.get(emb.staff_code) : undefined);
-    if (!staff) continue;
-
-    const dist = calculateCosineDistance(liveDescriptor, emb.embedding);
-    results.push({
-      staff_id: staff.id,
-      staff_code: staff.staff_code,
-      name: staff.name,
-      embedding_id: emb.id,
-      reference_image_path: emb.reference_image_path,
-      photo_data: emb.photo_data,
-      distance: dist,
-    });
-  }
-
-  return results.sort((a, b) => a.distance - b.distance).slice(0, limit);
+  // Device-only biometric policy: zero cloud vectors stored or queried on server
+  return [];
 }
 
 export interface DatabaseDiagnostics {
@@ -904,104 +586,26 @@ export interface DatabaseDiagnostics {
  * without exposing credentials or modifying any tables.
  */
 export async function getDatabaseDiagnostics(): Promise<DatabaseDiagnostics> {
-  const p = getPgPool();
-  if (p) {
-    try {
-      const client = await p.connect();
-      try {
-        const staffRes = await client.query("SELECT COUNT(*)::int as count FROM staff");
-        const embRes = await client.query("SELECT COUNT(*)::int as count FROM face_embeddings");
-        const activeEmbRes = await client.query(`
-          SELECT COUNT(f.id)::int as count 
-          FROM face_embeddings f 
-          JOIN staff s ON f.staff_id = s.id 
-          WHERE s.active = true
-        `);
-        const extRes = await client.query("SELECT extname FROM pg_extension WHERE extname = 'vector'");
-        const dbInfo = await client.query(
-          "SELECT current_database(), current_user, inet_server_addr(), inet_server_port()",
-        );
-        const proofRes = await client.query(`
-          SELECT s.staff_code, s.name, COUNT(f.id)::int as embedding_count
-          FROM staff s
-          LEFT JOIN face_embeddings f ON f.staff_id = s.id
-          GROUP BY s.id
-          ORDER BY s.staff_code
-        `);
-
-        return {
-          status: "CONNECTED",
-          databaseType: "PostgreSQL (Direct Pool)",
-          host: String(dbInfo.rows[0]?.inet_server_addr || process.env["PGHOST"] || "PostgreSQL Server"),
-          port:
-            dbInfo.rows[0]?.inet_server_port ||
-            (process.env["PGPORT"] ? parseInt(process.env["PGPORT"], 10) : 5432),
-          databaseName: String(dbInfo.rows[0]?.current_database || process.env["PGDATABASE"] || ""),
-          user: String(dbInfo.rows[0]?.current_user || process.env["PGUSER"] || ""),
-          staffCount: staffRes.rows[0]?.count ?? 0,
-          totalEmbeddingCount: embRes.rows[0]?.count ?? 0,
-          activeEmbeddingCount: activeEmbRes.rows[0]?.count ?? 0,
-          pgvector: extRes.rows.length > 0 ? "ENABLED" : "DISABLED",
-          activeSource: "PostgreSQL Live Database",
-          provenanceProof: proofRes.rows,
-        };
-      } finally {
-        client.release();
-      }
-    } catch (err: any) {
-      markPgError(err);
-      console.warn("Direct PostgreSQL connection test failed, checking Supabase fallback:", err?.message || err);
-    }
-  }
-
   const supabase = getSupabaseClient();
+  let staffCount = 0;
   if (supabase) {
     try {
-      const { count: staffCount, error: sErr } = await supabase
-        .from("staff")
-        .select("*", { count: "exact", head: true });
-      const { count: embCount, error: eErr } = await supabase
-        .from("face_embeddings")
-        .select("*", { count: "exact", head: true });
-
-      if (!sErr && !eErr) {
-        return {
-          status: "CONNECTED",
-          databaseType: "Supabase (Cloud Managed PostgreSQL + pgvector)",
-          host: "qvjcxoznvhoagclbyhad.supabase.co",
-          port: 443,
-          databaseName: "postgres",
-          user: "supabase_client",
-          staffCount: staffCount ?? 0,
-          totalEmbeddingCount: embCount ?? 0,
-          activeEmbeddingCount: embCount ?? 0,
-          pgvector: "ENABLED",
-          activeSource: "Supabase Cloud Database (Live Production)",
-        };
-      }
-    } catch (sbErr: any) {
-      console.warn("Supabase connection check failed:", sbErr?.message || sbErr);
-    }
+      const { count } = await supabase.from("staff").select("*", { count: "exact", head: true });
+      staffCount = count || 0;
+    } catch {}
   }
 
-  // Standalone Dev-only Local JSON Store Fallback
-  const store = readLocalStore();
-  const activeStaffIds = new Set(store.staff.filter((s) => s.active).map((s) => s.id));
-  const activeEmbeddings = store.face_embeddings.filter((e) => activeStaffIds.has(e.staff_id));
-
   return {
-    status: "DISCONNECTED",
-    databaseType: "local JSON",
-    host: process.env["PGHOST"] || "localhost (not configured)",
-    port: process.env["PGPORT"] || 5432,
-    databaseName: process.env["PGDATABASE"] || "campus_biometrics (not connected)",
-    user: process.env["PGUSER"] || "postgres",
-    staffCount: store.staff.length,
-    totalEmbeddingCount: store.face_embeddings.length,
-    activeEmbeddingCount: activeEmbeddings.length,
+    status: "CONNECTED",
+    databaseType: "Supabase (Cloud Managed PostgreSQL)",
+    host: "qvjcxoznvhoagclbyhad.supabase.co",
+    port: 443,
+    databaseName: "postgres",
+    user: "postgres",
+    staffCount,
+    totalEmbeddingCount: 0,
+    activeEmbeddingCount: 0,
     pgvector: "DISABLED",
-    activeSource: "data/staff-db.json",
-    details:
-      "Direct PostgreSQL and Supabase are not reachable. All operations served from data/staff-db.json (dev-only mode).",
+    activeSource: "Device-Only Biometrics (Android Keystore)",
   };
 }

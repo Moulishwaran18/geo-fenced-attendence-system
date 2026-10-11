@@ -288,7 +288,7 @@ export default async function handler(req: any, res?: any) {
       const { data: rows, error: qErr } = await supabase
         .from("security_events")
         .select("id, time, staff, event, device, location, result, severity, created_at")
-        .ilike("event", "FACE_CHANGE_REQUEST%")
+        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
         .order("created_at", { ascending: false });
 
       if (qErr) {
@@ -334,6 +334,24 @@ export default async function handler(req: any, res?: any) {
         const tokenMatch = r.device ? r.device.match(/token:([^|]+)/) : null;
         const expiresMatch = r.device ? r.device.match(/expires_at:([^|\s]+)/) : null;
         const approvedMatch = r.device ? r.device.match(/approved_at:([^|\s]+)/) : null;
+        const devMatch = r.device ? r.device.match(/device_id:([^|]+)/) : null;
+        const countMatch = r.device ? r.device.match(/count:(\d+)/) : null;
+        const typeMatch = r.device ? r.device.match(/type:([^|]+)/) : null;
+
+        const rawDeviceId = devMatch ? devMatch[1] : "";
+        const maskedDeviceId = rawDeviceId
+          ? rawDeviceId.length > 10
+            ? rawDeviceId.slice(0, 4) + "…" + rawDeviceId.slice(-4)
+            : rawDeviceId
+          : "Active Phone";
+
+        const sampleCount = countMatch ? parseInt(countMatch[1], 10) : 1;
+        const requestType = typeMatch
+          ? typeMatch[1]
+          : r.event.includes("FACE_ENROLLMENT_REQUEST")
+          ? "initial"
+          : "replacement";
+
         const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
         const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
         const nowMs = Date.now();
@@ -356,7 +374,9 @@ export default async function handler(req: any, res?: any) {
           status = "rejected";
         }
 
-        const reason = r.event.replace(/^FACE_CHANGE_REQUEST:\s*/, "");
+        const reason = r.event
+          .replace(/^FACE_(?:CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
+          .replace(/^FACE_REQUEST_[^:]+:\s*/i, "");
         const adminNotes = r.location?.replace(/^AdminNote:\s*/, "") || "";
 
         return {
@@ -365,6 +385,10 @@ export default async function handler(req: any, res?: any) {
           staff_name: staffMeta.name || r.location?.replace(/^Staff:\s*/, "") || staffCode,
           department: staffMeta.department || "General",
           currentEmbeddingCount: staffMeta.embeddingCount || 0,
+          sampleCount,
+          requestType,
+          deviceId: rawDeviceId,
+          maskedDeviceId,
           reason,
           status,
           created_at: r.created_at || r.time,
@@ -387,7 +411,7 @@ export default async function handler(req: any, res?: any) {
 
     // -------------------------------------------------------------------------
     // 2. POST /api/admin/face-requests/:id/approve
-    // Approve Face Change Request and Issue 24-Hour One-Time Authorization Token
+    // Approve Face Request and Issue 24-Hour One-Time Authorization Token
     // -------------------------------------------------------------------------
     const approveMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/approve\/?$/);
     const isFlatApprove = (pathname === "/api/admin/face-requests/approve" || pathname.endsWith("/approve")) && (body?.id || body?.requestId);
@@ -404,7 +428,16 @@ export default async function handler(req: any, res?: any) {
       if (findErr || !targetReq) {
         return sendJsonResponse(res, 404, {
           success: false,
-          error: "Face change request not found.",
+          error: "Face approval request not found.",
+        });
+      }
+
+      // Prevent duplicate decisions
+      if (targetReq.result !== "Flagged") {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          code: "DUPLICATE_DECISION",
+          error: `Request has already been processed with status '${targetReq.result === "Allowed" ? "approved" : "rejected"}'.`,
         });
       }
 
@@ -415,11 +448,20 @@ export default async function handler(req: any, res?: any) {
       const expiresAtDate = new Date(approvedAtDate.getTime() + 24 * 60 * 60 * 1000);
       const expiresAtIso = expiresAtDate.toISOString();
 
+      const devMatch = targetReq.device ? targetReq.device.match(/device_id:([^|]+)/) : null;
+      const targetDev = devMatch ? devMatch[1] : "";
+      const cntMatch = targetReq.device ? targetReq.device.match(/count:(\d+)/) : null;
+      const sampleCnt = cntMatch ? cntMatch[1] : "1";
+      const typeMatch = targetReq.device ? targetReq.device.match(/type:([^|]+)/) : null;
+      const reqType = typeMatch ? typeMatch[1] : (targetReq.event?.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
+
+      const devicePayload = `token:${oneTimeToken}|status:approved|approved_at:${approvedAtIso}|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}`;
+
       const { error: updErr } = await supabase
         .from("security_events")
         .update({
           result: "Allowed", // 'Allowed' indicates Approved
-          device: `token:${oneTimeToken}|status:approved|approved_at:${approvedAtIso}|expires_at:${expiresAtIso}`,
+          device: devicePayload,
           location: `AdminNote: ${adminNotes || "Approved by administrator moulish"}`,
           time: approvedAtIso,
           severity: "Low",
@@ -437,8 +479,8 @@ export default async function handler(req: any, res?: any) {
       await supabase.from("security_events").insert({
         time: approvedAtIso,
         staff: targetReq.staff,
-        event: `FACE_CHANGE_APPROVED: Approved 24-hour one-time token issued for ${targetReq.staff}`,
-        device: `token_issued:${oneTimeToken}|expires_at:${expiresAtIso}`,
+        event: `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff}`,
+        device: `token_issued:${oneTimeToken}|expires_at:${expiresAtIso}|device_id:${targetDev}`,
         location: adminNotes || "Admin Console Approval",
         result: "Allowed",
         severity: "Low",
@@ -446,7 +488,7 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 200, {
         success: true,
-        message: `Face change request for ${targetReq.staff} approved successfully. Single-use authorization valid for 24 hours granted.`,
+        message: `Face approval request for ${targetReq.staff} approved successfully. Single-use authorization valid for 24 hours granted.`,
         requestId,
         staff_code: targetReq.staff,
         oneTimeToken,
@@ -457,7 +499,7 @@ export default async function handler(req: any, res?: any) {
 
     // -------------------------------------------------------------------------
     // 3. POST /api/admin/face-requests/:id/reject
-    // Reject Face Change Request
+    // Reject Face Request
     // -------------------------------------------------------------------------
     const rejectMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/reject\/?$/);
     const isFlatReject = (pathname === "/api/admin/face-requests/reject" || pathname.endsWith("/reject")) && (body?.id || body?.requestId);
@@ -474,16 +516,28 @@ export default async function handler(req: any, res?: any) {
       if (findErr || !targetReq) {
         return sendJsonResponse(res, 404, {
           success: false,
-          error: "Face change request not found.",
+          error: "Face approval request not found.",
+        });
+      }
+
+      // Prevent duplicate decisions
+      if (targetReq.result !== "Flagged") {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          code: "DUPLICATE_DECISION",
+          error: `Request has already been processed with status '${targetReq.result === "Allowed" ? "approved" : "rejected"}'.`,
         });
       }
 
       const nowIso = new Date().toISOString();
+      const cleanDevice = (targetReq.device || "").replace(/status:[^|]+(\|?)/g, "");
+      const devicePayload = `status:rejected|${cleanDevice}`;
+
       const { error: updErr } = await supabase
         .from("security_events")
         .update({
           result: "Blocked", // 'Blocked' indicates Rejected
-          device: "status:rejected",
+          device: devicePayload,
           location: `AdminNote: ${adminNotes || "Rejected by administrator moulish"}`,
           time: nowIso,
           severity: "High",
@@ -501,7 +555,7 @@ export default async function handler(req: any, res?: any) {
       await supabase.from("security_events").insert({
         time: nowIso,
         staff: targetReq.staff,
-        event: `FACE_CHANGE_REJECTED: Request rejected for ${targetReq.staff}`,
+        event: `FACE_APPROVAL_REJECTED: Request rejected for ${targetReq.staff}`,
         device: "rejected",
         location: adminNotes || "Admin Console Rejection",
         result: "Blocked",
@@ -510,7 +564,7 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 200, {
         success: true,
-        message: `Face change request for ${targetReq.staff} rejected. Existing approved face profile remains active.`,
+        message: `Face approval request for ${targetReq.staff} rejected.`,
         requestId,
         staff_code: targetReq.staff,
       });

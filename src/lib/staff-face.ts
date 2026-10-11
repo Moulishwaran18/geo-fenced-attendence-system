@@ -9,7 +9,8 @@ export type FaceEnrollmentState =
   | "not_registered"
   | "pending_approval"
   | "approved"
-  | "rejected";
+  | "rejected"
+  | "expired";
 
 export interface StaffFaceSample {
   id: string;
@@ -35,24 +36,46 @@ export interface StaffFaceStatusResponse {
   sampleCount?: number;
   samples: StaffFaceSample[];
   hasPendingRequest: boolean;
+  isExpired?: boolean | undefined;
   activeRequest?: {
     id: string;
     reason: string;
     status: string;
     created_at: string;
-  } | null;
+    deviceId?: string | undefined;
+    sampleCount?: number | undefined;
+    requestType?: "initial" | "replacement" | string | undefined;
+    admin_notes?: string | undefined;
+  } | null | undefined;
   pendingRequest?: {
     id: string;
     reason: string;
     status: string;
     created_at: string;
-  } | null;
+    deviceId?: string | undefined;
+    sampleCount?: number | undefined;
+    requestType?: "initial" | "replacement" | string | undefined;
+  } | null | undefined;
   approvedRequest?: {
     id: string;
     status: string;
-  } | null;
-  oneTimeToken?: string | null;
-  error?: string;
+    expires_at?: string | undefined;
+    remaining_seconds?: number | null | undefined;
+  } | null | undefined;
+  rejectedRequest?: {
+    id: string;
+    status: string;
+    adminNotes?: string | undefined;
+    created_at?: string | undefined;
+  } | null | undefined;
+  expiredRequest?: {
+    id: string;
+    status: string;
+    expires_at?: string | undefined;
+    approved_at?: string | undefined;
+  } | null | undefined;
+  oneTimeToken?: string | null | undefined;
+  error?: string | undefined;
 }
 
 export interface FaceChangeRequest {
@@ -61,9 +84,17 @@ export interface FaceChangeRequest {
   staff_name: string;
   department: string;
   currentEmbeddingCount: number;
+  sampleCount?: number;
+  requestType?: "initial" | "replacement";
+  deviceId?: string;
+  maskedDeviceId?: string;
   reason: string;
-  status: "pending" | "approved" | "consumed" | "rejected";
+  status: "pending" | "approved" | "consumed" | "rejected" | "expired";
   created_at: string;
+  approved_at?: string;
+  expires_at?: string;
+  is_expired?: boolean;
+  remaining_seconds?: number;
   admin_notes?: string;
   has_one_time_token?: boolean;
 }
@@ -137,24 +168,32 @@ export async function getStaffFaceStatus(): Promise<StaffFaceStatusResponse> {
   }
 }
 
+export interface StaffEnrollDeviceParams {
+  deviceId?: string | undefined;
+  templateCount?: number | undefined;
+  oneTimeToken?: string | null | undefined;
+}
+
 /**
- * Save initial face registration OR one-time replacement if approved by admin.
+ * Register device-local face enrollment OR consume one-time replacement token.
+ * Biometrics are never sent to the server.
  */
 export async function submitStaffFaceEnrollment(
-  samples: Array<{
-    embedding: number[];
-    referenceImagePath?: string;
-    photoData?: string;
-  }>,
-  oneTimeToken?: string | null,
+  params: StaffEnrollDeviceParams = {},
+  oneTimeTokenOverride?: string | null,
 ): Promise<{ success: boolean; message?: string; isLocked?: boolean; error?: string }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20000);
 
+  const effectiveToken = params.oneTimeToken || oneTimeTokenOverride || null;
+
   try {
     const headers = getStaffAuthHeaders();
-    if (oneTimeToken) {
-      headers["x-one-time-token"] = oneTimeToken;
+    if (effectiveToken) {
+      headers["x-one-time-token"] = effectiveToken;
+    }
+    if (params.deviceId) {
+      headers["x-device-id"] = params.deviceId;
     }
 
     const res = await fetch("/api/staff/face/enroll", {
@@ -162,8 +201,9 @@ export async function submitStaffFaceEnrollment(
       headers,
       credentials: "include",
       body: JSON.stringify({
-        samples,
-        oneTimeToken: oneTimeToken || undefined,
+        deviceId: params.deviceId || "android-keystore",
+        templateCount: params.templateCount || 3,
+        oneTimeToken: effectiveToken || undefined,
       }),
       signal: controller.signal,
     });
@@ -192,12 +232,67 @@ export async function submitStaffFaceEnrollment(
   }
 }
 
+export interface RequestFaceEnrollmentParams {
+  reason?: string;
+  deviceId?: string;
+  sampleCount?: number;
+}
+
+/**
+ * Submit an initial or replacement face registration approval request to the administrator.
+ * Biometrics are NEVER uploaded to the server.
+ */
+export async function requestStaffFaceEnrollment(
+  params: RequestFaceEnrollmentParams = {}
+): Promise<{ success: boolean; message?: string; requestId?: string; request?: any; error?: string }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const res = await fetch("/api/staff/face/request", {
+      method: "POST",
+      headers: getStaffAuthHeaders(),
+      credentials: "include",
+      body: JSON.stringify({
+        reason: (params.reason || "Initial face biometric registration").trim(),
+        deviceId: params.deviceId,
+        sampleCount: params.sampleCount || 1,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || data.success === false) {
+      return {
+        success: false,
+        error: data.error || `HTTP ${res.status}: Failed to submit registration request`,
+      };
+    }
+
+    return {
+      success: true,
+      message: data.message || "Face registration request submitted.",
+      requestId: data.requestId,
+      request: data.request,
+    };
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    return {
+      success: false,
+      error: err?.message || "Network error while submitting enrollment request",
+    };
+  }
+}
+
 /**
  * Request administrator approval to change an already registered & locked face.
  */
 export async function requestStaffFaceChange(
   reason: string,
-): Promise<{ success: boolean; message?: string; request?: any; error?: string }> {
+  extraParams?: { deviceId?: string | undefined; sampleCount?: number | undefined }
+): Promise<{ success: boolean; message?: string; requestId?: string; request?: any; error?: string }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -206,7 +301,11 @@ export async function requestStaffFaceChange(
       method: "POST",
       headers: getStaffAuthHeaders(),
       credentials: "include",
-      body: JSON.stringify({ reason: reason.trim() }),
+      body: JSON.stringify({
+        reason: reason.trim(),
+        deviceId: extraParams?.deviceId,
+        sampleCount: extraParams?.sampleCount,
+      }),
       signal: controller.signal,
     });
 
@@ -223,6 +322,7 @@ export async function requestStaffFaceChange(
     return {
       success: true,
       message: data.message || "Face change request submitted.",
+      requestId: data.requestId,
       request: data.request,
     };
   } catch (err: any) {

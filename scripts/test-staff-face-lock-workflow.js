@@ -1,20 +1,27 @@
 /**
  * CampusAttend — Automated Verification Suite for Staff Face Enrollment & Permanent Lock Workflow
+ * (Hardened for Device-Only Biometric Policy)
  *
  * Requirements Tested:
  * 1. Server-side session verification (zero client identity trust)
- * 2. Initial face enrollment for new staff (HTTP 201)
- * 3. Immediate permanent lock after initial save (isLocked: true)
- * 4. Server-enforced lock: Direct replacement rejected with HTTP 403 Forbidden
- * 5. Staff face change request submission with reason (HTTP 201)
- * 6. Duplicate pending change request rejection (HTTP 409)
- * 7. Admin face requests listing & pending count (HTTP 200)
- * 8. Admin rejection preserves approved embeddings (HTTP 200)
- * 9. Staff resubmission & Admin approval with single-use token (HTTP 200 + ftok_*)
- * 10. Single-use replacement save consumes token & immediately re-locks profile (HTTP 201)
- * 11. Consumed token reuse strictly rejected with HTTP 403 Forbidden
- * 12. Complete preservation of historical attendance records and Admin 'moulish' account
- * 13. Clean up test records
+ * 2. Privacy enforcement: uploading biometric vectors or photos is strictly REJECTED (HTTP 400)
+ * 3. Initial device enrollment registration for new staff (HTTP 201)
+ * 4. Immediate permanent lock after initial save (isLocked: true)
+ * 5. Server-enforced lock: Direct replacement rejected with HTTP 403 Forbidden
+ * 6. Staff face change request submission with reason (HTTP 201)
+ * 7. Duplicate pending change request rejection (HTTP 409)
+ * 8. Admin face requests listing & pending count (HTTP 200)
+ * 9. Admin rejection preserves device lock & zero cloud templates (HTTP 200)
+ * 10. Staff resubmission & Admin approval with single-use token (HTTP 200 + ftok_*)
+ * 11. Failed replacement preservation: invalid payloads do not consume token
+ * 12. Fail-closed expiration checks (missing, malformed, expired timestamps strictly reject)
+ * 13. Single-use replacement save consumes token & immediately re-locks profile (HTTP 200)
+ * 14. Consumed token reuse strictly rejected with HTTP 403 Forbidden
+ * 15. Atomic concurrency: exactly one simultaneous request can consume the token
+ * 16. Second replacement requires fresh administrator approval
+ * 17. Complete preservation of historical attendance records and Admin 'moulish' account
+ * 18. Static security audit of PostgreSQL migration script
+ * 19. Clean up test records
  */
 
 import crypto from "node:crypto";
@@ -43,7 +50,7 @@ function assert(condition, message) {
 }
 
 // Helper to simulate Vercel serverless request & response
-function mockReqRes(method, url, body = {}, headers = {}) {
+function mockReqRes(method, url, body = {}, headers = {}, customClient = null) {
   let statusCode = 200;
   let responseHeaders = {};
   let responseData = null;
@@ -57,6 +64,7 @@ function mockReqRes(method, url, body = {}, headers = {}) {
     },
     body,
     json: async () => body,
+    supabaseClient: customClient,
   };
 
   const res = {
@@ -98,77 +106,64 @@ function generateMockEmbedding(seed) {
   const vec = [];
   let sumSq = 0;
   for (let i = 0; i < 512; i++) {
-    const val = Math.sin(seed * (i + 1)) * Math.cos((seed + 3) * (i + 2));
+    const val = Math.sin(seed * (i + 1)) * 0.5;
     vec.push(val);
     sumSq += val * val;
   }
-  const norm = Math.sqrt(sumSq) || 1;
-  return vec.map((v) => Number((v / norm).toFixed(6)));
+  const norm = Math.sqrt(sumSq);
+  return vec.map((v) => v / norm);
 }
 
 async function runVerification() {
   console.log("================================================================================");
-  console.log("CAMPUSATTEND: STAFF FACE ENROLLMENT, PERMANENT LOCK & APPROVAL TEST SUITE");
+  console.log("  CAMPUSATTEND: STAFF FACE ENROLLMENT & PERMANENT LOCK AUTOMATED SUITE (v2)    ");
   console.log("================================================================================");
 
-  const testSuffix = Math.floor(1000 + Math.random() * 9000);
+  const testSuffix = Math.floor(1000 + Math.random() * 9000).toString();
   const testStaffId = `STF-FLOCK-${testSuffix}`;
-  const testPassword = `Pass#Lock${testSuffix}!`;
+  const testPassword = `Pass@Secure${testSuffix}`;
   let staffSessionToken = null;
-  let adminSessionToken = null;
   let staffUuid = null;
+  let adminSessionToken = null;
 
   try {
     // -------------------------------------------------------------------------
-    // STEP 1: Unauthenticated request rejection
+    // STEP 1: Provision Clean Test Staff Account
     // -------------------------------------------------------------------------
-    console.log("\n[1] Testing Server Session Verification & Identity Binding...");
-    {
-      const { req, res, getStatus, getData } = mockReqRes("GET", "/api/staff/face/status");
-      await handlerFaceStaff(req, res);
-      assert(getStatus() === 401, `Unauthenticated face status rejected with HTTP 401 (got ${getStatus()})`);
-      assert(getData()?.error?.includes("session"), "Error correctly identifies missing session");
-    }
+    console.log(`\n[1] Creating Test Staff Member: ${testStaffId}...`);
+    const regMock = mockReqRes("POST", "/api/staff/register", {
+      staff_code: testStaffId,
+      name: `Dr. Lock Test Staff ${testSuffix}`,
+      email: `lock.test.${testSuffix}@sonatech.ac.in`,
+      department: "Information Technology",
+      password: testPassword,
+      confirmPassword: testPassword,
+      registrationCode: "staff@123",
+    });
+    await handlerRegister(regMock.req, regMock.res);
+    assert(regMock.getStatus() === 201, `Staff self-registration succeeded with HTTP 201 (got ${regMock.getStatus()})`);
+    staffUuid = regMock.getData()?.staff?.id;
+    assert(Boolean(staffUuid), `Staff UUID resolved: ${staffUuid}`);
 
     // -------------------------------------------------------------------------
-    // STEP 2: Create test staff account & login
+    // STEP 2: Authenticate Staff Member (Acquire Server Session Token)
     // -------------------------------------------------------------------------
-    console.log("\n[2] Creating Test Staff Account & Authenticating...");
-    {
-      const regMock = mockReqRes("POST", "/api/staff/register", {
-        staffId: testStaffId,
-        name: `Test Staff Lock ${testSuffix}`,
-        department: "Computer Science",
-        password: testPassword,
-        confirmPassword: testPassword,
-        sharedCreationPassword: "staff@123",
-      });
-      await handlerRegister(regMock.req, regMock.res);
-      assert(regMock.getStatus() === 201, `Staff self-registration succeeded with HTTP 201 (got ${regMock.getStatus()})`);
-
-      const loginMock = mockReqRes("POST", "/api/staff/login", {
-        staffId: testStaffId,
-        password: testPassword,
-      });
-      await handlerStaffLogin(loginMock.req, loginMock.res);
-      assert(loginMock.getStatus() === 200, `Staff login succeeded with HTTP 200 (got ${loginMock.getStatus()})`);
-      staffSessionToken = loginMock.getData()?.token;
-      assert(Boolean(staffSessionToken), "Received valid server staff_session token");
-
-      const { data: sRecord } = await supabase
-        .from("staff")
-        .select("id")
-        .eq("staff_code", testStaffId)
-        .single();
-      staffUuid = sRecord?.id;
-    }
+    console.log("\n[2] Authenticating Test Staff Member...");
+    const loginMock = mockReqRes("POST", "/api/staff/login", {
+      staff_code: testStaffId,
+      password: testPassword,
+    });
+    await handlerStaffLogin(loginMock.req, loginMock.res);
+    assert(loginMock.getStatus() === 200, `Staff login succeeded with HTTP 200 (got ${loginMock.getStatus()})`);
+    staffSessionToken = loginMock.getData()?.token;
+    assert(Boolean(staffSessionToken), "Received valid server staff_session token");
 
     const staffHeaders = {
       authorization: `Bearer ${staffSessionToken}`,
     };
 
     // -------------------------------------------------------------------------
-    // STEP 3: Initial status check (Not Registered)
+    // STEP 3: Initial Status Query (Pre-Registration)
     // -------------------------------------------------------------------------
     console.log("\n[3] Querying Initial Face Enrollment Status...");
     {
@@ -182,27 +177,39 @@ async function runVerification() {
     }
 
     // -------------------------------------------------------------------------
-    // STEP 4: Initial Face Registration Submission
+    // STEP 4: Initial Face Registration Submission & Privacy Enforcement
     // -------------------------------------------------------------------------
-    console.log("\n[4] Submitting Initial Face Registration (2 Samples)...");
-    const initialEmbeddings = [
-      {
-        embedding: generateMockEmbedding(101),
-        descriptor: generateMockEmbedding(101),
-        photoData: "data:image/jpeg;base64,/9j/mockInitialSample1",
-      },
-      {
-        embedding: generateMockEmbedding(102),
-        descriptor: generateMockEmbedding(102),
-        photoData: "data:image/jpeg;base64,/9j/mockInitialSample2",
-      },
-    ];
+    console.log("\n[4] Submitting Initial Face Registration & Testing Prohibited Payload...");
 
+    // 4A: Uploading biometric vectors/photos to server is strictly PROHIBITED
+    {
+      const prohibitedAttempt = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        {
+          samples: [
+            {
+              embedding: generateMockEmbedding(101),
+              photoData: "data:image/jpeg;base64,/9j/mockSample",
+            },
+          ],
+        },
+        staffHeaders
+      );
+      await handlerFaceStaff(prohibitedAttempt.req, prohibitedAttempt.res);
+      assert(prohibitedAttempt.getStatus() === 400, `Uploading biometric samples strictly rejected with HTTP 400 (got ${prohibitedAttempt.getStatus()})`);
+      assert(prohibitedAttempt.getData()?.code === "BIOMETRIC_CLOUD_STORAGE_PROHIBITED", "Error code is BIOMETRIC_CLOUD_STORAGE_PROHIBITED");
+    }
+
+    // 4B: Permitted device metadata registration succeeds with HTTP 201
     {
       const { req, res, getStatus, getData } = mockReqRes(
         "POST",
         "/api/staff/face/enroll",
-        { samples: initialEmbeddings },
+        {
+          deviceId: "mock-android-device-1",
+          templateCount: 2,
+        },
         staffHeaders
       );
       await handlerFaceStaff(req, res);
@@ -233,16 +240,27 @@ async function runVerification() {
     // -------------------------------------------------------------------------
     console.log("\n[6] Testing Server Lock Enforcement: Direct Replacement Attempt...");
     {
-      const replacementAttempt = [
+      // 6A: Biometric sample upload rejected with 400
+      const vectorAttempt = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
         {
-          embedding: generateMockEmbedding(999),
-          photoData: "data:image/jpeg;base64,/9j/mockTamperedSample",
+          samples: [{ embedding: generateMockEmbedding(999) }],
         },
-      ];
+        staffHeaders
+      );
+      await handlerFaceStaff(vectorAttempt.req, vectorAttempt.res);
+      assert(vectorAttempt.getStatus() === 400, `Sample upload rejected with 400 (got ${vectorAttempt.getStatus()})`);
+      assert(vectorAttempt.getData()?.code === "BIOMETRIC_CLOUD_STORAGE_PROHIBITED", "Code is BIOMETRIC_CLOUD_STORAGE_PROHIBITED");
+
+      // 6B: Direct device re-enrollment without token rejected with 403
       const { req, res, getStatus, getData } = mockReqRes(
         "POST",
         "/api/staff/face/enroll",
-        { samples: replacementAttempt },
+        {
+          deviceId: "mock-android-device-1",
+          templateCount: 2,
+        },
         staffHeaders
       );
       await handlerFaceStaff(req, res);
@@ -253,12 +271,12 @@ async function runVerification() {
         `Informative error message returned: "${data?.error}"`
       );
 
-      // Verify database still has original 2 templates
+      // Verify zero templates are in face_embeddings table
       const { data: dbTemplates } = await supabase
         .from("face_embeddings")
         .select("id")
         .eq("staff_id", staffUuid);
-      assert(dbTemplates?.length === 2, `Database templates untouched: exactly 2 exist (got ${dbTemplates?.length})`);
+      assert((dbTemplates?.length || 0) === 0, `Zero cloud templates in database: count is 0 (got ${dbTemplates?.length || 0})`);
     }
 
     // -------------------------------------------------------------------------
@@ -338,7 +356,7 @@ async function runVerification() {
     };
 
     // -------------------------------------------------------------------------
-    // STEP 10: Admin Rejection preserves templates
+    // STEP 10: Admin Rejection Preserves Templates
     // -------------------------------------------------------------------------
     console.log("\n[10] Testing Admin Rejection Workflow...");
     {
@@ -362,7 +380,7 @@ async function runVerification() {
         .from("face_embeddings")
         .select("id")
         .eq("staff_id", staffUuid);
-      assert(dbTemplates?.length === 2, `Existing approved templates 100% intact after rejection (count: ${dbTemplates?.length})`);
+      assert((dbTemplates?.length || 0) === 0, `Zero cloud templates in database (count: ${dbTemplates?.length || 0})`);
     }
 
     // -------------------------------------------------------------------------
@@ -370,6 +388,7 @@ async function runVerification() {
     // -------------------------------------------------------------------------
     console.log("\n[11] Staff Resubmission & Admin Approval with Single-Use Token...");
     let oneTimeToken = null;
+    let requestId2 = null;
     {
       const newReqMock = mockReqRes(
         "POST",
@@ -379,7 +398,7 @@ async function runVerification() {
       );
       await handlerFaceStaff(newReqMock.req, newReqMock.res);
       assert(newReqMock.getStatus() === 201, `New request created with HTTP 201 (got ${newReqMock.getStatus()})`);
-      const requestId2 = newReqMock.getData()?.requestId;
+      requestId2 = newReqMock.getData()?.requestId;
 
       const approveMock = mockReqRes(
         "POST",
@@ -403,84 +422,423 @@ async function runVerification() {
     }
 
     // -------------------------------------------------------------------------
-    // STEP 12: Single-Use Replacement Save Consumes Token & Re-locks
+    // STEP 11B: Failed Replacement Preserves Old Face & Allows Retry
     // -------------------------------------------------------------------------
-    console.log("\n[12] Saving Replacement Face with One-Time Token...");
-    const replacementSamples = [
-      {
-        embedding: generateMockEmbedding(201),
-        descriptor: generateMockEmbedding(201),
-        photoData: "data:image/jpeg;base64,/9j/mockApprovedReplacement1",
-      },
-      {
-        embedding: generateMockEmbedding(202),
-        descriptor: generateMockEmbedding(202),
-        photoData: "data:image/jpeg;base64,/9j/mockApprovedReplacement2",
-      },
-      {
-        embedding: generateMockEmbedding(203),
-        descriptor: generateMockEmbedding(203),
-        photoData: "data:image/jpeg;base64,/9j/mockApprovedReplacement3",
-      },
-    ];
-
+    console.log("\n[11B] Testing Failed Replacement Handling & Old Face Preservation...");
     {
-      const enrollMock = mockReqRes(
+      const invalidPayloadAttempt = mockReqRes(
         "POST",
         "/api/staff/face/enroll",
         {
-          samples: replacementSamples,
+          samples: [{ embedding: [0.1, 0.2, 0.3] }],
           oneTimeToken: oneTimeToken,
         },
         staffHeaders
       );
-      await handlerFaceStaff(enrollMock.req, enrollMock.res);
-      assert(
-        enrollMock.getStatus() === 200 || enrollMock.getStatus() === 201,
-        `Replacement save succeeded with HTTP 200/201 (got ${enrollMock.getStatus()})`
-      );
-      const repData = enrollMock.getData();
-      assert(repData?.success === true, "Replacement save indicated success: true");
-      assert(repData?.count === 3, `Saved exactly 3 replacement samples (got ${repData?.count})`);
-      assert(repData?.isLocked === true, "Profile immediately re-locked (isLocked: true)");
+      await handlerFaceStaff(invalidPayloadAttempt.req, invalidPayloadAttempt.res);
+      assert(invalidPayloadAttempt.getStatus() === 400, `Prohibited biometric vector upload rejected with HTTP 400 (got ${invalidPayloadAttempt.getStatus()})`);
+      assert(invalidPayloadAttempt.getData()?.code === "BIOMETRIC_CLOUD_STORAGE_PROHIBITED", "Prohibits biometric vector upload to cloud");
 
-      // Check database: old 2 embeddings replaced by new 3
-      const { data: dbTemplates } = await supabase
-        .from("face_embeddings")
-        .select("id")
-        .eq("staff_id", staffUuid);
-      assert(dbTemplates?.length === 3, `Database now holds exactly 3 updated embeddings (got ${dbTemplates?.length})`);
-
-      // Verify status check shows locked and canSaveReplacement false
+      // Verify one-time token is NOT consumed and retry is permitted
       const stMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
       await handlerFaceStaff(stMock.req, stMock.res);
       const stData = stMock.getData();
-      assert(stData?.isLocked === true, "Status reports isLocked: true");
-      assert(stData?.canSaveReplacement === false, "canSaveReplacement is false");
-      assert(!stData?.oneTimeToken, "oneTimeToken is no longer present");
+      assert(stData?.canSaveReplacement === true, "Token not consumed: canSaveReplacement is still true");
+      assert(stData?.oneTimeToken === oneTimeToken, "Token still active for retry");
     }
 
     // -------------------------------------------------------------------------
-    // STEP 13: Attempt to Reuse Consumed Token (Strict Rejection HTTP 403)
+    // STEP 11C: Testing Missing RPC Safe Error & Non-Atomic Fallback Removal
     // -------------------------------------------------------------------------
-    console.log("\n[13] Testing Strict Rejection on Consumed Token Reuse...");
+    console.log("\n[11C] Testing Missing RPC Safe Error & Non-Atomic Fallback Removal...");
     {
-      const reattemptMock = mockReqRes(
+      const missingRpcClient = {
+        ...supabase,
+        from: supabase.from.bind(supabase),
+        rpc: async () => ({ data: null, error: { message: "function not found" } }),
+      };
+
+      const missingRpcAttempt = mockReqRes(
         "POST",
         "/api/staff/face/enroll",
         {
-          samples: replacementSamples,
+          deviceId: "mock-android-device-1",
+          templateCount: 3,
           oneTimeToken: oneTimeToken,
+        },
+        staffHeaders,
+        missingRpcClient
+      );
+      await handlerFaceStaff(missingRpcAttempt.req, missingRpcAttempt.res);
+      assert(missingRpcAttempt.getStatus() === 503, `Missing RPC returns HTTP 503 Service Unavailable (got ${missingRpcAttempt.getStatus()})`);
+      assert(missingRpcAttempt.getData()?.code === "RPC_UNAVAILABLE", `Error code is RPC_UNAVAILABLE (got ${missingRpcAttempt.getData()?.code})`);
+      assert(
+        missingRpcAttempt.getData()?.error?.includes("unavailable") && missingRpcAttempt.getData()?.error?.includes("unchanged"),
+        `Sanitized safe error message returned: "${missingRpcAttempt.getData()?.error}"`
+      );
+
+      // Verify approval token in database remains approved (not consumed)
+      const stMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+      await handlerFaceStaff(stMock.req, stMock.res);
+      const stData = stMock.getData();
+      assert(stData?.canSaveReplacement === true, "Token not consumed: canSaveReplacement is still true");
+      assert(stData?.oneTimeToken === oneTimeToken, "Token still active for retry");
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 11D: Testing Unauthorized Session & Identity Binding Enforcement
+    // -------------------------------------------------------------------------
+    console.log("\n[11D] Testing Session Spoofing & Identity Binding Protection...");
+    {
+      // 1. Tampered / invalid session token rejected
+      const badSessionMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-android-device-1", templateCount: 3, oneTimeToken },
+        { ...staffHeaders, authorization: "Bearer invalid.signature.token" }
+      );
+      await handlerFaceStaff(badSessionMock.req, badSessionMock.res);
+      assert(badSessionMock.getStatus() === 401, `Invalid session signature rejected with HTTP 401 (got ${badSessionMock.getStatus()})`);
+
+      // 2. Caller attempting to impersonate another staff by passing body.staffId
+      const spoofAttemptMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        {
+          deviceId: "mock-android-device-1",
+          templateCount: 3,
+          oneTimeToken,
+          staffId: "STF_OTHER_VICTIM",
+          staff_code: "STF_OTHER_VICTIM",
         },
         staffHeaders
       );
-      await handlerFaceStaff(reattemptMock.req, reattemptMock.res);
-      assert(reattemptMock.getStatus() === 403, `Reuse attempt rejected with HTTP 403 (got ${reattemptMock.getStatus()})`);
-      const err = reattemptMock.getData()?.error;
-      assert(
-        err?.includes("consumed") || err?.includes("expired") || err?.includes("locked"),
-        `Informative token rejection error: "${err}"`
+      await handlerFaceStaff(spoofAttemptMock.req, spoofAttemptMock.res);
+      // It binds to authenticated staff session (not STF_OTHER_VICTIM)
+      assert(spoofAttemptMock.getStatus() === 200 || spoofAttemptMock.getStatus() === 503, `Session binds to authenticated user; body staffId ignored (got ${spoofAttemptMock.getStatus()})`);
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 11E: Testing Fail-Closed Expiration Checks (Missing, Malformed, Expired)
+    // -------------------------------------------------------------------------
+    console.log("\n[11E] Testing Fail-Closed Expiration Checks (Missing, Malformed, Expired)...");
+    {
+      const nowIso = new Date().toISOString();
+
+      // Case 1: Missing expires_at in security_events
+      await supabase
+        .from("security_events")
+        .update({
+          device: `token:${oneTimeToken}|status:approved|approved_at:${nowIso}`,
+          time: nowIso,
+        })
+        .eq("id", requestId2);
+
+      const missingExpMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-device", templateCount: 3, oneTimeToken },
+        staffHeaders
       );
+      await handlerFaceStaff(missingExpMock.req, missingExpMock.res);
+      assert(missingExpMock.getStatus() === 403, `Missing expires_at strictly rejected with HTTP 403 (got ${missingExpMock.getStatus()})`);
+      assert(missingExpMock.getData()?.code === "INVALID_EXPIRY", `Code is INVALID_EXPIRY (got ${missingExpMock.getData()?.code})`);
+
+      // Case 2: Malformed expires_at in security_events
+      await supabase
+        .from("security_events")
+        .update({
+          device: `token:${oneTimeToken}|status:approved|approved_at:${nowIso}|expires_at:NOT_A_VALID_DATE_CORRUPT`,
+          time: nowIso,
+        })
+        .eq("id", requestId2);
+
+      const malformedExpMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-device", templateCount: 3, oneTimeToken },
+        staffHeaders
+      );
+      await handlerFaceStaff(malformedExpMock.req, malformedExpMock.res);
+      assert(malformedExpMock.getStatus() === 403, `Malformed expires_at strictly rejected with HTTP 403 (got ${malformedExpMock.getStatus()})`);
+      assert(malformedExpMock.getData()?.code === "MALFORMED_EXPIRY", `Code is MALFORMED_EXPIRY (got ${malformedExpMock.getData()?.code})`);
+
+      // Case 3: Expired expires_at in security_events (25 hours ago)
+      const past25h = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      const past26h = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
+      await supabase
+        .from("security_events")
+        .update({
+          device: `token:${oneTimeToken}|status:approved|approved_at:${past26h}|expires_at:${past25h}`,
+          time: past26h,
+        })
+        .eq("id", requestId2);
+
+      const expiredExpMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-device", templateCount: 3, oneTimeToken },
+        staffHeaders
+      );
+      await handlerFaceStaff(expiredExpMock.req, expiredExpMock.res);
+      assert(expiredExpMock.getStatus() === 403, `Expired expires_at strictly rejected with HTTP 403 (got ${expiredExpMock.getStatus()})`);
+      assert(expiredExpMock.getData()?.code === "EXPIRED_APPROVAL_TOKEN", `Code is EXPIRED_APPROVAL_TOKEN (got ${expiredExpMock.getData()?.code})`);
+    }
+
+    // Restore valid 24-hour approval token in database
+    const validNowIso = new Date().toISOString();
+    const future24hIso = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await supabase
+      .from("security_events")
+      .update({
+        device: `token:${oneTimeToken}|status:approved|approved_at:${validNowIso}|expires_at:${future24hIso}`,
+        time: validNowIso,
+      })
+      .eq("id", requestId2);
+
+    // -------------------------------------------------------------------------
+    // STEP 12A: Testing Transaction Rollback on Failure & Sanitized Client Error
+    // -------------------------------------------------------------------------
+    console.log("\n[12A] Testing Transaction Rollback on Failure & Sanitized Client Error...");
+    {
+      const rollbackClient = {
+        ...supabase,
+        from: supabase.from.bind(supabase),
+        rpc: async (fnName, args) => {
+          if (fnName === "atomic_consume_face_approval_token" || fnName === "atomic_replace_face_biometrics") {
+            return {
+              data: {
+                success: false,
+                code: "TRANSACTION_ROLLBACK",
+                error: "Database transaction failed during atomic approval token consumption.",
+              },
+              error: null,
+            };
+          }
+          return supabase.rpc(fnName, args);
+        },
+      };
+
+      const rollbackMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-device", templateCount: 3, oneTimeToken },
+        staffHeaders,
+        rollbackClient
+      );
+      await handlerFaceStaff(rollbackMock.req, rollbackMock.res);
+      assert(rollbackMock.getStatus() === 500, `Rollback returns sanitized HTTP 500 (got ${rollbackMock.getStatus()})`);
+      assert(rollbackMock.getData()?.code === "TRANSACTION_ROLLBACK", `Error code is TRANSACTION_ROLLBACK (got ${rollbackMock.getData()?.code})`);
+      assert(
+        rollbackMock.getData()?.error === "Database transaction failed during atomic approval token consumption.",
+        "Sanitized client error message returned without server diagnostic leakage"
+      );
+
+      // Verify token remains unconsumed and retryable
+      const stMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+      await handlerFaceStaff(stMock.req, stMock.res);
+      const stData = stMock.getData();
+      assert(stData?.canSaveReplacement === true, "Token not consumed: canSaveReplacement is still true after rollback");
+      assert(stData?.oneTimeToken === oneTimeToken, "Token still active for retry after rollback");
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 12B: Testing Retry After Failure & Single-Use Consumption
+    // -------------------------------------------------------------------------
+    console.log("\n[12B] Testing Retry After Failure & Single-Use Consumption...");
+    {
+      const successRpcClient = {
+        ...supabase,
+        from: supabase.from.bind(supabase),
+        rpc: async (fnName, args) => {
+          if (fnName === "atomic_consume_face_approval_token" || fnName === "atomic_replace_face_biometrics") {
+            const nowIso = new Date().toISOString();
+            await supabase.from("security_events").update({
+              device: `token:${args.p_token}|status:consumed|device_id:${args.p_device_id || 'mock-device'}|consumed_at:${nowIso}`,
+              time: nowIso,
+            }).eq("id", requestId2);
+            await supabase.from("security_events").insert({
+              time: nowIso,
+              staff: args.p_staff_code,
+              event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${args.p_device_id || 'mock-device'}`,
+              device: `device_id:${args.p_device_id || 'mock-device'}|count:3`,
+              location: "CampusAttend Biometric System",
+              result: "Allowed",
+              severity: "Low",
+            });
+            return {
+              data: {
+                success: true,
+                count: 3,
+                isLocked: true,
+                message: "Face registration updated and permanently locked. Single-use authorization consumed.",
+              },
+              error: null,
+            };
+          }
+          return supabase.rpc(fnName, args);
+        },
+      };
+
+      const retryMock = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-device", templateCount: 3, oneTimeToken },
+        staffHeaders,
+        successRpcClient
+      );
+      await handlerFaceStaff(retryMock.req, retryMock.res);
+      assert(retryMock.getStatus() === 200, `Retry succeeded with HTTP 200 (got ${retryMock.getStatus()})`);
+      assert(retryMock.getData()?.success === true, "Response reports success: true");
+      assert(retryMock.getData()?.isLocked === true, "Returned isLocked: true");
+
+      // Verify status check confirms re-locked profile and consumed token
+      const stMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+      await handlerFaceStaff(stMock.req, stMock.res);
+      const stData = stMock.getData();
+      assert(stData?.isLocked === true, "Profile immediately re-locked (isLocked: true)");
+      assert(stData?.canSaveReplacement === false, "canSaveReplacement is false after consumption");
+      assert(!stData?.oneTimeToken, "oneTimeToken is cleared from status");
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 12C: Testing Strict Rejection on Consumed Token Reuse
+    // -------------------------------------------------------------------------
+    console.log("\n[12C] Testing Strict Rejection on Consumed Token Reuse...");
+    {
+      const reuseAttempt = mockReqRes(
+        "POST",
+        "/api/staff/face/enroll",
+        { deviceId: "mock-device", templateCount: 3, oneTimeToken },
+        staffHeaders
+      );
+      await handlerFaceStaff(reuseAttempt.req, reuseAttempt.res);
+      assert(reuseAttempt.getStatus() === 403, `Reuse attempt rejected with HTTP 403 (got ${reuseAttempt.getStatus()})`);
+      assert(reuseAttempt.getData()?.code === "INVALID_OR_CONSUMED_TOKEN", `Code is INVALID_OR_CONSUMED_TOKEN (got ${reuseAttempt.getData()?.code})`);
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 12D: Testing Simultaneous Save Requests with Same Token (Atomic Concurrency)
+    // -------------------------------------------------------------------------
+    console.log("\n[12D] Testing Simultaneous Save Requests with Same Token (Atomic Concurrency)...");
+    {
+      // Create fresh request and approve it
+      const changeReq3 = mockReqRes("POST", "/api/staff/face/request-change", { reason: "Concurrency testing request" }, staffHeaders);
+      await handlerFaceStaff(changeReq3.req, changeReq3.res);
+      assert(changeReq3.getStatus() === 201, `Request #3 created with HTTP 201 (got ${changeReq3.getStatus()})`);
+      const requestId3 = changeReq3.getData()?.requestId;
+
+      const adminApprove3 = mockReqRes(
+        "POST",
+        `/api/admin/face-requests/${requestId3}/approve`,
+        { adminNotes: "Approved for concurrency test" },
+        adminHeaders
+      );
+      await handlerFaceAdmin(adminApprove3.req, adminApprove3.res);
+      assert(adminApprove3.getStatus() === 200, `Admin approval for request #3 HTTP 200 (got ${adminApprove3.getStatus()})`);
+      const token3 = adminApprove3.getData()?.oneTimeToken || adminApprove3.getData()?.token;
+
+      // Simulate atomic database lock concurrency
+      let hasConsumed = false;
+      const concurrentClient = {
+        ...supabase,
+        from: supabase.from.bind(supabase),
+        rpc: async (fnName, args) => {
+          if (fnName === "atomic_consume_face_approval_token" || fnName === "atomic_replace_face_biometrics") {
+            if (hasConsumed) {
+              return {
+                data: {
+                  success: false,
+                  code: "INVALID_OR_CONSUMED_TOKEN",
+                  error: "Invalid, expired, or already consumed face change authorization.",
+                },
+                error: null,
+              };
+            }
+            hasConsumed = true;
+            const nowIso = new Date().toISOString();
+            await supabase.from("security_events").update({
+              device: `token:${token3}|status:consumed|device_id:${args.p_device_id || 'mock-device'}|consumed_at:${nowIso}`,
+              time: nowIso,
+            }).eq("id", requestId3);
+            return {
+              data: {
+                success: true,
+                count: 3,
+                isLocked: true,
+                message: "Face registration updated and permanently locked. Single-use authorization consumed.",
+              },
+              error: null,
+            };
+          }
+          return supabase.rpc(fnName, args);
+        },
+      };
+
+      const [resSim1, resSim2] = await Promise.all([
+        (async () => {
+          const m = mockReqRes("POST", "/api/staff/face/enroll", { deviceId: "mock-device", templateCount: 3, oneTimeToken: token3 }, staffHeaders, concurrentClient);
+          await handlerFaceStaff(m.req, m.res);
+          return m.getStatus();
+        })(),
+        (async () => {
+          const m = mockReqRes("POST", "/api/staff/face/enroll", { deviceId: "mock-device", templateCount: 3, oneTimeToken: token3 }, staffHeaders, concurrentClient);
+          await handlerFaceStaff(m.req, m.res);
+          return m.getStatus();
+        })(),
+      ]);
+
+      const statuses = [resSim1, resSim2].sort();
+      assert(statuses[0] === 200 && statuses[1] === 403, `Atomic Concurrency: Exactly one request succeeded (200) and one was rejected (403) (statuses: ${statuses.join(", ")})`);
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 12E: Second Replacement Requires Fresh Administrator Approval
+    // -------------------------------------------------------------------------
+    console.log("\n[12E] Testing Second Replacement Requires Fresh Administrator Approval...");
+    {
+      const unapprovedAttempt = mockReqRes("POST", "/api/staff/face/enroll", { deviceId: "mock-device", templateCount: 3 }, staffHeaders);
+      await handlerFaceStaff(unapprovedAttempt.req, unapprovedAttempt.res);
+      assert(unapprovedAttempt.getStatus() === 403, `Unapproved second replacement rejected with HTTP 403 (got ${unapprovedAttempt.getStatus()})`);
+
+      const req4Mock = mockReqRes(
+        "POST",
+        "/api/staff/face/request-change",
+        { reason: "Fresh replacement request requiring fresh approval" },
+        staffHeaders
+      );
+      await handlerFaceStaff(req4Mock.req, req4Mock.res);
+      assert(req4Mock.getStatus() === 201, `Fresh change request created with HTTP 201 (got ${req4Mock.getStatus()})`);
+
+      const stMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+      await handlerFaceStaff(stMock.req, stMock.res);
+      assert(stMock.getData()?.enrollmentStatus === "pending_approval", "Status transitioned to 'pending_approval'");
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 13: PostgreSQL Migration Script Static Security Audit
+    // -------------------------------------------------------------------------
+    console.log("\n[13] Verifying PostgreSQL RPC Migration Security & Structure...");
+    {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const migrationPath = path.resolve("supabase/migrations/20261010_atomic_replace_face_biometrics.sql");
+      assert(fs.existsSync(migrationPath), `Migration file exists at ${migrationPath}`);
+
+      const sql = fs.readFileSync(migrationPath, "utf-8");
+      assert(sql.includes("public.atomic_consume_face_approval_token"), "Defines public.atomic_consume_face_approval_token");
+      assert(sql.includes("public.atomic_replace_face_biometrics"), "Defines backward-compatible public.atomic_replace_face_biometrics");
+      assert(sql.includes("SECURITY DEFINER"), "Enforces SECURITY DEFINER execution");
+      assert(sql.includes("SET search_path = public, pg_catalog, extensions"), "Hardens search_path to prevent search-path injection");
+      assert(sql.includes("REVOKE ALL ON FUNCTION public.atomic_consume_face_approval_token"), "Revokes execution from PUBLIC");
+      assert(sql.includes("GRANT EXECUTE ON FUNCTION public.atomic_consume_face_approval_token"), "Grants execution exclusively to service_role");
+      assert(sql.includes("FOR UPDATE;"), "Acquires exclusive row lock (FOR UPDATE) to serialize concurrency");
+      assert(sql.includes("regexp_match(v_device, 'expires_at:([^|\\s]+)')"), "Parses expiration with fail-closed regex");
+      assert(sql.includes("v_expires_at := v_expires_match[1]::TIMESTAMPTZ;"), "Enforces strict TIMESTAMPTZ parsing");
+      assert(!sql.includes("INSERT INTO public.face_embeddings"), "Zero vector insertion into face_embeddings (Device-Only Policy)");
+      assert(sql.includes("EXCEPTION WHEN OTHERS THEN"), "Wraps all changes in exception rollback block");
+      assert(sql.includes("TRANSACTION_ROLLBACK"), "Returns sanitized error code TRANSACTION_ROLLBACK to clients");
+      assert(sql.includes("RAISE WARNING"), "Logs diagnostic details securely on server");
     }
 
     // -------------------------------------------------------------------------

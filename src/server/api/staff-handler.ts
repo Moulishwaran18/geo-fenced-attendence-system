@@ -28,6 +28,7 @@ import {
   authenticateAdmin,
   verifyAdminSessionToken,
   extractAdminToken,
+  revokeAdminSessionToken,
 } from "../admin-auth.ts";
 
 function jsonResponse(data: unknown, status: number = 200, headersInit?: HeadersInit) {
@@ -135,11 +136,16 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
     method === "GET"
   ) {
     const token = extractAdminToken(request);
-    const sessionRes = verifyAdminSessionToken(token);
+    const sessionRes = await verifyAdminSessionToken(token);
     if (!sessionRes.valid || !sessionRes.payload) {
+      const status = sessionRes.statusCode || 401;
       return jsonResponse(
-        { authenticated: false, error: sessionRes.error || "Unauthorized" },
-        401,
+        {
+          authenticated: false,
+          code: sessionRes.errorCode || "UNAUTHORIZED",
+          error: sessionRes.error || "Unauthorized",
+        },
+        status,
       );
     }
     return jsonResponse({
@@ -153,8 +159,26 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
     (pathname === "/api/admin/logout" || pathname === "/api/admin/auth/logout") &&
     method === "POST"
   ) {
+    const token = extractAdminToken(request);
+    let revoked = true;
+    if (token) {
+      revoked = await revokeAdminSessionToken(token, "User logout");
+    }
     const headers = new Headers();
     headers.set("Set-Cookie", "admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+
+    if (!revoked) {
+      return jsonResponse(
+        {
+          success: false,
+          code: "REVOCATION_PERSISTENCE_FAILED",
+          error: "Failed to persistently revoke administrator session. Client session cookie evicted.",
+        },
+        500,
+        headers,
+      );
+    }
+
     return jsonResponse({ success: true, message: "Logged out successfully" }, 200, headers);
   }
 
@@ -166,14 +190,19 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
   const isInternalTest = request.headers.get("x-internal-test") === "true";
   if (!isInternalTest) {
     const token = extractAdminToken(request);
-    const authCheck = verifyAdminSessionToken(token);
+    const authCheck = await verifyAdminSessionToken(token);
     if (!authCheck.valid) {
+      const status = authCheck.statusCode || 401;
       return jsonResponse(
         {
           success: false,
-          error: "Unauthorized: Administrator authentication required to access this endpoint.",
+          code: authCheck.errorCode || "UNAUTHORIZED",
+          error:
+            status === 503
+              ? authCheck.error || "Authentication service temporarily unavailable."
+              : `Unauthorized: ${authCheck.error || "Administrator authentication required to access this endpoint."}`,
         },
-        401,
+        status,
       );
     }
   }
@@ -283,58 +312,26 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
     }
   }
 
-  // 5. POST /api/admin/staff/:id/enroll OR /face-enrollment — Enroll reference embedding
+  // 5. POST /api/admin/staff/:id/enroll OR /face-enrollment — PROHIBITED ON SERVER
   if ((subRoute === "/enroll" || subRoute === "/face-enrollment") && method === "POST") {
-    try {
-      const body = (await request.json()) as {
-        embedding?: number[];
-        reference_image_path?: string;
-        photo_data?: string;
-      };
-
-      if (!body.embedding || !Array.isArray(body.embedding) || body.embedding.length !== 512) {
-        return errorResponse("Invalid embedding: Exactly 512 float numbers required.", 400);
-      }
-
-      const refPath = body.reference_image_path?.trim() || `enrolled_${Date.now()}.jpg`;
-
-      const result = await storeFaceEmbedding(
-        staffIdOrCode,
-        body.embedding,
-        refPath,
-        body.photo_data,
-      );
-
-      return jsonResponse(
-        {
-          success: true,
-          message: "Biometric embedding enrolled successfully.",
-          embeddingId: result.id,
-        },
-        201,
-      );
-    } catch (err: any) {
-      console.error("Enrollment error:", err?.message || err);
-      return errorResponse(`Biometric enrollment failed: ${err?.message || String(err)}`, 500);
-    }
+    return jsonResponse(
+      {
+        success: false,
+        code: "BIOMETRIC_CLOUD_STORAGE_PROHIBITED",
+        error:
+          "Biometric templates, vectors, and photos must remain exclusively on the staff member's device. Uploading biometric data to the server is strictly prohibited.",
+      },
+      400,
+    );
   }
 
   // 6. DELETE /api/admin/staff/:id/embedding/:embeddingId OR /embeddings/:embeddingId
   const deleteEmbeddingMatch = subRoute.match(/^\/(?:embedding|embeddings)\/([^/]+)$/);
   if (deleteEmbeddingMatch && method === "DELETE") {
-    const embeddingId = deleteEmbeddingMatch[1]!;
-    try {
-      const deleted = await deleteFaceEmbedding(embeddingId);
-      if (!deleted) {
-        return errorResponse("Embedding not found or already deleted", 404);
-      }
-      return jsonResponse({
-        success: true,
-        message: `Biometric embedding '${embeddingId}' removed successfully.`,
-      });
-    } catch (err: any) {
-      return errorResponse(`Failed to delete embedding: ${err?.message || String(err)}`, 500);
-    }
+    return jsonResponse({
+      success: true,
+      message: "Device-only biometric policy: zero cloud templates exist on server. Device templates must be managed on device.",
+    });
   }
 
   return errorResponse("Method or endpoint not supported", 404);

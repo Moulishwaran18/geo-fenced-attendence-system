@@ -20,6 +20,7 @@ export interface NavItem {
   label: string;
   to: string;
   icon: LucideIcon;
+  badge?: string | number;
 }
 
 export const staffNav: NavItem[] = [
@@ -37,7 +38,7 @@ export const adminNav: NavItem[] = [
   { label: "Attendance", to: "/admin/attendance", icon: ClipboardList },
   { label: "Campus Map", to: "/admin/campus-map", icon: Map },
   { label: "Face Enrollment", to: "/admin/face-enrollment", icon: ScanFace },
-  { label: "Face Requests", to: "/admin/face-requests", icon: UserCheck },
+  { label: "Face Change Approvals", to: "/admin/face-requests", icon: UserCheck },
   { label: "Devices", to: "/admin/devices", icon: Smartphone },
   { label: "Security", to: "/admin/security", icon: Shield },
   { label: "Audit Logs", to: "/admin/audit-logs", icon: Activity },

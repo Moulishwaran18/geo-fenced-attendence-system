@@ -22,6 +22,7 @@
     "test:admin": "node --env-file=.env scripts/test-admin-auth.js",
     "test:staff-auth": "node --env-file=.env scripts/test-staff-self-registration.js",
     "test:staff-face-lock": "node --env-file=.env scripts/test-staff-face-lock-workflow.js",
+    "test:staff-face-local": "node scripts/test-staff-face-local-enrollment.js",
     "test:supabase": "node --env-file=.env scripts/test-supabase-connection.js"
   },
   "dependencies": {

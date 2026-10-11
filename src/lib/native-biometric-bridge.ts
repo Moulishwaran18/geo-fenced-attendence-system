@@ -16,6 +16,8 @@ export interface NativeEnrollmentStatus {
   isDeviceBound?: boolean | undefined;
   hardwareKeystore?: boolean | undefined;
   enrolledAt?: number | undefined;
+  hasPendingEnrollment?: boolean | undefined;
+  pendingCount?: number | undefined;
 }
 
 export interface NativeEnrollResult {
@@ -96,6 +98,8 @@ export async function getNativeEnrollmentStatus(staffId: string): Promise<Native
       isDeviceBound: Boolean(parsed.isDeviceBound),
       hardwareKeystore: Boolean(parsed.hardwareKeystore),
       enrolledAt: parsed.enrolledAt ? Number(parsed.enrolledAt) : undefined,
+      hasPendingEnrollment: Boolean(parsed.hasPendingEnrollment),
+      pendingCount: Number(parsed.pendingCount || 0),
     };
   } catch (err) {
     console.warn("[NativeBiometricBridge] getEnrollmentStatus error:", err);
@@ -105,6 +109,179 @@ export async function getNativeEnrollmentStatus(staffId: string): Promise<Native
       count: 0,
     };
   }
+}
+
+/**
+ * Stage 1 to 5 face embeddings encrypted with Android Keystore AES-256-GCM in app-private storage.
+ * Biometrics are never sent to the server.
+ */
+export async function stageNativePendingEnrollment(
+  staffId: string,
+  embeddings: Array<number[] | Float32Array>,
+  labels?: string[],
+): Promise<NativeEnrollResult> {
+  const bridge = getBridge();
+  const deviceId = getNativeDeviceId() || "android-keystore";
+  const samplesArray = embeddings.map((emb) => Array.from(emb));
+
+  if (bridge && typeof bridge.stagePendingEnrollment === "function") {
+    try {
+      const raw = bridge.stagePendingEnrollment(
+        staffId,
+        deviceId,
+        JSON.stringify(samplesArray),
+        labels ? JSON.stringify(labels) : "[]",
+      );
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return {
+        success: Boolean(parsed.success),
+        staffId: parsed.staffId,
+        deviceId: parsed.deviceId,
+        count: parsed.count,
+        error: parsed.error,
+        message: parsed.message,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: "STAGE_FAILED",
+        message: err?.message || "Failed to stage pending templates in Android Keystore.",
+      };
+    }
+  }
+
+  // Web fallback simulation
+  try {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      window.sessionStorage.setItem(
+        `pending_face_${staffId.trim().toUpperCase()}`,
+        JSON.stringify({
+          staffId: staffId.trim().toUpperCase(),
+          deviceId,
+          count: embeddings.length,
+          stagedAt: Date.now(),
+        })
+      );
+    }
+    return {
+      success: true,
+      staffId: staffId.trim().toUpperCase(),
+      deviceId,
+      count: embeddings.length,
+      message: "Face templates staged locally.",
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: "FALLBACK_STAGE_FAILED",
+      message: err?.message || "Failed to stage templates.",
+    };
+  }
+}
+
+/**
+ * Check if pending face templates are staged locally on this device.
+ */
+export async function getNativePendingEnrollmentStatus(
+  staffId: string
+): Promise<{ hasPending: boolean; count: number; deviceId?: string | undefined; stagedAt?: number | undefined }> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.getPendingEnrollmentStatus === "function") {
+    try {
+      const raw = bridge.getPendingEnrollmentStatus(staffId);
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return {
+        hasPending: Boolean(parsed.hasPending),
+        count: Number(parsed.count || 0),
+        deviceId: parsed.deviceId,
+        stagedAt: parsed.stagedAt ? Number(parsed.stagedAt) : undefined,
+      };
+    } catch {
+      return { hasPending: false, count: 0 };
+    }
+  }
+
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    try {
+      const item = window.sessionStorage.getItem(`pending_face_${staffId.trim().toUpperCase()}`);
+      if (item) {
+        const parsed = JSON.parse(item);
+        return {
+          hasPending: Boolean(parsed.count > 0),
+          count: Number(parsed.count || 0),
+          deviceId: parsed.deviceId,
+          stagedAt: parsed.stagedAt,
+        };
+      }
+    } catch {}
+  }
+
+  return { hasPending: false, count: 0 };
+}
+
+/**
+ * Activate staged pending templates on this device after administrator approval.
+ */
+export async function activateNativePendingEnrollment(
+  staffId: string,
+  oneTimeToken: string,
+): Promise<NativeEnrollResult> {
+  const bridge = getBridge();
+  const deviceId = getNativeDeviceId() || "android-keystore";
+
+  if (bridge && typeof bridge.activatePendingEnrollment === "function") {
+    try {
+      const raw = bridge.activatePendingEnrollment(staffId, deviceId, oneTimeToken);
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return {
+        success: Boolean(parsed.success),
+        staffId: parsed.staffId,
+        deviceId: parsed.deviceId,
+        count: parsed.count,
+        error: parsed.error,
+        message: parsed.message,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: "ACTIVATION_FAILED",
+        message: err?.message || "Failed to activate pending templates in Android Keystore.",
+      };
+    }
+  }
+
+  // Web fallback simulation
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    window.sessionStorage.removeItem(`pending_face_${staffId.trim().toUpperCase()}`);
+  }
+  return {
+    success: true,
+    staffId: staffId.trim().toUpperCase(),
+    deviceId,
+    count: 1,
+    message: "Pending enrollment activated.",
+  };
+}
+
+/**
+ * Clear staged pending enrollment file.
+ */
+export async function clearNativePendingEnrollment(staffId: string): Promise<boolean> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.clearPendingEnrollment === "function") {
+    try {
+      const raw = bridge.clearPendingEnrollment(staffId);
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return Boolean(parsed.success);
+    } catch {
+      return false;
+    }
+  }
+
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    window.sessionStorage.removeItem(`pending_face_${staffId.trim().toUpperCase()}`);
+  }
+  return true;
 }
 
 /**
