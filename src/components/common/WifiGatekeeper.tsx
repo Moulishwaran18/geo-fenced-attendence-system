@@ -18,7 +18,15 @@ interface WifiGatekeeperProps {
 }
 
 export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
-  const { status, isSonaWifi, isLoading, isChecking, checkConnection } = useWifiStatus(5000);
+  const {
+    status,
+    isSonaWifi,
+    isLoading,
+    isChecking,
+    checkConnection,
+    requestPermissions,
+    openLocationSettings,
+  } = useWifiStatus(5000);
   const [justChecked, setJustChecked] = useState(false);
 
   const handleManualCheck = async () => {
@@ -139,6 +147,14 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                     <span className="font-mono text-destructive font-semibold">{status.errorCode}</span>
                   </div>
                 )}
+                {status?.apiLevel && (
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>Device Diagnostics:</span>
+                    <span className="font-mono">
+                      API {status.apiLevel} · Fine: {status.hasFineLocation ? "✓" : "✗"} · Nearby: {status.hasNearbyWifi ? "✓" : "✗"} · Source: {status.ssidSource || "NONE"}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-start justify-between pt-1 border-t border-border/60">
                   <span className="text-muted-foreground shrink-0 mr-2">Diagnostics:</span>
                   <span className="flex items-start gap-1.5 font-medium text-destructive text-right">
@@ -171,6 +187,30 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
 
             {/* Actions */}
             <div className="mt-6 flex flex-col gap-2.5">
+              {(status?.errorCode === "PERMISSION_DENIED" || status?.errorCode === "SSID_UNAVAILABLE") && (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="w-full font-medium border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={requestPermissions}
+                >
+                  <ShieldAlert className="mr-2 size-4.5" />
+                  Grant Wi-Fi Permissions
+                </Button>
+              )}
+
+              {status?.errorCode === "LOCATION_SERVICES_DISABLED" && (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="w-full font-medium border-amber-500/40 text-amber-500 hover:bg-amber-500/10"
+                  onClick={openLocationSettings}
+                >
+                  <AlertTriangle className="mr-2 size-4.5" />
+                  Turn On Location Services
+                </Button>
+              )}
+
               <Button
                 size="lg"
                 className="w-full font-medium"

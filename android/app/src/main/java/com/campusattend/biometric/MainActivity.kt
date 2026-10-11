@@ -64,13 +64,20 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var locationService: NativeLocationService
     private var webView: WebView? = null
+    private var wifiBridge: AndroidWifiBridge? = null
 
     private val defaultServerUrl = "https://geo-fenced-attendence-system.vercel.app/mark-attendance"
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        // Handle permissions result
+        wifiBridge?.refreshNetworkCallback()
+        runOnUiThread {
+            webView?.evaluateJavascript(
+                "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
+                null
+            )
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -277,8 +284,10 @@ class MainActivity : ComponentActivity() {
                                             AndroidLocationBridge(ctx, locationService, this),
                                             "AndroidLocationBridge"
                                         )
+                                        val bridge = AndroidWifiBridge(ctx, this)
+                                        wifiBridge = bridge
                                         addJavascriptInterface(
-                                            AndroidWifiBridge(ctx, this),
+                                            bridge,
                                             "AndroidWifiBridge"
                                         )
                                         addJavascriptInterface(
@@ -300,6 +309,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        wifiBridge?.refreshNetworkCallback()
+        runOnUiThread {
+            webView?.evaluateJavascript(
+                "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
+                null
+            )
+        }
+    }
+
     fun requestWifiPermissionsFromBridge() {
         runOnUiThread {
             val permissions = mutableListOf(
@@ -317,11 +337,25 @@ class MainActivity : ComponentActivity() {
             if (needed.isNotEmpty()) {
                 requestPermissionLauncher.launch(needed.toTypedArray())
             } else {
-                Toast.makeText(
-                    this,
-                    "Wi-Fi permissions granted. Please ensure Location services are turned ON.",
-                    Toast.LENGTH_SHORT
-                ).show()
+                val locationManager = getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+                val isLocEnabled = locationManager?.let { androidx.core.location.LocationManagerCompat.isLocationEnabled(it) } ?: true
+                if (!isLocEnabled) {
+                    Toast.makeText(
+                        this,
+                        "Please turn ON device Location in Android settings to allow reading Wi-Fi name.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    try {
+                        startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    } catch (_: Exception) {}
+                } else {
+                    wifiBridge?.refreshNetworkCallback()
+                    Toast.makeText(
+                        this,
+                        "All Wi-Fi permissions are granted.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
     }

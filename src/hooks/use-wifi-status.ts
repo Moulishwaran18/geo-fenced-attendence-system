@@ -4,6 +4,7 @@ import {
   getNativeConnectedWifi,
   isNativeWifiBridgeAvailable,
   requestNativeWifiPermissions,
+  openNativeLocationSettings,
   waitForNativeWifiBridge,
 } from "@/lib/native-wifi-bridge";
 
@@ -16,6 +17,7 @@ export interface UseWifiStatusReturn {
   isNativeBridge: boolean;
   checkConnection: () => Promise<WifiStatus | null>;
   requestPermissions: () => boolean;
+  openLocationSettings: () => boolean;
 }
 
 export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
@@ -43,10 +45,30 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
       // Genuine source of real connected Wi-Fi SSID from Android OS
       // ==============================================================
       if (nativeAvailable) {
-        const nativeWifi = getNativeConnectedWifi();
+        let nativeWifi = getNativeConnectedWifi();
+
+        // Warmup retry: if connected to Wi-Fi with permissions, wait briefly for Android NetworkCallback to deliver SSID
+        if (
+          !nativeWifi.ssid &&
+          nativeWifi.connected &&
+          nativeWifi.transport === "wifi" &&
+          nativeWifi.permissionGranted !== false &&
+          nativeWifi.locationEnabled !== false
+        ) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            const retry = getNativeConnectedWifi();
+            if (retry.ssid) {
+              nativeWifi = retry;
+              break;
+            }
+          }
+        }
 
         // 1A. Permission Denied
         if (nativeWifi.permissionGranted === false) {
+          // Proactively prompt user via native Activity permission request
+          requestNativeWifiPermissions();
           const permDeniedStatus: WifiStatus = {
             isSonaWifi: false,
             authorized: false,
@@ -58,6 +80,10 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             stage: "UNABLE_TO_VERIFY",
             errorCode: "PERMISSION_DENIED",
             permissionDenied: true,
+            apiLevel: nativeWifi.apiLevel,
+            hasFineLocation: nativeWifi.hasFineLocation,
+            hasNearbyWifi: nativeWifi.hasNearbyWifi,
+            ssidSource: nativeWifi.ssidSource,
             timestamp: now,
             isNativeBridge: true,
           };
@@ -163,6 +189,10 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
               permissionGranted: nativeWifi.permissionGranted,
               locationEnabled: nativeWifi.locationEnabled,
               reason: nativeWifi.reason,
+              apiLevel: nativeWifi.apiLevel,
+              hasFineLocation: nativeWifi.hasFineLocation,
+              hasNearbyWifi: nativeWifi.hasNearbyWifi,
+              ssidSource: nativeWifi.ssidSource,
             }),
             cache: "no-store",
           });
@@ -185,6 +215,10 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
               networkSummary: nativeWifi.ssid || "Unauthorized Network",
               stage: "FINGERPRINT_CHECK_FAILED",
               errorCode: errData?.errorCode || `HTTP_${res.status}`,
+              apiLevel: nativeWifi.apiLevel,
+              hasFineLocation: nativeWifi.hasFineLocation,
+              hasNearbyWifi: nativeWifi.hasNearbyWifi,
+              ssidSource: nativeWifi.ssidSource,
               timestamp: now,
               isNativeBridge: true,
             };
@@ -215,6 +249,10 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             timestamp: clientVerification.timestamp,
             ssid: nativeWifi.ssid || undefined,
             errorCode: clientVerification.errorCode,
+            apiLevel: nativeWifi.apiLevel,
+            hasFineLocation: nativeWifi.hasFineLocation,
+            hasNearbyWifi: nativeWifi.hasNearbyWifi,
+            ssidSource: nativeWifi.ssidSource,
             isNativeBridge: true,
           };
           setStatus(resolvedStatus);
@@ -341,12 +379,25 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
       void fetchWifiStatus(false);
     };
 
+    const handleNativeUpdate = () => {
+      void fetchWifiStatus(true);
+    };
+
+    if (typeof window !== "undefined") {
+      (window as any).__onAndroidPermissionsChanged = handleNativeUpdate;
+      (window as any).__onAndroidResume = handleNativeUpdate;
+    }
+
     window.addEventListener("focus", handleFocusOrOnline);
     window.addEventListener("online", handleFocusOrOnline);
     window.addEventListener("offline", handleFocusOrOnline);
 
     return () => {
       clearInterval(interval);
+      if (typeof window !== "undefined") {
+        delete (window as any).__onAndroidPermissionsChanged;
+        delete (window as any).__onAndroidResume;
+      }
       window.removeEventListener("focus", handleFocusOrOnline);
       window.removeEventListener("online", handleFocusOrOnline);
       window.removeEventListener("offline", handleFocusOrOnline);
@@ -362,5 +413,6 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
     isNativeBridge: hasNativeBridge,
     checkConnection: () => fetchWifiStatus(true),
     requestPermissions: requestNativeWifiPermissions,
+    openLocationSettings: openNativeLocationSettings,
   };
 }

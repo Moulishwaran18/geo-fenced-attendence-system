@@ -115,6 +115,8 @@ function MarkAttendancePage() {
     isChecking: isWifiChecking,
     lastChecked: wifiLastChecked,
     checkConnection: checkWifiConnection,
+    requestPermissions: requestWifiPermissions,
+    openLocationSettings: openWifiLocationSettings,
   } = useWifiStatus(5000);
 
   // Determine real or mock location state
@@ -415,6 +417,11 @@ function MarkAttendancePage() {
               {displayVerification}
             </span>
           </div>
+          {wifiStatus?.apiLevel && (
+            <div className="pt-0.5 text-[10px] text-muted-foreground/80 leading-tight truncate">
+              Device: API {wifiStatus.apiLevel} · Fine: {wifiStatus.hasFineLocation ? "✓" : "✗"} · Nearby: {wifiStatus.hasNearbyWifi ? "✓" : "✗"} · Source: {wifiStatus.ssidSource || "NONE"}
+            </div>
+          )}
           {wifiCardStatus !== "VERIFIED" && wifiStatus?.reason && (
             <div className="pt-0.5 text-[10px] text-destructive leading-tight truncate">
               {wifiStatus.reason}
@@ -821,6 +828,38 @@ function MarkAttendancePage() {
                 wifiStatus?.reason
                   ? wifiStatus.reason
                   : "Device is not connected to an authorized campus Wi-Fi network. Connect to a Wi-Fi network containing 'sona' (e.g. SONA-WIFI) to satisfy Factor 1. (GPS & Face diagnostics remain accessible below)."
+              }
+              action={
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  {(wifiStatus?.errorCode === "PERMISSION_DENIED" || wifiStatus?.errorCode === "SSID_UNAVAILABLE") && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => requestWifiPermissions()}
+                      className="h-8 gap-1.5"
+                    >
+                      <ShieldAlert className="size-3.5" /> Grant Wi-Fi Permissions
+                    </Button>
+                  )}
+                  {wifiStatus?.errorCode === "LOCATION_SERVICES_DISABLED" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openWifiLocationSettings()}
+                      className="h-8 gap-1.5"
+                    >
+                      <AlertTriangle className="size-3.5" /> Turn On Location Services
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={() => void checkWifiConnection()}
+                    disabled={isWifiChecking}
+                    className="h-8 gap-1.5"
+                  >
+                    <RefreshCw className={`size-3.5 ${isWifiChecking ? "animate-spin" : ""}`} /> Check Connection Again
+                  </Button>
+                </div>
               }
             />
           ) : !isUsingMockScenario && geofence.status === "acquiring" ? (

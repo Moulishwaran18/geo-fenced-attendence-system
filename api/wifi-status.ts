@@ -191,6 +191,10 @@ export default async function handler(req: any, res?: any) {
   if (body && body.isNativeBridge === true) {
     const transport = String(body.transport || "").toLowerCase();
     const isWifi = body.isWifi === true || transport === "wifi";
+    const apiLevel = typeof body.apiLevel === "number" ? body.apiLevel : undefined;
+    const hasFineLocation = typeof body.hasFineLocation === "boolean" ? body.hasFineLocation : undefined;
+    const hasNearbyWifi = typeof body.hasNearbyWifi === "boolean" ? body.hasNearbyWifi : undefined;
+    const ssidSource = typeof body.ssidSource === "string" ? body.ssidSource : undefined;
 
     // 1A. Permission Denied on Android
     if (body.permissionGranted === false || body.permissionDenied === true) {
@@ -207,6 +211,10 @@ export default async function handler(req: any, res?: any) {
         stage: "UNABLE_TO_VERIFY",
         timestamp,
         isNativeBridge: true,
+        apiLevel,
+        hasFineLocation,
+        hasNearbyWifi,
+        ssidSource,
       });
     }
 
@@ -225,6 +233,10 @@ export default async function handler(req: any, res?: any) {
         stage: "UNABLE_TO_VERIFY",
         timestamp,
         isNativeBridge: true,
+        apiLevel,
+        hasFineLocation,
+        hasNearbyWifi,
+        ssidSource,
       });
     }
 
@@ -301,6 +313,10 @@ export default async function handler(req: any, res?: any) {
         ssid: cleanSsid,
         networkAuthToken,
         isNativeBridge: true,
+        apiLevel,
+        hasFineLocation,
+        hasNearbyWifi,
+        ssidSource,
       };
       return sendJsonResponseWithCookie(res, 200, authorizedPayload, networkAuthToken);
     }
@@ -325,6 +341,10 @@ export default async function handler(req: any, res?: any) {
         stage: "UNABLE_TO_VERIFY",
         timestamp,
         isNativeBridge: true,
+        apiLevel,
+        hasFineLocation,
+        hasNearbyWifi,
+        ssidSource,
       });
     }
 
@@ -343,6 +363,10 @@ export default async function handler(req: any, res?: any) {
       timestamp,
       ssid: cleanSsid,
       isNativeBridge: true,
+      apiLevel,
+      hasFineLocation,
+      hasNearbyWifi,
+      ssidSource,
     });
   }
 

@@ -112,6 +112,10 @@ export interface WifiStatus {
   band?: string | undefined;
   permissionDenied?: boolean | undefined;
   locationDisabled?: boolean | undefined;
+  apiLevel?: number | undefined;
+  hasFineLocation?: boolean | undefined;
+  hasNearbyWifi?: boolean | undefined;
+  ssidSource?: string | undefined;
 }
 
 /**

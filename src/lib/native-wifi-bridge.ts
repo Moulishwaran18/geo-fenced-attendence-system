@@ -14,7 +14,11 @@ export interface NativeConnectedWifi {
   transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
   ssid: string | null;
   permissionGranted: boolean;
-  locationEnabled?: boolean;
+  locationEnabled?: boolean | undefined;
+  apiLevel?: number | undefined;
+  hasFineLocation?: boolean | undefined;
+  hasNearbyWifi?: boolean | undefined;
+  ssidSource?: string | undefined;
   reason:
     | "SUCCESS"
     | "CELLULAR_DATA"
@@ -108,6 +112,22 @@ export function requestNativeWifiPermissions(): boolean {
 }
 
 /**
+ * Prompts the native Android Activity to open system Location settings if disabled.
+ */
+export function openNativeLocationSettings(): boolean {
+  if (typeof window === "undefined") return false;
+  const bridge = (window as any).AndroidWifiBridge;
+  if (bridge && typeof bridge.openLocationSettings === "function") {
+    try {
+      return Boolean(bridge.openLocationSettings());
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Obtains the real connected Wi-Fi information from the native Android bridge.
  * If running in a standard web browser (Chrome on Android or Desktop),
  * reports NO_NATIVE_BRIDGE / SSID_UNAVAILABLE without fabricating values.
@@ -148,6 +168,10 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
           ssid: validSsid,
           permissionGranted: parsed.permissionGranted ?? true,
           locationEnabled: parsed.locationEnabled ?? true,
+          apiLevel: parsed.apiLevel ?? undefined,
+          hasFineLocation: parsed.hasFineLocation ?? undefined,
+          hasNearbyWifi: parsed.hasNearbyWifi ?? undefined,
+          ssidSource: parsed.ssidSource ?? undefined,
           reason: parsed.reason || (validSsid ? "SUCCESS" : "SSID_UNAVAILABLE"),
         };
       }
