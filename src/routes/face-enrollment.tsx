@@ -116,7 +116,9 @@ function StaffFaceEnrollmentPage() {
 
   // Neural network models state
   const [modelsReady, setModelsReady] = useState(areModelsLoaded() && isArcFaceLoaded());
-  const [modelProgress, setModelProgress] = useState(0);
+  const [modelsLoading, setModelsLoading] = useState(!areModelsLoaded() || !isArcFaceLoaded());
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelProgress, setModelProgress] = useState(areModelsLoaded() && isArcFaceLoaded() ? 100 : 0);
   const isModelsReady = modelsReady || (areModelsLoaded() && isArcFaceLoaded());
 
   // Enrollment samples state (1 to 5 samples)
@@ -155,6 +157,7 @@ function StaffFaceEnrollmentPage() {
   // Live Camera state
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraPermissionDenied, setCameraPermissionDenied] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -164,11 +167,45 @@ function StaffFaceEnrollmentPage() {
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [requestSubmitError, setRequestSubmitError] = useState<string | null>(null);
 
-  // Load ArcFace ONNX model and landmark detector
+  // Reusable on-device model loader with full error capture and progress reporting
+  const loadNeuralModels = useCallback(async (): Promise<boolean> => {
+    if (areModelsLoaded() && isArcFaceLoaded()) {
+      setModelsReady(true);
+      setModelsLoading(false);
+      setModelsError(null);
+      setModelProgress(100);
+      return true;
+    }
+
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      await Promise.all([loadModels(), initArcFaceSession()]);
+      setModelsReady(true);
+      setModelsLoading(false);
+      setModelsError(null);
+      setModelProgress(100);
+      return true;
+    } catch (err: any) {
+      console.warn("[FaceEnrollment] Failed to load on-device neural network models:", err);
+      const msg = err?.message || String(err);
+      setModelsError(msg);
+      setModelsLoading(false);
+      if (areModelsLoaded() && isArcFaceLoaded()) {
+        setModelsReady(true);
+        return true;
+      }
+      return false;
+    }
+  }, []);
+
+  // Load ArcFace ONNX model and landmark detector in background without blocking UI
   useEffect(() => {
     let mounted = true;
     if (areModelsLoaded() && isArcFaceLoaded()) {
       setModelsReady(true);
+      setModelsLoading(false);
+      setModelProgress(100);
       return;
     }
 
@@ -176,6 +213,8 @@ function StaffFaceEnrollmentPage() {
       if (mounted) {
         if (areModelsLoaded() && isArcFaceLoaded()) {
           setModelsReady(true);
+          setModelsLoading(false);
+          setModelProgress(100);
           clearInterval(interval);
         } else {
           setModelProgress((p) => Math.min(p + 15, 90));
@@ -183,24 +222,18 @@ function StaffFaceEnrollmentPage() {
       }
     }, 150);
 
-    Promise.all([loadModels(), initArcFaceSession()])
-      .then(() => {
-        if (mounted) {
+    loadNeuralModels()
+      .then((ok) => {
+        if (mounted && ok) {
           setModelProgress(100);
           setModelsReady(true);
-        }
-      })
-      .catch((err) => {
-        if (mounted) {
-          console.warn("[FaceEnrollment] Failed to load on-device neural network models:", err);
-          if (areModelsLoaded() && isArcFaceLoaded()) {
-            setModelsReady(true);
-          }
+          setModelsLoading(false);
         }
       })
       .finally(() => {
         if (mounted && areModelsLoaded() && isArcFaceLoaded()) {
           setModelsReady(true);
+          setModelsLoading(false);
         }
         clearInterval(interval);
       });
@@ -209,7 +242,7 @@ function StaffFaceEnrollmentPage() {
       mounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [loadNeuralModels]);
 
   // Fetch local Android status & server approval state
   const checkStatus = useCallback(async () => {
@@ -265,9 +298,33 @@ function StaffFaceEnrollmentPage() {
     };
   }, [stopCamera]);
 
+  // Synchronize live camera stream when video element mounts into DOM
+  useEffect(() => {
+    if (cameraActive && videoRef.current && streamRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+        videoRef.current.play().catch(() => {});
+      }
+    }
+  }, [cameraActive]);
+
   // Start live camera stream
   const startCamera = async () => {
     setCameraPermissionDenied(false);
+    setCameraError(null);
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      !navigator.mediaDevices.getUserMedia
+    ) {
+      const msg =
+        "Camera access is not supported by this browser environment or requires an HTTPS secure connection. Please use 'Upload Photo Files' instead.";
+      setCameraError(msg);
+      toast.error(msg);
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -283,10 +340,13 @@ function StaffFaceEnrollmentPage() {
         await videoRef.current.play().catch(console.error);
       }
     } catch (err: any) {
+      console.warn("[FaceEnrollment] getUserMedia error:", err);
       if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
         setCameraPermissionDenied(true);
       } else {
-        toast.error("Camera access failed", { description: String(err?.message || err) });
+        const msg = err?.message || String(err);
+        setCameraError(msg);
+        toast.error("Camera access failed", { description: msg });
       }
       stopCamera();
     }
@@ -297,6 +357,17 @@ function StaffFaceEnrollmentPage() {
     url: string,
     filename: string
   ): Promise<{ valid: boolean; embedding?: number[]; confidence?: number; message?: string }> => {
+    // Ensure neural network models are ready in memory before analyzing face
+    if (!areModelsLoaded() || !isArcFaceLoaded()) {
+      const ok = await loadNeuralModels();
+      if (!ok && (!areModelsLoaded() || !isArcFaceLoaded())) {
+        return {
+          valid: false,
+          message: `Neural face models are unavailable (${modelsError || "loading in progress"}). Please click 'Retry Loading Models'.`,
+        };
+      }
+    }
+
     return new Promise((resolve) => {
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -1766,34 +1837,92 @@ function StaffFaceEnrollmentPage() {
               description="Capture 1 to 5 clear, well-lit photos using your camera or upload image files."
             >
               <div className="p-6 space-y-6">
+                {/* Model Loading Status Banner */}
+                {modelsLoading && !isModelsReady && (
+                  <div className="flex items-center gap-2.5 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-700 dark:text-sky-300">
+                    <Loader2 className="size-4 animate-spin shrink-0 text-sky-600 dark:text-sky-400" />
+                    <div className="flex-1 flex flex-wrap items-center justify-between gap-2">
+                      <span>Preparing on-device ArcFace 512-D neural models ({modelProgress}%)… You may open the camera or select photo files now.</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Model Loading Error Banner with Retry */}
+                {modelsError && !isModelsReady && (
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                      <div>
+                        <span className="font-medium text-foreground">Model Initialization Warning:</span>{" "}
+                        <span>{modelsError}. Face verification will retry automatically upon capturing or uploading photos.</span>
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void loadNeuralModels()}
+                      className="shrink-0 h-7 text-xs border-amber-500/40 hover:bg-amber-500/10"
+                    >
+                      <RefreshCw className="mr-1 size-3" /> Retry Loading Models
+                    </Button>
+                  </div>
+                )}
+
+                {/* Camera Error Banner */}
+                {cameraError && (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3.5 text-xs text-destructive flex items-start gap-2.5">
+                    <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium">Camera Access Failed</p>
+                      <p className="mt-0.5 text-[11px] leading-relaxed">{cameraError}</p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Control Action Buttons */}
                 <div className="flex flex-wrap items-center gap-3">
                   {!cameraActive ? (
-                    <Button onClick={startCamera} disabled={!isModelsReady || isProcessing}>
+                    <Button
+                      id="open-live-camera-btn"
+                      onClick={startCamera}
+                      disabled={isProcessing}
+                    >
                       <Camera className="mr-2 size-4" />
                       Open Live Camera
                     </Button>
                   ) : (
-                    <Button variant="secondary" onClick={stopCamera}>
+                    <Button id="close-live-camera-btn" variant="secondary" onClick={stopCamera}>
                       Close Camera
                     </Button>
                   )}
 
                   <Button
+                    id="upload-face-photos-btn"
                     variant="outline"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={!isModelsReady || isProcessing || samples.length >= MAX_SAMPLES}
+                    onClick={() => {
+                      if (fileInputRef.current) {
+                        fileInputRef.current.value = "";
+                        fileInputRef.current.click();
+                      }
+                    }}
+                    disabled={isProcessing || samples.length >= MAX_SAMPLES}
                   >
                     <UploadCloud className="mr-2 size-4" />
                     Upload Photo Files
                   </Button>
 
                   <input
+                    id="face-photo-file-input"
                     ref={fileInputRef}
                     type="file"
                     multiple
                     accept="image/jpeg,image/jpg,image/png,image/webp"
-                    className="hidden"
+                    className="sr-only"
+                    tabIndex={-1}
+                    aria-label="Upload reference face photos"
+                    onClick={(e) => {
+                      (e.target as HTMLInputElement).value = "";
+                    }}
                     onChange={handleFilesSelected}
                   />
 
@@ -1858,7 +1987,13 @@ function StaffFaceEnrollmentPage() {
                   <div className="relative mx-auto flex max-w-md flex-col items-center overflow-hidden rounded-2xl border border-border bg-black p-2 shadow-inner">
                     <div className="relative aspect-square w-full overflow-hidden rounded-xl bg-zinc-950">
                       <video
-                        ref={videoRef}
+                        ref={(el) => {
+                          videoRef.current = el;
+                          if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                            el.srcObject = streamRef.current;
+                            el.play().catch(() => {});
+                          }
+                        }}
                         autoPlay
                         playsInline
                         muted
@@ -1872,7 +2007,12 @@ function StaffFaceEnrollmentPage() {
 
                     <div className="mt-3 flex w-full items-center justify-between px-2">
                       <p className="text-xs text-zinc-300">Position face within the oval guide</p>
-                      <Button size="sm" onClick={captureCameraPhoto} disabled={isProcessing || samples.length >= MAX_SAMPLES}>
+                      <Button
+                        id="snap-camera-photo-btn"
+                        size="sm"
+                        onClick={captureCameraPhoto}
+                        disabled={isProcessing || samples.length >= MAX_SAMPLES}
+                      >
                         {isProcessing ? (
                           <>
                             <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Verifying…
@@ -1993,6 +2133,7 @@ function StaffFaceEnrollmentPage() {
                   </div>
 
                   <Button
+                    id="save-face-registration-btn"
                     size="lg"
                     disabled={!canSave}
                     onClick={handleSaveRegistration}
