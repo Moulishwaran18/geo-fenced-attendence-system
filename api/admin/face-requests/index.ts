@@ -213,7 +213,7 @@ export default async function handler(req: any, res?: any) {
     return sendJsonResponse(res, 204, {});
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = req?.supabaseClient || getSupabaseClient();
   if (!supabase) {
     return sendJsonResponse(res, 500, {
       success: false,
@@ -222,10 +222,14 @@ export default async function handler(req: any, res?: any) {
   }
 
   // Authorize Administrator
+  let auth: { valid: boolean; payload?: any; statusCode?: number; errorCode?: string; error?: string } = {
+    valid: true,
+    payload: { username: "moulish", name: "Moulishwaran S", role: "admin" },
+  };
   const isInternalTest = !req.headers || req.headers["x-internal-test"] === "true";
   if (!isInternalTest) {
     const token = extractAdminToken(req);
-    const auth = await verifyAdminSession(token, supabase);
+    auth = await verifyAdminSession(token, supabase);
     if (!auth.valid) {
       const status = auth.statusCode || 401;
       return sendJsonResponse(res, status, {
@@ -244,10 +248,23 @@ export default async function handler(req: any, res?: any) {
     pathname = new URL(pathname, "https://localhost").pathname;
   } catch {}
 
-  if (req.query?.match) {
+  const matchedHeader = (req.headers?.["x-matched-path"] || (typeof req.headers?.get === "function" ? req.headers.get("x-matched-path") : "") || "").toString();
+  if (matchedHeader && matchedHeader.startsWith("/api/admin/face-requests")) {
+    pathname = matchedHeader;
+  } else if (req.query?.subpath) {
+    const subpathParts = Array.isArray(req.query.subpath) ? req.query.subpath : [req.query.subpath];
+    if (subpathParts.length > 0) {
+      pathname = "/api/admin/face-requests/" + subpathParts.join("/");
+    }
+  } else if (req.query?.match) {
     const matchParts = Array.isArray(req.query.match) ? req.query.match : [req.query.match];
     if (matchParts.length > 0 && !pathname.includes(matchParts[0]!)) {
       pathname = "/api/admin/face-requests/" + matchParts.join("/");
+    }
+  } else if (req.query?.slug) {
+    const slugParts = Array.isArray(req.query.slug) ? req.query.slug : [req.query.slug];
+    if (slugParts.length > 0 && !pathname.includes(slugParts[0]!)) {
+      pathname = "/api/admin/face-requests/" + slugParts.join("/");
     }
   }
 
@@ -272,6 +289,15 @@ export default async function handler(req: any, res?: any) {
       }
     } catch {
       body = {};
+    }
+  }
+
+  // If URL rewrite collapsed subpath to root, resolve via body.action / body.decision
+  if (pathname === "/api/admin/face-requests" || pathname === "/api/admin/face-requests/") {
+    if (body?.action === "approve" || body?.decision === "approve") {
+      pathname = "/api/admin/face-requests/approve";
+    } else if (body?.action === "reject" || body?.decision === "reject") {
+      pathname = "/api/admin/face-requests/reject";
     }
   }
 
@@ -327,7 +353,7 @@ export default async function handler(req: any, res?: any) {
       });
 
       let pendingCount = 0;
-      const requests = (rows || []).map((r) => {
+      const requests = (rows || []).map((r: any) => {
         const staffCode = (r.staff || "").toUpperCase();
         const staffMeta = staffMap.get(staffCode) || {};
 
@@ -441,6 +467,18 @@ export default async function handler(req: any, res?: any) {
         });
       }
 
+      // Prevent staff members from approving their own face requests
+      const adminUsername = (auth.payload?.username || "").toLowerCase();
+      if (adminUsername && targetReq.staff && targetReq.staff.toLowerCase() === adminUsername) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          code: "SELF_APPROVAL_PROHIBITED",
+          error: "Staff members are not permitted to approve their own face registration requests.",
+        });
+      }
+
+      const adminIdentity = auth.payload?.name || auth.payload?.username || "moulish";
+
       // Mint secure one-time cryptographic token valid for exactly 24 hours
       const oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
       const approvedAtDate = new Date();
@@ -455,14 +493,14 @@ export default async function handler(req: any, res?: any) {
       const typeMatch = targetReq.device ? targetReq.device.match(/type:([^|]+)/) : null;
       const reqType = typeMatch ? typeMatch[1] : (targetReq.event?.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
 
-      const devicePayload = `token:${oneTimeToken}|status:approved|approved_at:${approvedAtIso}|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}`;
+      const devicePayload = `token:${oneTimeToken}|status:approved|approved_at:${approvedAtIso}|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}|admin:${adminIdentity}`;
 
       const { error: updErr } = await supabase
         .from("security_events")
         .update({
           result: "Allowed", // 'Allowed' indicates Approved
           device: devicePayload,
-          location: `AdminNote: ${adminNotes || "Approved by administrator moulish"}`,
+          location: `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Approved by administrator ${adminIdentity})`,
           time: approvedAtIso,
           severity: "Low",
         })
@@ -479,9 +517,9 @@ export default async function handler(req: any, res?: any) {
       await supabase.from("security_events").insert({
         time: approvedAtIso,
         staff: targetReq.staff,
-        event: `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff}`,
-        device: `token_issued:${oneTimeToken}|expires_at:${expiresAtIso}|device_id:${targetDev}`,
-        location: adminNotes || "Admin Console Approval",
+        event: `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff} by ${adminIdentity}`,
+        device: `token_issued:${oneTimeToken}|expires_at:${expiresAtIso}|device_id:${targetDev}|admin:${adminIdentity}`,
+        location: adminNotes || `Admin Console Approval by ${adminIdentity}`,
         result: "Allowed",
         severity: "Low",
       });
@@ -529,18 +567,29 @@ export default async function handler(req: any, res?: any) {
         });
       }
 
+      // Prevent staff members from rejecting their own face requests
+      const adminUsername = (auth.payload?.username || "").toLowerCase();
+      if (adminUsername && targetReq.staff && targetReq.staff.toLowerCase() === adminUsername) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          code: "SELF_REJECTION_PROHIBITED",
+          error: "Staff members are not permitted to reject their own face registration requests.",
+        });
+      }
+
+      const adminIdentity = auth.payload?.name || auth.payload?.username || "moulish";
       const nowIso = new Date().toISOString();
       const cleanDevice = (targetReq.device || "").replace(/status:[^|]+(\|?)/g, "");
-      const devicePayload = `status:rejected|${cleanDevice}`;
+      const devicePayload = `status:rejected|admin:${adminIdentity}|${cleanDevice}`;
 
       const { error: updErr } = await supabase
         .from("security_events")
         .update({
           result: "Blocked", // 'Blocked' indicates Rejected
           device: devicePayload,
-          location: `AdminNote: ${adminNotes || "Rejected by administrator moulish"}`,
+          location: `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Rejected by administrator ${adminIdentity})`,
           time: nowIso,
-          severity: "High",
+          severity: "Medium",
         })
         .eq("id", requestId);
 
@@ -555,11 +604,11 @@ export default async function handler(req: any, res?: any) {
       await supabase.from("security_events").insert({
         time: nowIso,
         staff: targetReq.staff,
-        event: `FACE_APPROVAL_REJECTED: Request rejected for ${targetReq.staff}`,
-        device: "rejected",
-        location: adminNotes || "Admin Console Rejection",
+        event: `FACE_APPROVAL_REJECTED: Request rejected for ${targetReq.staff} by ${adminIdentity}`,
+        device: `rejected|admin:${adminIdentity}`,
+        location: adminNotes || `Admin Console Rejection by ${adminIdentity}`,
         result: "Blocked",
-        severity: "High",
+        severity: "Medium",
       });
 
       return sendJsonResponse(res, 200, {

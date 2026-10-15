@@ -156,6 +156,7 @@ function StaffFaceEnrollmentPage() {
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [requestReason, setRequestReason] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  const [requestSubmitError, setRequestSubmitError] = useState<string | null>(null);
 
   // Load ArcFace ONNX model and landmark detector
   useEffect(() => {
@@ -730,27 +731,77 @@ function StaffFaceEnrollmentPage() {
 
   // Submit request to change face (server metadata only, ZERO biometrics)
   const handleSubmitChangeRequest = async () => {
-    if (!requestReason.trim() || requestReason.trim().length < 5) {
+    const trimmed = requestReason.trim();
+    if (!trimmed) {
+      setRequestSubmitError("Please enter a justification for requesting a face registration change.");
+      toast.error("Please enter a reason for the change request.");
+      return;
+    }
+    if (trimmed.length < 5) {
+      setRequestSubmitError("Reason is too short. Please provide at least 5 characters.");
       toast.error("Please provide a detailed reason (at least 5 characters).");
       return;
     }
+    if (trimmed.length > 250) {
+      setRequestSubmitError("Reason cannot exceed 250 characters.");
+      toast.error("Reason cannot exceed 250 characters.");
+      return;
+    }
+    if (!activeStaff?.token) {
+      setRequestSubmitError("Session expired or missing authentication token. Please sign in again.");
+      toast.error("Authentication required. Please sign in again.");
+      return;
+    }
 
+    if (isSubmittingRequest) return;
     setIsSubmittingRequest(true);
+    setRequestSubmitError(null);
+
     try {
-      const res = await requestStaffFaceChange(requestReason.trim(), {
+      const res = await requestStaffFaceChange(trimmed, {
         deviceId: nativeDeviceId || undefined,
         sampleCount: validCount || 1,
       });
+
       if (res.success) {
         toast.success("Face change request submitted to administrator!");
         setRequestModalOpen(false);
         setRequestReason("");
+        setRequestSubmitError(null);
+
+        // Optimistically update status to pending immediately
+        setServerStatus((prev) => ({
+          ...(prev || {
+            success: true,
+            status: "pending_approval",
+            isLocked: true,
+            canEdit: false,
+            embeddingCount: 0,
+            samples: [],
+            hasPendingRequest: true,
+          }),
+          success: true,
+          status: "pending_approval",
+          enrollmentStatus: "pending_approval",
+          hasPendingRequest: true,
+          pendingRequest: res.request || {
+            id: res.requestId || "req-pending",
+            reason: trimmed,
+            status: "pending",
+            created_at: new Date().toISOString(),
+          },
+        }));
+
         await checkStatus();
       } else {
-        toast.error(res.error || "Failed to submit request.");
+        const errMsg = res.error || "Failed to submit request to administrator.";
+        setRequestSubmitError(errMsg);
+        toast.error(errMsg);
       }
     } catch (err: any) {
-      toast.error(err?.message || "Error submitting face change request.");
+      const errMsg = err?.message || "Error submitting face change request.";
+      setRequestSubmitError(errMsg);
+      toast.error(errMsg);
     } finally {
       setIsSubmittingRequest(false);
     }
@@ -773,10 +824,16 @@ function StaffFaceEnrollmentPage() {
   };
 
   const isEnrolledOnDevice = nativeStatus?.isEnrolled === true;
+  const isEnrolledOnServer = Boolean(
+    serverStatus?.isLocked &&
+    (serverStatus?.status === "approved" || serverStatus?.enrollmentStatus === "approved")
+  );
+  const isEnrolled = isEnrolledOnDevice || isEnrolledOnServer;
+
   const isApproved =
     serverStatus?.canSaveReplacement === true ||
     (serverStatus?.status === "approved" && Boolean(serverStatus?.oneTimeToken));
-  const isApprovedForReplacement = isApproved && isEnrolledOnDevice;
+  const isApprovedForReplacement = isApproved && isEnrolled;
   const isPendingApproval =
     serverStatus?.hasPendingRequest === true ||
     serverStatus?.status === "pending_approval" ||
@@ -800,7 +857,7 @@ function StaffFaceEnrollmentPage() {
     const isApprovedAndReady =
       (serverStatus?.status === "approved" || serverStatus?.canSaveReplacement === true) &&
       Boolean(token) &&
-      (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment);
+      (!isEnrolled || nativeStatus?.hasPendingEnrollment);
 
     if (
       isApprovedAndReady &&
@@ -813,7 +870,7 @@ function StaffFaceEnrollmentPage() {
     ) {
       void handleActivateApprovedProfile(token);
     }
-  }, [serverStatus, isEnrolledOnDevice, nativeStatus, isActivating, handleActivateApprovedProfile, isReplacementMode, activationError]);
+  }, [serverStatus, isEnrolled, nativeStatus, isActivating, handleActivateApprovedProfile, isReplacementMode, activationError]);
 
   const validCount = samples.filter((s) => s.status === "valid").length;
   const hasRejected = samples.some((s) => s.status === "rejected");
@@ -1078,8 +1135,8 @@ function StaffFaceEnrollmentPage() {
               </span>
             </div>
           </div>
-        ) : isEnrolledOnDevice && !isReplacementMode ? (
-          /* STATE 1: Already Enrolled on this Android Phone */
+        ) : isEnrolled && !isReplacementMode ? (
+          /* STATE 1: Already Enrolled (Device or Server-Locked) */
           <div className="space-y-6">
             <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6 shadow-sm">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1111,11 +1168,11 @@ function StaffFaceEnrollmentPage() {
                         <span className="font-medium text-foreground">Enrolled Staff ID:</span> {staffId}
                       </div>
                       <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
-                        <span className="font-medium text-foreground">Stored Templates:</span> {nativeStatus?.count ?? 0} samples
+                        <span className="font-medium text-foreground">Stored Templates:</span> {nativeStatus?.count ?? serverStatus?.sampleCount ?? 3} samples
                       </div>
                       <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
                         <span className="font-medium text-foreground">Hardware Device ID:</span>{" "}
-                        {nativeStatus?.deviceId || nativeDeviceId}
+                        {nativeStatus?.deviceId || nativeDeviceId || "Active Device"}
                       </div>
                       <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
                         <span className="font-medium text-foreground">Enrolled At:</span>{" "}
@@ -1140,7 +1197,10 @@ function StaffFaceEnrollmentPage() {
                   <Button
                     variant="outline"
                     className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                    onClick={() => setRequestModalOpen(true)}
+                    onClick={() => {
+                      setRequestSubmitError(null);
+                      setRequestModalOpen(true);
+                    }}
                   >
                     Request Face Change
                   </Button>
@@ -1443,7 +1503,15 @@ function StaffFaceEnrollmentPage() {
       </div>
 
       {/* Request Face Change Modal Dialog */}
-      <Dialog open={requestModalOpen} onOpenChange={setRequestModalOpen}>
+      <Dialog
+        open={requestModalOpen}
+        onOpenChange={(open) => {
+          setRequestModalOpen(open);
+          if (!open) {
+            setRequestSubmitError(null);
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1457,16 +1525,41 @@ function StaffFaceEnrollmentPage() {
           </DialogHeader>
 
           <div className="space-y-4 py-2">
+            {requestSubmitError && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2.5">
+                <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-medium">Submission Failed</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed">{requestSubmitError}</p>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-1.5">
-              <label htmlFor="reason" className="text-xs font-medium text-foreground">
-                Reason for Change Request <span className="text-destructive">*</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label htmlFor="reason" className="text-xs font-medium text-foreground">
+                  Reason for Change Request <span className="text-destructive">*</span>
+                </label>
+                <span
+                  className={`text-[10px] ${
+                    requestReason.trim().length > 0 && (requestReason.trim().length < 5 || requestReason.trim().length > 250)
+                      ? "text-amber-600 dark:text-amber-400 font-medium"
+                      : "text-muted-foreground"
+                  }`}
+                >
+                  {requestReason.trim().length}/250 characters (min 5)
+                </span>
+              </div>
               <Textarea
                 id="reason"
                 placeholder="e.g. Appearance changed, new spectacles, or camera quality upgrade."
                 value={requestReason}
-                onChange={(e) => setRequestReason(e.target.value)}
+                onChange={(e) => {
+                  setRequestReason(e.target.value);
+                  if (requestSubmitError) setRequestSubmitError(null);
+                }}
                 rows={4}
+                disabled={isSubmittingRequest}
               />
               <p className="text-[11px] text-muted-foreground">
                 This request will be reviewed by college administration. If approved, you will receive single-use authorization
@@ -1476,12 +1569,23 @@ function StaffFaceEnrollmentPage() {
           </div>
 
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="ghost" onClick={() => setRequestModalOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setRequestModalOpen(false);
+                setRequestSubmitError(null);
+              }}
+              disabled={isSubmittingRequest}
+            >
               Cancel
             </Button>
-            <Button onClick={handleSubmitChangeRequest} disabled={isSubmittingRequest || !requestReason.trim()}>
+            <Button
+              id="submit-face-change-request-btn"
+              onClick={handleSubmitChangeRequest}
+              disabled={isSubmittingRequest || requestReason.trim().length < 5 || requestReason.trim().length > 250}
+            >
               {isSubmittingRequest && <Loader2 className="mr-2 size-4 animate-spin" />}
-              {isSubmittingRequest ? "Submitting…" : "Submit Request to Administrator"}
+              {isSubmittingRequest ? "Submitting Request…" : "Submit Request to Administrator"}
             </Button>
           </DialogFooter>
         </DialogContent>

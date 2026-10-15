@@ -119,12 +119,20 @@ export async function getStaffFaceStatus(): Promise<StaffFaceStatusResponse> {
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
-    const res = await fetch("/api/staff/face/status", {
+    let res = await fetch("/api/staff/face/status", {
       method: "GET",
       headers: getStaffAuthHeaders(),
       credentials: "include",
       signal: controller.signal,
     });
+    if (res.status === 404) {
+      res = await fetch("/api/staff/face", {
+        method: "GET",
+        headers: getStaffAuthHeaders(),
+        credentials: "include",
+        signal: controller.signal,
+      });
+    }
     clearTimeout(timeoutId);
     const data = await res.json().catch(() => ({}));
 
@@ -196,17 +204,30 @@ export async function submitStaffFaceEnrollment(
       headers["x-device-id"] = params.deviceId;
     }
 
-    const res = await fetch("/api/staff/face/enroll", {
+    const enrollPayload = {
+      deviceId: params.deviceId || "android-keystore",
+      templateCount: params.templateCount || 3,
+      oneTimeToken: effectiveToken || undefined,
+      action: "enroll",
+    };
+
+    let res = await fetch("/api/staff/face/enroll", {
       method: "POST",
       headers,
       credentials: "include",
-      body: JSON.stringify({
-        deviceId: params.deviceId || "android-keystore",
-        templateCount: params.templateCount || 3,
-        oneTimeToken: effectiveToken || undefined,
-      }),
+      body: JSON.stringify(enrollPayload),
       signal: controller.signal,
     });
+
+    if (res.status === 404) {
+      res = await fetch("/api/staff/face", {
+        method: "POST",
+        headers,
+        credentials: "include",
+        body: JSON.stringify(enrollPayload),
+        signal: controller.signal,
+      });
+    }
 
     clearTimeout(timeoutId);
     const data = await res.json().catch(() => ({}));
@@ -246,20 +267,33 @@ export async function requestStaffFaceEnrollment(
   params: RequestFaceEnrollmentParams = {}
 ): Promise<{ success: boolean; message?: string; requestId?: string; request?: any; error?: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  const payload = {
+    reason: (params.reason || "Initial face biometric registration").trim(),
+    deviceId: params.deviceId,
+    sampleCount: params.sampleCount || 1,
+    action: "request-enrollment",
+  };
 
   try {
-    const res = await fetch("/api/staff/face/request", {
+    let res = await fetch("/api/staff/face/request", {
       method: "POST",
       headers: getStaffAuthHeaders(),
       credentials: "include",
-      body: JSON.stringify({
-        reason: (params.reason || "Initial face biometric registration").trim(),
-        deviceId: params.deviceId,
-        sampleCount: params.sampleCount || 1,
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
+
+    if (res.status === 404) {
+      res = await fetch("/api/staff/face", {
+        method: "POST",
+        headers: getStaffAuthHeaders(),
+        credentials: "include",
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    }
 
     clearTimeout(timeoutId);
     const data = await res.json().catch(() => ({}));
@@ -294,20 +328,33 @@ export async function requestStaffFaceChange(
   extraParams?: { deviceId?: string | undefined; sampleCount?: number | undefined }
 ): Promise<{ success: boolean; message?: string; requestId?: string; request?: any; error?: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  const payload = {
+    reason: reason.trim(),
+    action: "request-change",
+    deviceId: extraParams?.deviceId,
+    sampleCount: extraParams?.sampleCount,
+  };
 
   try {
-    const res = await fetch("/api/staff/face/request-change", {
+    let res = await fetch("/api/staff/face/request-change", {
       method: "POST",
       headers: getStaffAuthHeaders(),
       credentials: "include",
-      body: JSON.stringify({
-        reason: reason.trim(),
-        deviceId: extraParams?.deviceId,
-        sampleCount: extraParams?.sampleCount,
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
+
+    if (res.status === 404) {
+      res = await fetch("/api/staff/face", {
+        method: "POST",
+        headers: getStaffAuthHeaders(),
+        credentials: "include",
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    }
 
     clearTimeout(timeoutId);
     const data = await res.json().catch(() => ({}));
@@ -339,11 +386,22 @@ export async function requestStaffFaceChange(
  */
 export async function cancelStaffFaceChange(): Promise<{ success: boolean; message?: string; error?: string }> {
   try {
-    const res = await fetch("/api/staff/face/cancel-request", {
+    let res = await fetch("/api/staff/face/cancel-request", {
       method: "POST",
       headers: getStaffAuthHeaders(),
       credentials: "include",
+      body: JSON.stringify({ action: "cancel-request" }),
     });
+
+    if (res.status === 404) {
+      res = await fetch("/api/staff/face", {
+        method: "POST",
+        headers: getStaffAuthHeaders(),
+        credentials: "include",
+        body: JSON.stringify({ action: "cancel-request" }),
+      });
+    }
+
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.success === false) {
       return { success: false, error: data.error || "Failed to cancel request" };

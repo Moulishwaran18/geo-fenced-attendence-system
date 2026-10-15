@@ -194,10 +194,23 @@ export default async function handler(req: any, res?: any) {
     pathname = new URL(pathname, "https://localhost").pathname;
   } catch {}
 
-  if (req.query?.match) {
+  const matchedHeader = (req.headers?.["x-matched-path"] || (typeof req.headers?.get === "function" ? req.headers.get("x-matched-path") : "") || "").toString();
+  if (matchedHeader && matchedHeader.startsWith("/api/staff/face")) {
+    pathname = matchedHeader;
+  } else if (req.query?.subpath) {
+    const subpathParts = Array.isArray(req.query.subpath) ? req.query.subpath : [req.query.subpath];
+    if (subpathParts.length > 0) {
+      pathname = "/api/staff/face/" + subpathParts.join("/");
+    }
+  } else if (req.query?.match) {
     const matchParts = Array.isArray(req.query.match) ? req.query.match : [req.query.match];
     if (matchParts.length > 0 && !pathname.includes(matchParts[0]!)) {
       pathname = "/api/staff/face/" + matchParts.join("/");
+    }
+  } else if (req.query?.slug) {
+    const slugParts = Array.isArray(req.query.slug) ? req.query.slug : [req.query.slug];
+    if (slugParts.length > 0 && !pathname.includes(slugParts[0]!)) {
+      pathname = "/api/staff/face/" + slugParts.join("/");
     }
   }
 
@@ -226,6 +239,17 @@ export default async function handler(req: any, res?: any) {
     }
   }
 
+  // If URL rewrite collapsed subpath to root, resolve via body.action
+  if (pathname === "/api/staff/face" || pathname === "/api/staff/face/") {
+    if (body?.action === "request-change" || body?.action === "request" || body?.action === "request-enrollment") {
+      pathname = "/api/staff/face/request-change";
+    } else if (body?.action === "cancel-request" || body?.action === "cancel") {
+      pathname = "/api/staff/face/cancel-request";
+    } else if (body?.action === "enroll" || body?.action === "save") {
+      pathname = "/api/staff/face/enroll";
+    }
+  }
+
   try {
     // -------------------------------------------------------------------------
     // ENDPOINT 1: GET /api/staff/face/status OR /api/staff/face
@@ -244,11 +268,27 @@ export default async function handler(req: any, res?: any) {
         .order("time", { ascending: false })
         .limit(1);
 
-      const isEnrolled = Boolean(priorEvents && priorEvents.length > 0);
+      let isEnrolled = Boolean(priorEvents && priorEvents.length > 0);
+      if (!isEnrolled && staffRecord.device && staffRecord.device.includes("device_id:")) {
+        isEnrolled = true;
+      }
+      if (!isEnrolled) {
+        const { data: attCheck } = await supabase
+          .from("attendance_records")
+          .select("id")
+          .eq("staff_code", staffCode)
+          .limit(1);
+        if (attCheck && attCheck.length > 0) {
+          isEnrolled = true;
+        }
+      }
+
       let embeddingCount = 0;
       if (isEnrolled && priorEvents && priorEvents[0]) {
         const countMatch = (priorEvents[0]?.device || "").match(/count:(\d+)/);
         embeddingCount = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 3;
+      } else if (isEnrolled) {
+        embeddingCount = 3;
       }
 
       // Query any face change or enrollment requests in security_events
@@ -557,6 +597,54 @@ export default async function handler(req: any, res?: any) {
           rpcErr = resFallback.error;
         }
 
+        // Resilient fallback: If RPC is not registered in Supabase schema cache, execute atomic row update
+        if (
+          rpcErr &&
+          (rpcErr.message?.includes("schema cache") ||
+            rpcErr.message?.includes("does not exist") ||
+            rpcErr.code === "PGRST202")
+        ) {
+          const nowIso = new Date().toISOString();
+          const { data: updatedRows, error: updErr } = await supabase
+            .from("security_events")
+            .update({
+              device: `token:${candidateToken}|status:consumed|device_id:${deviceId}|consumed_at:${nowIso}`,
+              time: nowIso,
+            })
+            .eq("id", approvedRow.id)
+            .eq("result", "Allowed")
+            .not("device", "ilike", "%status:consumed%")
+            .select();
+
+          if (updErr || !updatedRows || updatedRows.length === 0) {
+            return sendJsonResponse(res, 403, {
+              success: false,
+              code: "INVALID_OR_CONSUMED_TOKEN",
+              error: "Invalid, expired, or already consumed face change authorization.",
+              isLocked: true,
+            });
+          }
+
+          await supabase.from("security_events").insert({
+            time: nowIso,
+            staff: staffCode,
+            event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
+            device: `device_id:${deviceId}|count:${templateCount}`,
+            location: "CampusAttend Biometric System",
+            result: "Allowed",
+            severity: "Low",
+          });
+
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: "Face registration updated and permanently locked. Single-use authorization consumed.",
+            isLocked: true,
+            count: templateCount,
+            enrolledCount: templateCount,
+            deviceId,
+          });
+        }
+
         if (rpcErr || !rpcData) {
           console.error("[face-replace] atomic_consume_face_approval_token RPC unavailable or failed:", rpcErr?.message || "No RPC data");
           return sendJsonResponse(res, 503, {
@@ -655,14 +743,19 @@ export default async function handler(req: any, res?: any) {
         .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%")
         .limit(1);
 
-      const hasEnrollment = Boolean(priorEvents && priorEvents.length > 0);
-
-      // Preserve legacy /request-change contract: requires prior enrollment
-      if (pathname.endsWith("/request-change") && !pathname.endsWith("/request") && !hasEnrollment) {
-        return sendJsonResponse(res, 400, {
-          success: false,
-          error: "You have not registered a face yet. Use initial face enrollment.",
-        });
+      let hasEnrollment = Boolean(priorEvents && priorEvents.length > 0);
+      if (!hasEnrollment && staffRecord.device && staffRecord.device.includes("device_id:")) {
+        hasEnrollment = true;
+      }
+      if (!hasEnrollment) {
+        const { data: attCheck } = await supabase
+          .from("attendance_records")
+          .select("id")
+          .eq("staff_code", staffCode)
+          .limit(1);
+        if (attCheck && attCheck.length > 0) {
+          hasEnrollment = true;
+        }
       }
 
       const rawReason = (body?.reason || "").toString().trim();
