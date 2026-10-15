@@ -226,7 +226,7 @@ function AdminFaceRequestsPage() {
                       </div>
 
                       <p className="text-xs text-muted-foreground">
-                        {req.department} · {req.sampleCount || 1} sample(s) staged · Device:{" "}
+                        Request ID: <span className="font-mono font-medium text-foreground">{req.id}</span> · {req.department} · {req.sampleCount || 1} sample(s) staged · Device:{" "}
                         <span className="font-mono font-medium text-foreground">
                           {req.maskedDeviceId || req.deviceId || "Registered Device"}
                         </span>{" "}
@@ -290,6 +290,7 @@ function AdminFaceRequestsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-foreground">{req.staff_name}</span>
                       <span className="font-mono text-xs text-muted-foreground">({req.staff_code})</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">ID: {req.id}</span>
                       {req.status === "approved" ? (
                         <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
                           Approved (24-Hour Active)

@@ -748,75 +748,102 @@ class AndroidBiometricBridge(
 
             runBlocking(Dispatchers.IO) {
                 val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
-                val isReplacement = !oneTimeToken.isNullOrBlank()
+                val cleanToken = oneTimeToken?.trim() ?: ""
+                val tokenRegex = Regex("^ftok_[a-f0-9]{48}$")
+                val isAuthorizedReplacement = existingCount > 0 && cleanToken.isNotEmpty() && tokenRegex.matches(cleanToken)
 
-                // Prevent silent re-enrollment if already enrolled and no replacement token
-                if (existingCount > 0 && !isReplacement) {
+                // If already enrolled, replacement requires a valid, unconsumed administrator approval token
+                if (existingCount > 0 && !isAuthorizedReplacement) {
                     return@runBlocking JSONObject().apply {
                         put("success", false)
-                        put("error", "ALREADY_ENROLLED")
-                        put("message", "Face is already enrolled and locked on this device. Re-enrollment requires an authorized face-change approval.")
+                        put("error", if (cleanToken.isEmpty()) "ALREADY_ENROLLED" else "INVALID_APPROVAL_TOKEN")
+                        put("message", "Face is already enrolled and locked on this device. Re-enrollment requires an authorized face-change approval token.")
                     }.toString()
                 }
 
+                // Stage a memory backup of existing templates so any insertion or persistence failure rolls back cleanly
+                val backupTemplates = if (existingCount > 0) repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId) else emptyList()
+
                 // Insert templates atomically in Room transaction
-                CampusAttendApp.instance.database.withTransaction {
-                    // If authorized replacement, remove prior templates
-                    if (existingCount > 0 && isReplacement) {
-                        repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
-                    }
-
-                    // Ensure staff entity exists
-                    val existingStaff = repository.getStaffById(cleanId)
-                    if (existingStaff == null) {
-                        repository.insertStaff(
-                            StaffEntity(
-                                id = cleanId,
-                                staffCode = cleanId,
-                                name = cleanId,
-                                active = true
-                            )
-                        )
-                    }
-
-                    // Encrypt each embedding with Android Keystore AES-256-GCM using AAD "$staffId:$deviceId"
-                    for (idx in parsedEmbeddings.indices) {
-                        val embedding = parsedEmbeddings[idx]
-                        val label = if (labelsArr != null && idx < labelsArr.length()) {
-                            labelsArr.optString(idx, "sample_${idx + 1}")
-                        } else {
-                            "sample_${idx + 1}"
+                var insertSuccess = false
+                try {
+                    CampusAttendApp.instance.database.withTransaction {
+                        // If authorized replacement, remove prior templates
+                        if (existingCount > 0 && isAuthorizedReplacement) {
+                            repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
                         }
 
-                        val encResult = keystoreManager.encryptEmbedding(cleanId, embedding)
-                        repository.insertEncryptedTemplate(
-                            EncryptedFaceTemplateEntity(
-                                staffId = cleanId,
-                                deviceId = currentDeviceId,
-                                encryptedTemplate = encResult.ciphertext,
-                                iv = encResult.iv,
-                                referenceLabel = label,
-                                templateVersion = 1,
-                                createdAt = System.currentTimeMillis()
+                        // Ensure staff entity exists
+                        val existingStaff = repository.getStaffById(cleanId)
+                        if (existingStaff == null) {
+                            repository.insertStaff(
+                                StaffEntity(
+                                    id = cleanId,
+                                    staffCode = cleanId,
+                                    name = cleanId,
+                                    active = true
+                                )
                             )
-                        )
+                        }
+
+                        // Encrypt each embedding with Android Keystore AES-256-GCM using AAD "$staffId:$deviceId"
+                        for (idx in parsedEmbeddings.indices) {
+                            val embedding = parsedEmbeddings[idx]
+                            val label = if (labelsArr != null && idx < labelsArr.length()) {
+                                labelsArr.optString(idx, "sample_${idx + 1}")
+                            } else {
+                                "sample_${idx + 1}"
+                            }
+
+                            val encResult = keystoreManager.encryptEmbedding(cleanId, embedding)
+                            repository.insertEncryptedTemplate(
+                                EncryptedFaceTemplateEntity(
+                                    staffId = cleanId,
+                                    deviceId = currentDeviceId,
+                                    encryptedTemplate = encResult.ciphertext,
+                                    iv = encResult.iv,
+                                    referenceLabel = label,
+                                    templateVersion = 1,
+                                    createdAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
                     }
+                    insertSuccess = true
+                } catch (txEx: Throwable) {
+                    Log.e("AndroidBiometricBridge", "Room transaction error during template enrollment", txEx)
+                    insertSuccess = false
                 }
 
                 // Verify persistence in Room
                 val finalCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
-                if (finalCount == 0) {
+                if (!insertSuccess || finalCount == 0) {
+                    // Restore backup templates if replacement failed
+                    if (backupTemplates.isNotEmpty()) {
+                        try {
+                            CampusAttendApp.instance.database.withTransaction {
+                                repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                                for (b in backupTemplates) {
+                                    repository.insertEncryptedTemplate(b)
+                                }
+                            }
+                        } catch (_: Throwable) {}
+                    }
                     return@runBlocking JSONObject().apply {
                         put("success", false)
                         put("error", "PERSISTENCE_FAILED")
-                        put("message", "Failed to verify local encrypted templates in device storage.")
+                        put("message", "Failed to verify local encrypted templates in device storage. Existing templates preserved.")
                     }.toString()
                 }
 
-                // If a pending file existed, delete it since enrollment is now completed
+                // If a pending or staged replacement file existed, clean up
                 val pendingFile = java.io.File(context.filesDir, "pending_face_${cleanId}.json")
                 if (pendingFile.exists()) {
                     try { pendingFile.delete() } catch (_: Throwable) {}
+                }
+                val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
+                if (stagedFile.exists()) {
+                    try { stagedFile.delete() } catch (_: Throwable) {}
                 }
 
                 JSONObject().apply {
@@ -833,6 +860,299 @@ class AndroidBiometricBridge(
                 put("success", false)
                 put("error", "ENROLLMENT_EXCEPTION")
                 put("message", t.message ?: "Failed to encrypt and store local templates.")
+            }.toString()
+        }
+    }
+
+    /**
+     * Stage replacement face embeddings locally without modifying active Room DB templates.
+     * Leaves existing enrolled templates intact until server validates and consumes authorization token.
+     */
+    @JavascriptInterface
+    fun stageReplacementTemplates(
+        staffId: String?,
+        deviceId: String?,
+        oneTimeToken: String?,
+        requestId: String?,
+        embeddingsJson: String?,
+        labelsJson: String?
+    ): String {
+        return try {
+            if (!isCallingOriginTrusted()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "UNTRUSTED_ORIGIN")
+                }.toString()
+            }
+
+            val cleanId = staffId?.trim()?.uppercase() ?: ""
+            if (cleanId.isEmpty()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "INVALID_STAFF_ID")
+                }.toString()
+            }
+
+            val currentDeviceId = keystoreManager.getDeviceId()
+            val targetDeviceId = deviceId?.trim() ?: ""
+            if (targetDeviceId.isNotBlank() && targetDeviceId != currentDeviceId && targetDeviceId != "android-keystore") {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "DEVICE_MISMATCH")
+                    put("message", "Target deviceId does not match this hardware device.")
+                }.toString()
+            }
+
+            val cleanToken = oneTimeToken?.trim() ?: ""
+            val tokenRegex = Regex("^ftok_[a-f0-9]{48}$")
+            if (cleanToken.isEmpty() || !tokenRegex.matches(cleanToken)) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "INVALID_APPROVAL_TOKEN")
+                    put("message", "A valid, unconsumed administrator approval token is required for replacement.")
+                }.toString()
+            }
+
+            if (embeddingsJson.isNullOrBlank()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "EMPTY_SAMPLES")
+                    put("message", "At least one face sample is required.")
+                }.toString()
+            }
+
+            val embeddingsArr = JSONArray(embeddingsJson)
+            if (embeddingsArr.length() == 0 || embeddingsArr.length() > 5) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "INVALID_SAMPLE_COUNT")
+                    put("message", "Between 1 and 5 face samples are required.")
+                }.toString()
+            }
+
+            val labelsArr = if (!labelsJson.isNullOrBlank()) try { JSONArray(labelsJson) } catch (_: Throwable) { null } else null
+
+            val templatesArray = JSONArray()
+            for (sampleIdx in 0 until embeddingsArr.length()) {
+                val sampleArr = embeddingsArr.getJSONArray(sampleIdx)
+                if (sampleArr.length() != 512) {
+                    return JSONObject().apply {
+                        put("success", false)
+                        put("error", "INVALID_DIMENSION")
+                        put("message", "Sample at index $sampleIdx must contain exactly 512 float values.")
+                    }.toString()
+                }
+
+                val embedding = FloatArray(512)
+                for (i in 0 until 512) {
+                    embedding[i] = sampleArr.getDouble(i).toFloat()
+                }
+
+                var sumSq = 0.0
+                for (f in embedding) sumSq += f * f
+                val norm = sqrt(sumSq).toFloat()
+                if (norm !in 0.95f..1.05f && norm > 0f) {
+                    for (i in embedding.indices) embedding[i] /= norm
+                }
+
+                val label = if (labelsArr != null && sampleIdx < labelsArr.length()) {
+                    labelsArr.optString(sampleIdx, "sample_${sampleIdx + 1}")
+                } else {
+                    "sample_${sampleIdx + 1}"
+                }
+
+                val encResult = keystoreManager.encryptEmbedding(cleanId, embedding)
+                templatesArray.put(JSONObject().apply {
+                    put("ciphertext", android.util.Base64.encodeToString(encResult.ciphertext, android.util.Base64.NO_WRAP))
+                    put("iv", android.util.Base64.encodeToString(encResult.iv, android.util.Base64.NO_WRAP))
+                    put("label", label)
+                })
+            }
+
+            val payload = JSONObject().apply {
+                put("staffId", cleanId)
+                put("deviceId", currentDeviceId)
+                put("token", cleanToken)
+                put("requestId", requestId?.trim() ?: "")
+                put("stagedAt", System.currentTimeMillis())
+                put("templates", templatesArray)
+            }
+
+            val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
+            stagedFile.writeText(payload.toString(), Charsets.UTF_8)
+
+            JSONObject().apply {
+                put("success", true)
+                put("staffId", cleanId)
+                put("deviceId", currentDeviceId)
+                put("count", templatesArray.length())
+                put("message", "Replacement face templates encrypted and staged. Existing templates remain active until server confirms token consumption.")
+            }.toString()
+        } catch (t: Throwable) {
+            Log.e("AndroidBiometricBridge", "stageReplacementTemplates error", t)
+            JSONObject().apply {
+                put("success", false)
+                put("error", "STAGE_EXCEPTION")
+                put("message", t.message ?: "Failed to stage replacement templates.")
+            }.toString()
+        }
+    }
+
+    /**
+     * Commit staged replacement templates into Room DB after server confirms token consumption.
+     * Atomic transaction: deletes previous templates, commits new templates, verifies read-back.
+     */
+    @JavascriptInterface
+    fun commitReplacementTemplates(
+        staffId: String?,
+        deviceId: String?,
+        oneTimeToken: String?
+    ): String {
+        return try {
+            if (!isCallingOriginTrusted()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "UNTRUSTED_ORIGIN")
+                }.toString()
+            }
+
+            val cleanId = staffId?.trim()?.uppercase() ?: ""
+            if (cleanId.isEmpty()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "INVALID_STAFF_ID")
+                }.toString()
+            }
+
+            val currentDeviceId = keystoreManager.getDeviceId()
+            val targetDeviceId = deviceId?.trim() ?: ""
+            if (targetDeviceId.isNotBlank() && targetDeviceId != currentDeviceId && targetDeviceId != "android-keystore") {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "DEVICE_MISMATCH")
+                    put("message", "Target deviceId does not match this hardware device.")
+                }.toString()
+            }
+
+            val cleanToken = oneTimeToken?.trim() ?: ""
+            val tokenRegex = Regex("^ftok_[a-f0-9]{48}$")
+            if (cleanToken.isEmpty() || !tokenRegex.matches(cleanToken)) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "INVALID_APPROVAL_TOKEN")
+                    put("message", "A valid, consumed administrator approval token is required to commit replacement.")
+                }.toString()
+            }
+
+            val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
+            if (!stagedFile.exists()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "NO_STAGED_REPLACEMENT")
+                    put("message", "No staged replacement templates found on this device.")
+                }.toString()
+            }
+
+            val content = stagedFile.readText(Charsets.UTF_8)
+            val json = JSONObject(content)
+            val stagedToken = json.optString("token", "")
+            if (stagedToken != cleanToken) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "TOKEN_MISMATCH")
+                    put("message", "Staged replacement token does not match authorized token.")
+                }.toString()
+            }
+
+            val templatesArray = json.optJSONArray("templates") ?: JSONArray()
+            if (templatesArray.length() == 0) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "EMPTY_STAGED_TEMPLATES")
+                    put("message", "Staged replacement template file contains no valid templates.")
+                }.toString()
+            }
+
+            runBlocking(Dispatchers.IO) {
+                val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
+                val backupTemplates = if (existingCount > 0) repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId) else emptyList()
+
+                var commitOk = false
+                try {
+                    CampusAttendApp.instance.database.withTransaction {
+                        repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+
+                        val existingStaff = repository.getStaffById(cleanId)
+                        if (existingStaff == null) {
+                            repository.insertStaff(
+                                StaffEntity(
+                                    id = cleanId,
+                                    staffCode = cleanId,
+                                    name = cleanId,
+                                    active = true
+                                )
+                            )
+                        }
+
+                        for (i in 0 until templatesArray.length()) {
+                            val tObj = templatesArray.getJSONObject(i)
+                            val cipherBytes = android.util.Base64.decode(tObj.getString("ciphertext"), android.util.Base64.NO_WRAP)
+                            val ivBytes = android.util.Base64.decode(tObj.getString("iv"), android.util.Base64.NO_WRAP)
+                            val label = tObj.optString("label", "sample_${i + 1}")
+
+                            repository.insertEncryptedTemplate(
+                                EncryptedFaceTemplateEntity(
+                                    staffId = cleanId,
+                                    deviceId = currentDeviceId,
+                                    encryptedTemplate = cipherBytes,
+                                    iv = ivBytes,
+                                    referenceLabel = label,
+                                    templateVersion = 1,
+                                    createdAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    }
+                    commitOk = true
+                } catch (txEx: Throwable) {
+                    Log.e("AndroidBiometricBridge", "commitReplacementTemplates transaction failure", txEx)
+                    commitOk = false
+                }
+
+                val finalCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
+                if (!commitOk || finalCount == 0) {
+                    if (backupTemplates.isNotEmpty()) {
+                        try {
+                            CampusAttendApp.instance.database.withTransaction {
+                                repository.deleteEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                                for (b in backupTemplates) repository.insertEncryptedTemplate(b)
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                    return@runBlocking JSONObject().apply {
+                        put("success", false)
+                        put("error", "COMMIT_FAILED")
+                        put("message", "Failed to commit replacement templates to Room DB. Previous templates preserved.")
+                    }.toString()
+                }
+
+                // Clean up staged file
+                try { stagedFile.delete() } catch (_: Throwable) {}
+
+                JSONObject().apply {
+                    put("success", true)
+                    put("staffId", cleanId)
+                    put("deviceId", currentDeviceId)
+                    put("count", finalCount)
+                    put("message", "Replacement face templates committed and permanently locked with Android Keystore AES-256-GCM.")
+                }.toString()
+            }
+        } catch (t: Throwable) {
+            Log.e("AndroidBiometricBridge", "commitReplacementTemplates error", t)
+            JSONObject().apply {
+                put("success", false)
+                put("error", "COMMIT_EXCEPTION")
+                put("message", t.message ?: "Failed to commit replacement templates.")
             }.toString()
         }
     }
@@ -906,11 +1226,11 @@ class AndroidBiometricBridge(
 
             runBlocking(Dispatchers.IO) {
                 val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
-                if (existingCount >= 5) {
+                if (existingCount > 0) {
                     return@runBlocking JSONObject().apply {
                         put("success", false)
                         put("error", "ALREADY_ENROLLED")
-                        put("message", "Face biometric is already enrolled and locked on this device ($existingCount templates).")
+                        put("message", "Face biometric profile is locked. Incremental template addition without administrator replacement approval is prohibited.")
                     }.toString()
                 }
 

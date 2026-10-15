@@ -175,7 +175,15 @@ export default async function handler(req: any, res?: any) {
     .eq("staff_code", staffCode)
     .maybeSingle();
 
-  if (staffFindErr || !staffRecord) {
+  if (staffFindErr) {
+    return sendJsonResponse(res, 503, {
+      success: false,
+      code: "RPC_UNAVAILABLE",
+      error: "Biometric authorization service temporarily unavailable. Safe rollback enforced.",
+    });
+  }
+
+  if (!staffRecord) {
     return sendJsonResponse(res, 404, {
       success: false,
       error: `Staff account '${staffCode}' not found in database.`,
@@ -259,18 +267,25 @@ export default async function handler(req: any, res?: any) {
       (pathname.endsWith("/status") || pathname.endsWith("/face") || pathname.endsWith("/face/")) &&
       method === "GET"
     ) {
-      // Query device-local enrollment events from security_events or legacy embeddings
+      // Check for prior enrollment across multiple sources (events, staff device, attendance)
       const { data: priorEvents } = await supabase
         .from("security_events")
         .select("id, device, event")
         .eq("staff", staffCode)
-        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%")
+        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%,event.ilike.FACE_ENROLLMENT%")
         .order("time", { ascending: false })
         .limit(1);
 
       let isEnrolled = Boolean(priorEvents && priorEvents.length > 0);
-      if (!isEnrolled && staffRecord.device && staffRecord.device.includes("device_id:")) {
-        isEnrolled = true;
+      if (!isEnrolled && staffRecord.device && (staffRecord.device.includes("device_id:") || staffRecord.device.includes("auth:"))) {
+        const { data: attCheck } = await supabase
+          .from("attendance_records")
+          .select("id")
+          .eq("staff_code", staffCode)
+          .limit(1);
+        if (attCheck && attCheck.length > 0) {
+          isEnrolled = true;
+        }
       }
       if (!isEnrolled) {
         const { data: attCheck } = await supabase
@@ -286,146 +301,172 @@ export default async function handler(req: any, res?: any) {
       let embeddingCount = 0;
       if (isEnrolled && priorEvents && priorEvents[0]) {
         const countMatch = (priorEvents[0]?.device || "").match(/count:(\d+)/);
-        embeddingCount = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 3;
+        embeddingCount = countMatch && countMatch[1] ? parseInt(countMatch[1], 10) : 5;
       } else if (isEnrolled) {
-        embeddingCount = 3;
+        embeddingCount = 5;
       }
 
-      // Query any face change or enrollment requests in security_events
+      // Query face change or enrollment requests in security_events (newest first)
       const { data: requests, error: reqErr } = await supabase
         .from("security_events")
         .select("id, time, staff, event, device, location, result, severity, created_at")
         .eq("staff", staffCode)
         .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
         .order("created_at", { ascending: false })
-        .limit(5);
+        .limit(10);
 
       let pendingRequest: any = null;
       let approvedRequest: any = null;
       let rejectedRequest: any = null;
       let expiredRequest: any = null;
+      let latestRequest: any = null;
 
+      // Examine the LATEST request to determine the current approval workflow state
       if (requests && requests.length > 0) {
-        for (const r of requests) {
-          const isConsumed = Boolean(r.device && r.device.includes("status:consumed"));
-          const isApproved = r.result === "Allowed" && Boolean(r.device && r.device.includes("status:approved"));
-          const isRejected = r.result === "Blocked" || (Boolean(r.device && r.device.includes("status:rejected")) && !isApproved);
-          const isPending = r.result === "Flagged" || (!isApproved && !isRejected && !isConsumed && Boolean(r.device && r.device.includes("status:pending")));
+        const latestR = requests[0]!;
+        const isConsumed = Boolean(latestR.device && latestR.device.includes("status:consumed"));
+        const isApproved = latestR.result === "Allowed" && Boolean(latestR.device && latestR.device.includes("status:approved"));
+        const isRejected = latestR.result === "Blocked" || (Boolean(latestR.device && latestR.device.includes("status:rejected")) && !isApproved);
+        const isPending = latestR.result === "Flagged" || (!isApproved && !isRejected && !isConsumed && Boolean(latestR.device && latestR.device.includes("status:pending")));
 
-          const tokenMatch = r.device ? r.device.match(/token:([^|]+)/) : null;
-          const expiresMatch = r.device ? r.device.match(/expires_at:([^|\s]+)/) : null;
-          const approvedMatch = r.device ? r.device.match(/approved_at:([^|\s]+)/) : null;
-          const devMatch = r.device ? r.device.match(/device_id:([^|]+)/) : null;
-          const countMatch = r.device ? r.device.match(/count:(\d+)/) : null;
-          const typeMatch = r.device ? r.device.match(/type:([^|]+)/) : null;
+        const tokenMatch = latestR.device ? latestR.device.match(/token:([^|]+)/) : null;
+        const expiresMatch = latestR.device ? latestR.device.match(/expires_at:([^|\s]+)/) : null;
+        const approvedMatch = latestR.device ? latestR.device.match(/approved_at:([^|\s]+)/) : null;
+        const devMatch = latestR.device ? latestR.device.match(/device_id:([^|]+)/) : null;
+        const countMatch = latestR.device ? latestR.device.match(/count:(\d+)/) : null;
+        const typeMatch = latestR.device ? latestR.device.match(/type:([^|]+)/) : null;
 
-          const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
-          const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
-          const nowMs = Date.now();
-          const expiresMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
-          const isExpired = expiresMs > 0 && nowMs > expiresMs;
+        const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
+        const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
+        const nowMs = Date.now();
+        const expiresMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
+        const isExpired = expiresMs > 0 && nowMs > expiresMs;
 
-          const cleanReason = r.event
-            .replace(/^FACE_(?:CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
-            .replace(/^FACE_REQUEST_[^:]+:\s*/i, "");
+        const cleanReason = latestR.event
+          .replace(/^FACE_(?:CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
+          .replace(/^FACE_REQUEST_[^:]+:\s*/i, "");
 
-          const reqType = typeMatch ? typeMatch[1] : (r.event.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
+        const reqType = typeMatch ? typeMatch[1] : (latestR.event.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
 
-          if (isPending && !pendingRequest) {
-            pendingRequest = {
-              id: r.id,
+        if (isConsumed) {
+          latestRequest = {
+            id: latestR.id,
+            reason: cleanReason,
+            status: "completed",
+            deviceId: devMatch ? devMatch[1] : null,
+            sampleCount: countMatch ? parseInt(countMatch[1], 10) : 5,
+            requestType: reqType,
+            created_at: latestR.created_at || latestR.time,
+            adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
+          };
+        } else if (isPending) {
+          pendingRequest = {
+            id: latestR.id,
+            reason: cleanReason,
+            status: "pending",
+            deviceId: devMatch ? devMatch[1] : null,
+            sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
+            requestType: reqType,
+            created_at: latestR.created_at || latestR.time,
+          };
+          latestRequest = pendingRequest;
+        } else if (isApproved) {
+          if (isExpired) {
+            expiredRequest = {
+              id: latestR.id,
               reason: cleanReason,
-              status: "pending",
+              status: "expired",
+              expires_at: expiresAtIso,
+              approved_at: approvedAtIso,
+              adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
+              created_at: latestR.created_at || latestR.time,
+            };
+            latestRequest = expiredRequest;
+          } else {
+            approvedRequest = {
+              id: latestR.id,
+              reason: cleanReason,
+              status: "approved",
+              oneTimeToken: tokenMatch ? tokenMatch[1] : null,
               deviceId: devMatch ? devMatch[1] : null,
               sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
               requestType: reqType,
-              created_at: r.created_at || r.time,
+              created_at: latestR.created_at || latestR.time,
+              approved_at: approvedAtIso,
+              expires_at: expiresAtIso,
+              remaining_seconds: expiresMs ? Math.max(0, Math.floor((expiresMs - nowMs) / 1000)) : null,
+              adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
             };
-          } else if (isApproved && !isConsumed && !approvedRequest) {
-            if (isExpired) {
-              expiredRequest = {
-                id: r.id,
-                status: "expired",
-                expires_at: expiresAtIso,
-                approved_at: approvedAtIso,
-                adminNotes: r.location?.replace(/^AdminNote:\s*/, "") || "",
-                created_at: r.created_at || r.time,
-              };
-            } else {
-              approvedRequest = {
-                id: r.id,
-                status: "approved",
-                oneTimeToken: tokenMatch ? tokenMatch[1] : null,
-                deviceId: devMatch ? devMatch[1] : null,
-                sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
-                requestType: reqType,
-                created_at: r.created_at || r.time,
-                approved_at: approvedAtIso,
-                expires_at: expiresAtIso,
-                remaining_seconds: expiresMs ? Math.max(0, Math.floor((expiresMs - nowMs) / 1000)) : null,
-                adminNotes: r.location?.replace(/^AdminNote:\s*/, "") || "",
-              };
-            }
-          } else if (isRejected && !rejectedRequest && !pendingRequest && !approvedRequest) {
-            rejectedRequest = {
-              id: r.id,
-              status: "rejected",
-              created_at: r.created_at || r.time,
-              adminNotes: r.location?.replace(/^AdminNote:\s*/, "") || "",
-            };
+            latestRequest = approvedRequest;
           }
+        } else if (isRejected) {
+          rejectedRequest = {
+            id: latestR.id,
+            reason: cleanReason,
+            status: "rejected",
+            created_at: latestR.created_at || latestR.time,
+            adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
+          };
+          latestRequest = rejectedRequest;
         }
       }
 
       // Determine face profile status:
-      // 'not_registered' | 'pending_approval' | 'approved' | 'rejected' | 'expired'
+      // When enrolled on device/server, face registration is locked and active ("approved")
+      // canEdit/canSaveReplacement are ONLY true when a fresh, unconsumed approved token is available
       let status: "not_registered" | "pending_approval" | "approved" | "rejected" | "expired" = "not_registered";
+      let enrollmentStatus: "not_registered" | "pending_approval" | "approved" | "rejected" | "expired" = "not_registered";
       let isLocked = false;
       let canEdit = false;
       let oneTimeToken: string | null = null;
 
-      if (!isEnrolled) {
-        if (pendingRequest) {
-          status = "pending_approval";
-          isLocked = true;
-          canEdit = false;
-        } else if (approvedRequest && approvedRequest.oneTimeToken) {
-          status = "approved";
-          isLocked = false;
-          canEdit = true;
-          oneTimeToken = approvedRequest.oneTimeToken;
-        } else if (rejectedRequest) {
-          status = "rejected";
-          isLocked = false;
-          canEdit = true; // Eligible to retry enrollment
-        } else {
-          status = "not_registered";
-          isLocked = false;
-          canEdit = true; // Eligible for initial face enrollment
-        }
-      } else {
-        // Enrolled on device -> permanently locked unless admin approved change request within 24h
+      if (isEnrolled) {
         isLocked = true;
-        status = "approved"; // Registered and approved for attendance
-        canEdit = false;
+        enrollmentStatus = pendingRequest
+          ? "pending_approval"
+          : expiredRequest
+          ? "expired"
+          : rejectedRequest
+          ? "rejected"
+          : "approved";
 
         if (approvedRequest && approvedRequest.oneTimeToken) {
-          // Admin approved change request within 24 hours -> grant single-use editing window
-          isLocked = false;
+          status = "approved";
           canEdit = true;
           oneTimeToken = approvedRequest.oneTimeToken;
         } else if (pendingRequest) {
           status = "pending_approval";
-          isLocked = true;
           canEdit = false;
-        } else if (expiredRequest && !pendingRequest) {
+        } else if (expiredRequest) {
           status = "expired";
-          isLocked = true;
           canEdit = false;
         } else if (rejectedRequest) {
           status = "rejected";
+          canEdit = false;
+        } else {
+          status = "approved";
+          canEdit = false;
+        }
+      } else {
+        isLocked = false;
+        if (pendingRequest) {
+          status = "pending_approval";
+          enrollmentStatus = "pending_approval";
           isLocked = true;
           canEdit = false;
+        } else if (approvedRequest && approvedRequest.oneTimeToken) {
+          status = "approved";
+          enrollmentStatus = "approved";
+          canEdit = true;
+          oneTimeToken = approvedRequest.oneTimeToken;
+        } else if (rejectedRequest) {
+          status = "rejected";
+          enrollmentStatus = "rejected";
+          canEdit = true;
+        } else {
+          status = "not_registered";
+          enrollmentStatus = "not_registered";
+          canEdit = true;
         }
       }
 
@@ -441,7 +482,7 @@ export default async function handler(req: any, res?: any) {
           department: staffRecord.department,
         },
         status,
-        enrollmentStatus: status,
+        enrollmentStatus,
         isLocked,
         canEdit,
         canSaveReplacement: Boolean(canEdit && oneTimeToken),
@@ -450,9 +491,11 @@ export default async function handler(req: any, res?: any) {
         samples: sanitizedSamples,
         hasPendingRequest: Boolean(pendingRequest),
         pendingRequest,
-        activeRequest: pendingRequest ? { ...pendingRequest } : null,
+        activeRequest: pendingRequest ? { ...pendingRequest } : (approvedRequest ? { ...approvedRequest } : null),
         approvedRequest: approvedRequest ? { id: approvedRequest.id, status: "approved", expires_at: approvedRequest.expires_at, remaining_seconds: approvedRequest.remaining_seconds } : null,
         expiredRequest,
+        latestRequest,
+        latestRequestStatus: latestRequest?.status || (isEnrolled ? "none" : "not_registered"),
         isExpired: Boolean(expiredRequest && !approvedRequest && !pendingRequest),
         oneTimeToken,
       });
@@ -484,35 +527,58 @@ export default async function handler(req: any, res?: any) {
         });
       }
 
-      // Check for prior enrollment in security_events
+      // Check for prior enrollment across multiple sources (events, staff device, attendance)
       const { data: priorEvents } = await supabase
         .from("security_events")
         .select("id, device, event")
         .eq("staff", staffCode)
-        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%")
+        .or("event.ilike.FACE_INITIAL_ENROLLMENT%,event.ilike.FACE_CHANGE_CONSUMED%,event.ilike.FACE_ENROLLMENT%")
+        .order("time", { ascending: false })
         .limit(1);
 
-      const isReplacement = Boolean(priorEvents && priorEvents.length > 0);
+      let isEnrolled = Boolean(priorEvents && priorEvents.length > 0);
+      if (!isEnrolled && staffRecord.device && (staffRecord.device.includes("device_id:") || staffRecord.device.includes("auth:"))) {
+        const { data: attCheck } = await supabase
+          .from("attendance_records")
+          .select("id")
+          .eq("staff_code", staffCode)
+          .limit(1);
+        if (attCheck && attCheck.length > 0) {
+          isEnrolled = true;
+        }
+      }
+      if (!isEnrolled) {
+        const { data: attCheck } = await supabase
+          .from("attendance_records")
+          .select("id")
+          .eq("staff_code", staffCode)
+          .limit(1);
+        if (attCheck && attCheck.length > 0) {
+          isEnrolled = true;
+        }
+      }
+
       const candidateToken = (body?.oneTimeToken || body?.token || req.headers?.["x-one-time-token"] || "").toString().trim();
       const deviceId = (body?.deviceId || req.headers?.["x-device-id"] || "android-keystore").toString().trim();
-      const templateCount = typeof body?.templateCount === "number" ? body.templateCount : (typeof body?.count === "number" ? body.count : 3);
+      const targetRequestId = (body?.requestId || req.headers?.["x-request-id"] || "").toString().trim();
+      const templateCount = typeof body?.templateCount === "number" ? body.templateCount : (typeof body?.count === "number" ? body.count : 5);
+
+      // SECURITY ENFORCEMENT: If already enrolled, replacement requires a fresh, unconsumed administrator approval token
+      if (isEnrolled && !candidateToken) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "Your face registration is locked. A fresh administrator approval is required for face replacement.",
+          code: "FACE_REGISTRATION_LOCKED",
+          isLocked: true,
+        });
+      }
 
       let approvedRow: any = null;
 
-      // If a candidate token is provided (initial or replacement approval) OR if replacement is locked:
+      // Validate candidate token (mandatory for replacement, or for approved initial enrollment)
       if (candidateToken) {
-        // Verify the one-time token matches an unconsumed approved request for this staff member
-        const { data: rowData, error: checkRowErr } = await supabase
-          .from("security_events")
-          .select("id, staff, device, result, time")
-          .eq("staff", staffCode)
-          .eq("result", "Allowed")
-          .ilike("device", `%token:${candidateToken}%`)
-          .maybeSingle();
-
-        approvedRow = rowData;
-
-        if (checkRowErr || !approvedRow || approvedRow.device?.includes("status:consumed")) {
+        // Enforce token format
+        if (!/^ftok_[a-zA-Z0-9_-]{12,64}$/.test(candidateToken)) {
           return sendJsonResponse(res, 403, {
             success: false,
             error: "Invalid, expired, or already consumed face change authorization. Request new administrator approval.",
@@ -521,10 +587,65 @@ export default async function handler(req: any, res?: any) {
           });
         }
 
+        // Query matching approval request for this staff member
+        const { data: matchingRequests, error: checkRowErr } = await supabase
+          .from("security_events")
+          .select("id, staff, device, result, time, created_at, event")
+          .eq("staff", staffCode)
+          .eq("result", "Allowed")
+          .ilike("device", `%token:${candidateToken}%`)
+          .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%")
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        if (checkRowErr) {
+          return sendJsonResponse(res, 503, {
+            success: false,
+            error: "Biometric authorization service temporarily unavailable. Safe rollback enforced.",
+            code: "RPC_UNAVAILABLE",
+            isLocked: true,
+          });
+        }
+
+        if (!matchingRequests || matchingRequests.length === 0) {
+          return sendJsonResponse(res, 403, {
+            success: false,
+            error: "Invalid, expired, or already consumed face change authorization. Request new administrator approval.",
+            code: "INVALID_OR_CONSUMED_TOKEN",
+            isLocked: true,
+          });
+        }
+
+        approvedRow = matchingRequests[0];
+
+        // Fail closed if token was already consumed or is not approved
+        if (
+          !approvedRow ||
+          approvedRow.device?.includes("status:consumed") ||
+          !approvedRow.device?.includes("status:approved")
+        ) {
+          return sendJsonResponse(res, 403, {
+            success: false,
+            error: "Invalid, expired, or already consumed face change authorization. Request new administrator approval.",
+            code: "INVALID_OR_CONSUMED_TOKEN",
+            isLocked: true,
+          });
+        }
+
+        // Validate request ID binding if specified by client
+        if (targetRequestId && targetRequestId !== approvedRow.id) {
+          return sendJsonResponse(res, 403, {
+            success: false,
+            error: "Authorization token does not match the specified face change request.",
+            code: "REQUEST_MISMATCH",
+            isLocked: true,
+          });
+        }
+
         // Verify device identity binding
         const devMatch = (approvedRow.device || "").match(/device_id:([^|]+)/);
         const boundDev = devMatch && devMatch[1] ? devMatch[1].trim() : "";
-        if (boundDev && boundDev !== "android-device" && deviceId && boundDev !== deviceId) {
+        if (boundDev && boundDev !== "android-device" && boundDev !== "android-keystore" && deviceId && boundDev !== deviceId) {
           return sendJsonResponse(res, 403, {
             success: false,
             error: "Face approval request is bound to a different device identity.",
@@ -532,17 +653,9 @@ export default async function handler(req: any, res?: any) {
             isLocked: true,
           });
         }
-      } else if (isReplacement) {
-        return sendJsonResponse(res, 403, {
-          success: false,
-          error: "Your face registration is locked. Request administrator approval to change it.",
-          code: "FACE_REGISTRATION_LOCKED",
-          isLocked: true,
-        });
       }
 
       if (approvedRow) {
-
         // Enforce 24-hour expiration based on server time (FAIL CLOSED)
         const expiresMatch = (approvedRow.device || "").match(/expires_at:([^|\s]+)/);
         if (!expiresMatch || !expiresMatch[1]) {
@@ -574,112 +687,125 @@ export default async function handler(req: any, res?: any) {
         }
 
         // ---------------------------------------------------------------------
-        // REPLACEMENT SAVE: EXECUTE ATOMIC APPROVAL TOKEN CONSUMPTION RPC
+        // REPLACEMENT SAVE: EXECUTE ATOMIC APPROVAL TOKEN CONSUMPTION
         // ---------------------------------------------------------------------
-        let rpcData: any = null;
-        let rpcErr: any = null;
+        const nowIso = new Date().toISOString();
 
-        const resConsume = await supabase.rpc("atomic_consume_face_approval_token", {
-          p_staff_code: staffCode,
-          p_token: candidateToken,
-          p_device_id: deviceId,
-        });
-        rpcData = resConsume.data;
-        rpcErr = resConsume.error;
-
-        if (rpcErr && rpcErr.message?.includes("does not exist")) {
-          const resFallback = await supabase.rpc("atomic_replace_face_biometrics", {
-            p_staff_code: staffCode,
-            p_token: candidateToken,
-            p_samples: null,
-          });
-          rpcData = resFallback.data;
-          rpcErr = resFallback.error;
-        }
-
-        // Resilient fallback: If RPC is not registered in Supabase schema cache, execute atomic row update
-        if (
-          rpcErr &&
-          (rpcErr.message?.includes("schema cache") ||
-            rpcErr.message?.includes("does not exist") ||
-            rpcErr.code === "PGRST202")
-        ) {
-          const nowIso = new Date().toISOString();
-          const { data: updatedRows, error: updErr } = await supabase
-            .from("security_events")
-            .update({
-              device: `token:${candidateToken}|status:consumed|device_id:${deviceId}|consumed_at:${nowIso}`,
-              time: nowIso,
-            })
-            .eq("id", approvedRow.id)
-            .eq("result", "Allowed")
-            .not("device", "ilike", "%status:consumed%")
-            .select();
-
-          if (updErr || !updatedRows || updatedRows.length === 0) {
-            return sendJsonResponse(res, 403, {
-              success: false,
-              code: "INVALID_OR_CONSUMED_TOKEN",
-              error: "Invalid, expired, or already consumed face change authorization.",
-              isLocked: true,
+        // 1. Try atomic RPC if available, detecting service connection failure
+        if (typeof supabase.rpc === "function") {
+          try {
+            const rpcRes = await supabase.rpc("atomic_consume_face_approval_token", {
+              p_staff_code: staffCode,
+              p_token: candidateToken,
+              p_device_id: deviceId || "active-device",
+              p_sample_count: templateCount,
             });
+            if (rpcRes?.error) {
+              const errMsg = (rpcRes.error.message || "").toLowerCase();
+              if (
+                errMsg.includes("connection failure") ||
+                errMsg.includes("timeout") ||
+                errMsg.includes("unavailable") ||
+                errMsg.includes("temporarily")
+              ) {
+                return sendJsonResponse(res, 503, {
+                  success: false,
+                  error: "Database or biometric service temporarily unavailable. Safe rollback enforced.",
+                  code: "RPC_UNAVAILABLE",
+                  isLocked: true,
+                });
+              }
+            } else if (rpcRes?.data === true) {
+              // Successfully consumed via atomic RPC
+              await supabase.from("security_events").insert({
+                time: nowIso,
+                staff: staffCode,
+                event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
+                device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}`,
+                location: "CampusAttend Biometric System",
+                result: "Allowed",
+                severity: "Low",
+              });
+
+              return sendJsonResponse(res, 200, {
+                success: true,
+                message: "Face registration updated and permanently locked. Single-use authorization consumed.",
+                isLocked: true,
+                count: templateCount,
+                enrolledCount: templateCount,
+                deviceId,
+              });
+            }
+          } catch (rpcEx: any) {
+            const msg = (rpcEx?.message || "").toLowerCase();
+            if (msg.includes("connection") || msg.includes("timeout") || msg.includes("unavailable")) {
+              return sendJsonResponse(res, 503, {
+                success: false,
+                error: "Database or biometric service temporarily unavailable. Safe rollback enforced.",
+                code: "RPC_UNAVAILABLE",
+                isLocked: true,
+              });
+            }
           }
-
-          await supabase.from("security_events").insert({
-            time: nowIso,
-            staff: staffCode,
-            event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
-            device: `device_id:${deviceId}|count:${templateCount}`,
-            location: "CampusAttend Biometric System",
-            result: "Allowed",
-            severity: "Low",
-          });
-
-          return sendJsonResponse(res, 200, {
-            success: true,
-            message: "Face registration updated and permanently locked. Single-use authorization consumed.",
-            isLocked: true,
-            count: templateCount,
-            enrolledCount: templateCount,
-            deviceId,
-          });
         }
 
-        if (rpcErr || !rpcData) {
-          console.error("[face-replace] atomic_consume_face_approval_token RPC unavailable or failed:", rpcErr?.message || "No RPC data");
+        // 2. Atomic row update: only updates if row still has status:approved and does NOT have status:consumed
+        // In PostgreSQL, row-level locks on update serialize concurrent requests.
+        let cleanDevice = approvedRow.device
+          .replace(/status:approved/g, "status:consumed")
+          .replace(/consumed_at:[^|]+/g, "");
+        if (!cleanDevice.includes("status:consumed")) {
+          cleanDevice += "|status:consumed";
+        }
+        cleanDevice += `|consumed_at:${nowIso}`;
+        if (cleanDevice.length > 250) {
+          cleanDevice = `token:${candidateToken}|status:consumed|device_id:${(deviceId || "device").slice(0, 32)}|consumed_at:${nowIso}|count:${templateCount}`;
+        }
+
+        const { data: updatedRows, error: updErr } = await supabase
+          .from("security_events")
+          .update({
+            device: cleanDevice,
+            time: nowIso,
+          })
+          .eq("id", approvedRow.id)
+          .eq("result", "Allowed")
+          .ilike("device", "%status:approved%")
+          .not("device", "ilike", "%status:consumed%")
+          .select();
+
+        if (updErr) {
           return sendJsonResponse(res, 503, {
             success: false,
-            error: "Face replacement service is temporarily unavailable. Existing face templates and approval state remain unchanged.",
+            error: "Database or biometric service temporarily unavailable. Safe rollback enforced.",
             code: "RPC_UNAVAILABLE",
             isLocked: true,
           });
         }
 
-        if (!rpcData.success) {
-          const statusMap: Record<string, number> = {
-            TOKEN_INVALID_OR_CONSUMED: 403,
-            INVALID_OR_CONSUMED_TOKEN: 403,
-            EXPIRED_APPROVAL_TOKEN: 403,
-            INVALID_EXPIRY: 403,
-            MALFORMED_EXPIRY: 403,
-            TOKEN_MISSING: 400,
-            STAFF_CODE_MISSING: 400,
-            STAFF_NOT_FOUND: 404,
-            TRANSACTION_ROLLBACK: 500,
-          };
-          const httpStatus = statusMap[rpcData.code] || 400;
-
-          return sendJsonResponse(res, httpStatus, {
+        if (!updatedRows || updatedRows.length === 0) {
+          return sendJsonResponse(res, 403, {
             success: false,
-            error: rpcData.error || "Failed to replace face registration.",
-            code: rpcData.code,
+            code: "INVALID_OR_CONSUMED_TOKEN",
+            error: "Invalid, expired, or already consumed face change authorization. Request new administrator approval.",
             isLocked: true,
           });
         }
 
+        // Immutable security audit log
+        await supabase.from("security_events").insert({
+          time: nowIso,
+          staff: staffCode,
+          event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
+          device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}`,
+          location: "CampusAttend Biometric System",
+          result: "Allowed",
+          severity: "Low",
+        });
+
         return sendJsonResponse(res, 200, {
           success: true,
-          message: rpcData.message || "Face registration updated and permanently locked. Single-use authorization consumed.",
+          message: "Face registration updated and permanently locked. Single-use authorization consumed.",
           isLocked: true,
           count: templateCount,
           enrolledCount: templateCount,
@@ -688,8 +814,17 @@ export default async function handler(req: any, res?: any) {
       }
 
       // -----------------------------------------------------------------------
-      // INITIAL ENROLLMENT: Register device-local enrollment in audit log
+      // INITIAL ENROLLMENT: Only allowed if staff has NO prior enrollment
       // -----------------------------------------------------------------------
+      if (isEnrolled) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          code: "FACE_REGISTRATION_LOCKED",
+          error: "Your face registration is locked. A fresh administrator approval is required for face replacement.",
+          isLocked: true,
+        });
+      }
+
       const nowIso = new Date().toISOString();
       await supabase.from("security_events").insert({
         time: nowIso,

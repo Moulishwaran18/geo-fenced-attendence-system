@@ -74,6 +74,20 @@ export interface StaffFaceStatusResponse {
     expires_at?: string | undefined;
     approved_at?: string | undefined;
   } | null | undefined;
+  latestRequest?: {
+    id: string;
+    reason: string;
+    status: string;
+    created_at: string;
+    deviceId?: string | undefined;
+    sampleCount?: number | undefined;
+    requestType?: "initial" | "replacement" | string | undefined;
+    adminNotes?: string | undefined;
+    approved_at?: string | undefined;
+    expires_at?: string | undefined;
+    remaining_seconds?: number | null | undefined;
+  } | null | undefined;
+  latestRequestStatus?: "pending" | "approved" | "completed" | "rejected" | "expired" | "none" | "not_registered" | string | undefined;
   oneTimeToken?: string | null | undefined;
   error?: string | undefined;
 }
@@ -151,10 +165,11 @@ export async function getStaffFaceStatus(): Promise<StaffFaceStatusResponse> {
 
     const statusData: StaffFaceStatusResponse = {
       ...data,
-      enrollmentStatus: data.status,
-      sampleCount: data.embeddingCount,
-      canSaveReplacement: Boolean(data.oneTimeToken || (data.status === "approved" && data.canEdit)),
-      activeRequest: data.pendingRequest || null,
+      enrollmentStatus: data.enrollmentStatus || (data.isLocked ? "approved" : data.status),
+      sampleCount: data.sampleCount ?? data.embeddingCount,
+      canSaveReplacement: Boolean(data.canSaveReplacement && data.oneTimeToken),
+      activeRequest: data.pendingRequest || data.approvedRequest || data.latestRequest || null,
+      latestRequest: data.latestRequest || null,
     };
     return statusData;
   } catch (err: any) {
@@ -180,6 +195,7 @@ export interface StaffEnrollDeviceParams {
   deviceId?: string | undefined;
   templateCount?: number | undefined;
   oneTimeToken?: string | null | undefined;
+  requestId?: string | undefined;
 }
 
 /**
@@ -203,11 +219,15 @@ export async function submitStaffFaceEnrollment(
     if (params.deviceId) {
       headers["x-device-id"] = params.deviceId;
     }
+    if (params.requestId) {
+      headers["x-request-id"] = params.requestId;
+    }
 
     const enrollPayload = {
       deviceId: params.deviceId || "android-keystore",
-      templateCount: params.templateCount || 3,
+      templateCount: params.templateCount || 5,
       oneTimeToken: effectiveToken || undefined,
+      requestId: params.requestId || undefined,
       action: "enroll",
     };
 
