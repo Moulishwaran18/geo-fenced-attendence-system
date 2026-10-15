@@ -88,9 +88,17 @@ export function getAverageEAR(landmarks: faceapi.FaceLandmarks68): number {
 /*  Temporal Blink State Machine                                       */
 /* ------------------------------------------------------------------ */
 
-export type EyePhysicalState = "OPEN" | "CLOSING" | "CLOSED" | "PERMANENTLY_CLOSED";
-export type BlinkStateMachineState = "AWAITING_BLINK" | "CLOSING" | "CLOSED" | "BLINK_VERIFIED";
+export type EyePhysicalState = "OPEN" | "CLOSING" | "CLOSED" | "REOPENED" | "PERMANENTLY_CLOSED";
+export type BlinkStateMachineState = "AWAITING_BLINK" | "CLOSING" | "CLOSED" | "REOPENED" | "BLINK_VERIFIED";
 export type BlinkPhase = BlinkStateMachineState;
+
+export interface BlinkEventRecord {
+  blinkIndex: number;
+  timestamp: number;
+  durationMs: number;
+  minEAR: number;
+  reason: string;
+}
 
 export interface BlinkTrackerState {
   // Telemetry Metrics
@@ -98,15 +106,23 @@ export interface BlinkTrackerState {
   rightEAR: number;
   currentEAR: number;
   baselineEAR: number;
+  closedThreshold: number;
+  closingThreshold: number;
+  reopenThreshold: number;
   eyeState: EyePhysicalState;
   blinkState: BlinkStateMachineState;
   blinkCount: number;
   targetBlinks: number;
   closedFramesCount: number;
   framesSampled: number;
+  framesDropped: number;
   livenessFPS: number;
   livenessTimerSec: number;
   isComplete: boolean;
+  blinkHistory: BlinkEventRecord[];
+  lastBlinkDurationMs: number | null;
+  lastBlinkTimestamp: number | null;
+  exactReason: string;
   logMessage: string;
 }
 
@@ -119,15 +135,21 @@ export class TemporalBlinkDetector {
   private closedFrames: number = 0;
   private openFrames: number = 0;
   private framesSampled: number = 0;
+  private framesDropped: number = 0;
   private lastBlinkTime: number | null = null;
+  private lastBlinkDurationMs: number | null = null;
   private closedStartTime: number | null = null;
+  private reopenStartTime: number | null = null;
   private sessionStartTime: number = Date.now();
+  private minClosedEAR: number = 1.0;
+  private exactReason: string = "Awaiting natural blink";
 
   private lastLeftEAR: number = 0.28;
   private lastRightEAR: number = 0.28;
   private lastMeanEAR: number = 0.28;
   private baselineEAR: number = 0.28;
   private baselineSamples: number = 0;
+  private blinkHistory: BlinkEventRecord[] = [];
 
   // FPS tracking for liveness sampler
   private fpsTimer: number = Date.now();
@@ -153,9 +175,15 @@ export class TemporalBlinkDetector {
     this.closedFrames = 0;
     this.openFrames = 0;
     this.framesSampled = 0;
+    this.framesDropped = 0;
     this.lastBlinkTime = null;
+    this.lastBlinkDurationMs = null;
     this.closedStartTime = null;
+    this.reopenStartTime = null;
     this.sessionStartTime = Date.now();
+    this.minClosedEAR = 1.0;
+    this.exactReason = "Awaiting natural blink";
+    this.blinkHistory = [];
 
     this.lastLeftEAR = 0.28;
     this.lastRightEAR = 0.28;
@@ -169,12 +197,20 @@ export class TemporalBlinkDetector {
   }
 
   /**
+   * Record dropped or unparsed frame (e.g. landmark detection failure or obscured eyes).
+   */
+  recordFrameDrop(reason: string = "Landmark detection missed"): void {
+    this.framesDropped++;
+    this.exactReason = reason;
+  }
+
+  /**
    * Process a single video frame's landmarks.
    */
-  processFrame(landmarks: faceapi.FaceLandmarks68): BlinkTrackerState {
+  processFrame(landmarks: faceapi.FaceLandmarks68, frameTimestamp?: number): BlinkTrackerState {
     this.framesSampled++;
     this.fpsFrameCount++;
-    const now = Date.now();
+    const now = frameTimestamp || Date.now();
 
     // Track effective liveness FPS
     if (now - this.fpsTimer >= 1000) {
@@ -183,111 +219,215 @@ export class TemporalBlinkDetector {
       this.fpsTimer = now;
     }
 
-    const { leftEAR, rightEAR, meanEAR } = getDetailedEAR(landmarks);
+    const { leftEAR, rightEAR, meanEAR, validLandmarks } = getDetailedEAR(landmarks);
+    if (!validLandmarks) {
+      this.recordFrameDrop("Landmark geometry missing or <68 points");
+      return this.getState();
+    }
+
     this.lastLeftEAR = leftEAR;
     this.lastRightEAR = rightEAR;
     this.lastMeanEAR = meanEAR;
 
-    // 1. Adaptive Baseline Initialization & Calibration
+    // 1. Adaptive Baseline Tracking: Dynamically learn open eye geometry (0.21 - 0.42)
     if (this.baselineSamples < 5) {
-      // Fast calibration on first 5 frames
-      this.baselineEAR = Math.max(0.24, Math.min(0.38, (this.baselineEAR * this.baselineSamples + meanEAR) / (this.baselineSamples + 1)));
-      this.baselineSamples++;
-    } else if (this.state === "AWAITING_BLINK" && meanEAR > 0.22) {
-      // Slowly adapt baseline to normal open eyes (moving average)
-      this.baselineEAR = this.baselineEAR * 0.95 + meanEAR * 0.05;
+      if (meanEAR >= 0.19) {
+        this.baselineEAR = (this.baselineEAR * this.baselineSamples + meanEAR) / (this.baselineSamples + 1);
+        this.baselineEAR = Math.max(0.21, Math.min(0.42, this.baselineEAR));
+        this.baselineSamples++;
+      }
+    } else if (this.state === "AWAITING_BLINK" && this.eyeState === "OPEN" && meanEAR >= this.baselineEAR * 0.85) {
+      // Slowly adapt baseline to confirmed open eyes
+      this.baselineEAR = this.baselineEAR * 0.96 + meanEAR * 0.04;
     }
 
-    // Dynamic thresholds relative to individual baseline:
-    // - Closing threshold: EAR < 88% of baseline or < 0.25
-    // - Closed threshold:  EAR < 80% of baseline or < 0.225
-    // - Reopen threshold:  EAR >= 88% of baseline or >= 0.245
-    const closedThreshold = Math.min(0.235, Math.max(0.18, this.baselineEAR * 0.80));
-    const closingThreshold = Math.min(0.255, Math.max(0.20, this.baselineEAR * 0.88));
-    const reopenThreshold = Math.max(0.240, Math.min(0.34, this.baselineEAR * 0.88));
+    // Dynamic thresholds with calibrated hysteresis:
+    // - Closed threshold: EAR drops by >= 22% below baseline or <= 0.245
+    // - Closing threshold: EAR drops by >= 14% below baseline
+    // - Reopen threshold: EAR returns to >= 86% of baseline with minimum 0.025 gap above closedThreshold
+    const closedThreshold = Math.min(0.245, Math.max(0.170, Number((this.baselineEAR * 0.78).toFixed(4))));
+    const closingThreshold = Math.min(0.265, Math.max(0.190, Number((this.baselineEAR * 0.86).toFixed(4))));
+    const reopenThreshold = Math.min(0.360, Math.max(closedThreshold + 0.025, Number((this.baselineEAR * 0.86).toFixed(4))));
 
     // Determine current physical eye state
     if (meanEAR <= closedThreshold) {
       this.eyeState = "CLOSED";
     } else if (meanEAR <= closingThreshold) {
       this.eyeState = "CLOSING";
-    } else {
+    } else if (meanEAR >= reopenThreshold) {
       this.eyeState = "OPEN";
+    } else {
+      // In hysteresis band: maintain previous state unless transitioning
+      if (this.eyeState === "CLOSED" || this.eyeState === "CLOSING") {
+        this.eyeState = "CLOSING";
+      } else {
+        this.eyeState = "OPEN";
+      }
     }
 
     let logMsg = "";
 
-    // 2. Temporal State Machine: OPEN -> CLOSING -> CLOSED -> OPEN
+    // 2. Inter-blink interval expiration check for multi-blink challenges (e.g. double-blink)
+    if (this.targetCount === 2 && this.completedCount === 1 && this.lastBlinkTime !== null) {
+      const intervalSinceFirstBlink = now - this.lastBlinkTime;
+      if (intervalSinceFirstBlink > 4000) {
+        // Exceeded 4s max interval between 1st and 2nd blink -> reset to require 2 consecutive blinks
+        this.completedCount = 0;
+        this.state = "AWAITING_BLINK";
+        this.exactReason = "Interval between blinks exceeded 4.0s. Please blink twice consecutively.";
+        logMsg = "Double-blink interval exceeded 4s: Resetting counter to 0/2";
+      }
+    }
+
+    // 3. Temporal State Machine: OPEN -> CLOSING -> CLOSED -> REOPENED
     switch (this.state) {
       case "AWAITING_BLINK": {
-        if (this.eyeState === "CLOSED" || this.eyeState === "CLOSING") {
-          this.state = this.eyeState === "CLOSED" ? "CLOSED" : "CLOSING";
+        if (this.eyeState === "CLOSED") {
+          // Low-FPS fast blink: dropped directly to closed in 1 frame
+          this.state = "CLOSED";
           this.closedFrames = 1;
           this.openFrames = 0;
           this.closedStartTime = now;
-          logMsg = `Eye dip detected (EAR: ${meanEAR.toFixed(3)} < Thresh: ${closedThreshold.toFixed(3)}) -> Entering ${this.state}`;
+          this.minClosedEAR = meanEAR;
+          this.exactReason = `Eyes closed (EAR: ${meanEAR.toFixed(3)} <= ${closedThreshold.toFixed(3)})`;
+          logMsg = `Eyes closed (EAR: ${meanEAR.toFixed(3)}) -> Entering CLOSED`;
+        } else if (this.eyeState === "CLOSING") {
+          this.state = "CLOSING";
+          this.closedFrames = 1;
+          this.openFrames = 0;
+          this.closedStartTime = now;
+          this.minClosedEAR = meanEAR;
+          this.exactReason = `Eyes closing (EAR: ${meanEAR.toFixed(3)} <= ${closingThreshold.toFixed(3)})`;
+          logMsg = `Eye dip detected (EAR: ${meanEAR.toFixed(3)}) -> Entering CLOSING`;
         } else {
           this.openFrames++;
           this.closedFrames = 0;
           this.closedStartTime = null;
+          this.exactReason = `Eyes open (EAR: ${meanEAR.toFixed(3)}, Baseline: ${this.baselineEAR.toFixed(3)})`;
         }
         break;
       }
 
       case "CLOSING": {
+        this.minClosedEAR = Math.min(this.minClosedEAR, meanEAR);
         if (this.eyeState === "CLOSED") {
           this.state = "CLOSED";
           this.closedFrames++;
-          logMsg = `Eyes fully closed (EAR: ${meanEAR.toFixed(3)})`;
-        } else if (this.eyeState === "OPEN") {
+          this.exactReason = `Eyes fully closed (EAR: ${meanEAR.toFixed(3)})`;
+          logMsg = `Eyes fully closed (EAR: ${meanEAR.toFixed(3)}) -> Entering CLOSED`;
+        } else if (this.eyeState === "OPEN" || meanEAR >= reopenThreshold) {
           // Quick low-FPS transient blink: went OPEN -> CLOSING -> OPEN in 2 frames
-          this.completedCount++;
-          this.lastBlinkTime = now;
-          this.state = this.completedCount >= this.targetCount ? "BLINK_VERIFIED" : "AWAITING_BLINK";
+          const durationMs = this.closedStartTime ? Math.max(60, now - this.closedStartTime) : 120;
+          if (durationMs >= 60 && durationMs <= 1500) {
+            this.completedCount++;
+            this.lastBlinkTime = now;
+            this.lastBlinkDurationMs = durationMs;
+            this.blinkHistory.push({
+              blinkIndex: this.completedCount,
+              timestamp: now,
+              durationMs,
+              minEAR: Number(this.minClosedEAR.toFixed(4)),
+              reason: `Valid transient blink (duration: ${durationMs}ms, minEAR: ${this.minClosedEAR.toFixed(3)})`,
+            });
+
+            if (this.completedCount >= this.targetCount) {
+              this.state = "BLINK_VERIFIED";
+              this.exactReason = `All ${this.targetCount} blinks verified!`;
+              logMsg = `Quick transient blink verified -> Blinks: ${this.completedCount}/${this.targetCount}`;
+            } else {
+              this.state = "REOPENED";
+              this.reopenStartTime = now;
+              this.exactReason = `First blink verified (${durationMs}ms). Blink once more.`;
+              logMsg = `Blink 1/2 complete -> Awaiting second blink`;
+            }
+          } else {
+            this.state = "AWAITING_BLINK";
+            this.exactReason = `Blink duration (${durationMs}ms) outside natural range (60-1500ms)`;
+          }
           this.closedFrames = 0;
           this.closedStartTime = null;
-          logMsg = `Quick transient blink verified (EAR: ${meanEAR.toFixed(3)}) -> Blinks: ${this.completedCount}/${this.targetCount}`;
         } else {
           this.closedFrames++;
+          this.exactReason = `Eyes in closing motion (EAR: ${meanEAR.toFixed(3)})`;
         }
         break;
       }
 
       case "CLOSED": {
-        if (this.eyeState === "CLOSED") {
-          this.closedFrames++;
-          const closedDurationMs = this.closedStartTime ? now - this.closedStartTime : 0;
+        this.minClosedEAR = Math.min(this.minClosedEAR, meanEAR);
+        const closedDurationMs = this.closedStartTime ? now - this.closedStartTime : 0;
 
-          // Rule 8: If eyes remain permanently closed (> 2.0s or > 15 consecutive frames), do NOT count as a blink
+        if (this.eyeState === "CLOSED" || this.eyeState === "CLOSING") {
+          this.closedFrames++;
+          // Reject prolonged eye closure (> 2.0s or > 15 consecutive frames closed)
           if (closedDurationMs > 2000 || this.closedFrames > 15) {
             this.isPermanentlyClosed = true;
             this.eyeState = "PERMANENTLY_CLOSED";
+            this.exactReason = `Prolonged closed eye rejected (>2.0s / ${this.closedFrames} frames closed)`;
             logMsg = `Permanently closed eye rejected (>2.0s / ${this.closedFrames} frames closed)`;
+          } else {
+            this.exactReason = `Eyes held closed (${closedDurationMs}ms, EAR: ${meanEAR.toFixed(3)})`;
           }
         } else if (this.eyeState === "OPEN" || meanEAR >= reopenThreshold) {
-          const closedDurationMs = this.closedStartTime ? now - this.closedStartTime : 0;
-
-          // Check if closure was a legitimate natural blink (not permanently closed)
-          if (!this.isPermanentlyClosed && closedDurationMs <= 2000) {
+          // Check if closure was a legitimate natural blink
+          if (!this.isPermanentlyClosed && closedDurationMs >= 50 && closedDurationMs <= 2000) {
             this.completedCount++;
             this.lastBlinkTime = now;
-            this.state = this.completedCount >= this.targetCount ? "BLINK_VERIFIED" : "AWAITING_BLINK";
-            this.closedFrames = 0;
-            this.closedStartTime = null;
-            logMsg = `Natural blink complete! (Duration: ${closedDurationMs}ms, Closed Frames: ${this.closedFrames}) -> Blinks: ${this.completedCount}/${this.targetCount}`;
+            this.lastBlinkDurationMs = closedDurationMs;
+            this.blinkHistory.push({
+              blinkIndex: this.completedCount,
+              timestamp: now,
+              durationMs: closedDurationMs,
+              minEAR: Number(this.minClosedEAR.toFixed(4)),
+              reason: `Natural blink verified (duration: ${closedDurationMs}ms, minEAR: ${this.minClosedEAR.toFixed(3)})`,
+            });
+
+            if (this.completedCount >= this.targetCount) {
+              this.state = "BLINK_VERIFIED";
+              this.exactReason = `All ${this.targetCount} blinks verified!`;
+              logMsg = `Natural blink complete! -> Blinks: ${this.completedCount}/${this.targetCount}`;
+            } else {
+              this.state = "REOPENED";
+              this.reopenStartTime = now;
+              this.exactReason = `First blink verified (${closedDurationMs}ms). Blink once more.`;
+              logMsg = `First blink verified (${closedDurationMs}ms) -> Waiting for second blink`;
+            }
           } else {
-            // Recover from permanently closed state back to awaiting blink
+            // Recover from permanently closed state or noise
             this.state = "AWAITING_BLINK";
             this.isPermanentlyClosed = false;
-            this.closedFrames = 0;
-            this.closedStartTime = null;
-            logMsg = "Eyes reopened after permanent closure. Waiting for fresh natural blink.";
+            this.exactReason = closedDurationMs < 50
+              ? "Instant dip rejected as optical noise (<50ms)"
+              : "Eyes reopened after permanent closure. Waiting for fresh natural blink.";
+            logMsg = this.exactReason;
           }
+          this.closedFrames = 0;
+          this.closedStartTime = null;
+        }
+        break;
+      }
+
+      case "REOPENED": {
+        // Enforce an inter-blink open confirmation period (minimum 120ms eyes confirmed OPEN)
+        // to prevent a single blink's recovery fluctuation from counting twice!
+        const openDuration = this.reopenStartTime ? now - this.reopenStartTime : 0;
+        if (this.eyeState === "OPEN" || meanEAR >= reopenThreshold) {
+          this.openFrames++;
+          if (openDuration >= 120 && this.openFrames >= 1) {
+            this.state = "AWAITING_BLINK";
+            this.exactReason = `Eyes confirmed reopened (${openDuration}ms). Ready for blink 2.`;
+            logMsg = "Eyes confirmed reopened. Ready for next blink.";
+          } else {
+            this.exactReason = `Eyes reopening (${openDuration}ms) — confirming open state...`;
+          }
+        } else {
+          this.exactReason = "Keep eyes open before second blink";
         }
         break;
       }
 
       case "BLINK_VERIFIED": {
+        this.exactReason = `Blink liveness PASSED (${this.completedCount}/${this.targetCount} verified)`;
         logMsg = `Blink liveness PASSED (${this.completedCount} natural blinks verified)`;
         break;
       }
@@ -301,21 +441,38 @@ export class TemporalBlinkDetector {
    */
   getState(logMessage?: string): BlinkTrackerState {
     const livenessTimerSec = Number(((Date.now() - this.sessionStartTime) / 1000).toFixed(1));
+    const closedThreshold = Math.min(0.245, Math.max(0.170, Number((this.baselineEAR * 0.78).toFixed(4))));
+    const closingThreshold = Math.min(0.265, Math.max(0.190, Number((this.baselineEAR * 0.86).toFixed(4))));
+    const reopenThreshold = Math.min(0.360, Math.max(closedThreshold + 0.025, Number((this.baselineEAR * 0.86).toFixed(4))));
+
     return {
       leftEAR: this.lastLeftEAR,
       rightEAR: this.lastRightEAR,
       currentEAR: this.lastMeanEAR,
       baselineEAR: Number(this.baselineEAR.toFixed(4)),
+      closedThreshold,
+      closingThreshold,
+      reopenThreshold,
       eyeState: this.eyeState,
       blinkState: this.state,
       blinkCount: this.completedCount,
       targetBlinks: this.targetCount,
       closedFramesCount: this.closedFrames,
       framesSampled: this.framesSampled,
+      framesDropped: this.framesDropped,
       livenessFPS: this.currentLivenessFPS,
       livenessTimerSec,
       isComplete: this.completedCount >= this.targetCount,
-      logMessage: logMessage || (this.state === "BLINK_VERIFIED" ? "Blink liveness PASSED" : `Awaiting natural blink (Blinks: ${this.completedCount}/${this.targetCount})`),
+      blinkHistory: [...this.blinkHistory],
+      lastBlinkDurationMs: this.lastBlinkDurationMs,
+      lastBlinkTimestamp: this.lastBlinkTime,
+      exactReason: this.exactReason,
+      logMessage:
+        logMessage ||
+        (this.state === "BLINK_VERIFIED"
+          ? "Blink liveness PASSED"
+          : `Awaiting natural blink (${this.completedCount}/${this.targetCount})`),
     };
   }
 }
+

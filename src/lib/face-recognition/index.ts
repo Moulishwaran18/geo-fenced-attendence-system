@@ -49,7 +49,13 @@ export {
   getDetailedEAR,
   TemporalBlinkDetector,
 } from "./blink-detection";
-export type { BlinkPhase, BlinkTrackerState } from "./blink-detection";
+export type {
+  BlinkPhase,
+  BlinkTrackerState,
+  BlinkEventRecord,
+  EyePhysicalState,
+  BlinkStateMachineState,
+} from "./blink-detection";
 
 // Module 4: headPose
 export {
@@ -57,6 +63,7 @@ export {
   estimatePitchAngle,
   estimateHeadPose,
   checkDirection,
+  classifyDirection,
   TemporalHeadPoseDetector,
 } from "./head-pose";
 export type {
@@ -68,6 +75,7 @@ export type {
 // Module 5: liveness
 export {
   generateRandomChallenge,
+  generateRandomDirectionSequence,
   LivenessSession,
 } from "./liveness-engine";
 export type {
@@ -77,11 +85,13 @@ export type {
   GeneratedChallenge,
   LivenessStatus,
   LivenessState,
+  MovementProgress,
+  LivenessEvidence,
 } from "./liveness-engine";
 
 // Module 6: antiSpoofService
 export { AntiSpoofService } from "./anti-spoof-service";
-export type { PresentationAttackAnalysis } from "./anti-spoof-service";
+export type { PresentationAttackAnalysis, AntiSpoofAggregatedResult } from "./anti-spoof-service";
 
 // Module 7: deepfakeDetection
 export { DeepfakeDetectionService } from "./deepfake-detection";

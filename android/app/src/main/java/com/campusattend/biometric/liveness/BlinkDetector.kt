@@ -56,20 +56,20 @@ class BlinkDetector(private var targetCount: Int = 1) {
         lastEAR = ear
         val now = System.currentTimeMillis()
 
-        // 1. Adaptive baseline tracking
+        // 1. Adaptive baseline tracking (supporting narrow to wide eye apertures)
         if (!initializedBaseline) {
-            baselineEAR = ear.coerceIn(0.24f, 0.38f)
+            baselineEAR = ear.coerceIn(0.21f, 0.42f)
             initializedBaseline = true
-        } else if (phase == BlinkPhase.AWAITING_OPEN && ear > 0.22f) {
-            // Slowly adapt baseline to normal open eyes (EMA)
-            baselineEAR = baselineEAR * 0.9f + ear * 0.1f
+        } else if (phase == BlinkPhase.AWAITING_OPEN && ear >= baselineEAR * 0.85f) {
+            // Slowly adapt baseline to confirmed open eyes (EMA)
+            baselineEAR = baselineEAR * 0.96f + ear * 0.04f
         }
 
-        // Relative and absolute closure thresholds
-        val closureThreshold = minOf(baselineEAR * 0.80f, 0.245f)
-        val reopenThreshold = maxOf(baselineEAR * 0.88f, 0.255f)
+        // Relative and absolute closure thresholds with calibrated hysteresis gap
+        val closureThreshold = minOf(baselineEAR * 0.78f, 0.245f).coerceAtLeast(0.170f)
+        val reopenThreshold = minOf(0.360f, maxOf(closureThreshold + 0.025f, baselineEAR * 0.86f))
 
-        val isClosed = ear < closureThreshold
+        val isClosed = ear <= closureThreshold
         val isOpen = ear >= reopenThreshold
 
         // Debounce interval between consecutive blinks

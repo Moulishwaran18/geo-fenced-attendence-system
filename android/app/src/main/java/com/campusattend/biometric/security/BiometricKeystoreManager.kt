@@ -174,10 +174,12 @@ class BiometricKeystoreManager(private val context: Context) {
         distance: Float,
         margin: Float?,
         livenessPassed: Boolean,
-        challenge: String?
+        challenge: String?,
+        antiSpoofScore: Float? = null,
+        attemptNonce: String? = null
     ): String {
         val now = System.currentTimeMillis()
-        val nonce = UUID.randomUUID().toString()
+        val nonce = attemptNonce ?: UUID.randomUUID().toString()
         val deviceId = getDeviceId()
 
         val payload = JSONObject().apply {
@@ -186,6 +188,7 @@ class BiometricKeystoreManager(private val context: Context) {
             put("distance", distance.toDouble())
             if (margin != null) put("margin", margin.toDouble())
             put("livenessPassed", livenessPassed)
+            if (antiSpoofScore != null) put("antiSpoofScore", antiSpoofScore.toDouble())
             put("method", "device_local_arcface_keystore")
             put("timestamp", now)
             put("nonce", nonce)

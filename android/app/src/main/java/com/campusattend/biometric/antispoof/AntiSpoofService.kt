@@ -116,29 +116,42 @@ class AntiSpoofService(private val context: Context) {
             // 3. Preprocess: RGB→BGR, normalize /255, NCHW format
             val inputTensor = preprocessForMiniFASNet(resized)
 
-            // 4. Run inference on V2
-            val v2Scores = runInference(sessionV2!!, inputTensor)
+            // 4. Run inference on V2 (raw logits)
+            val v2Logits = runInference(sessionV2!!, inputTensor)
 
-            // 5. Optionally run V1SE and average
-            val finalScores = if (sessionV1SE != null) {
-                val v1seScores = runInference(sessionV1SE!!, inputTensor)
+            // 5. Optionally run V1SE and average logits
+            val finalLogits = if (sessionV1SE != null) {
+                val v1seLogits = runInference(sessionV1SE!!, inputTensor)
                 floatArrayOf(
-                    (v2Scores[0] + v1seScores[0]) / 2f,
-                    (v2Scores[1] + v1seScores[1]) / 2f,
-                    (v2Scores[2] + v1seScores[2]) / 2f
+                    (v2Logits[0] + v1seLogits[0]) / 2f,
+                    (v2Logits[1] + v1seLogits[1]) / 2f,
+                    (v2Logits[2] + v1seLogits[2]) / 2f
                 )
             } else {
-                v2Scores
+                v2Logits
             }
 
-            val liveScore = finalScores[0]
+            // Convert raw logits to calibrated probabilities via Softmax
+            // MiniFASNet classes:
+            // Class 0: Print Attack (paper, printed photo)
+            // Class 1: REAL / LIVE (genuine human face)
+            // Class 2: Replay Attack (screen, monitor, smartphone display)
+            val probs = softmax(finalLogits)
+            val printAttackScore = probs[0]
+            val liveScore = probs[1]
+            val replayAttackScore = probs[2]
+
             frameScores.add(liveScore)
 
+            val isLive = liveScore >= BiometricConfig.ANTI_SPOOF_THRESHOLD &&
+                         printAttackScore < 0.40f &&
+                         replayAttackScore < 0.40f
+
             return AntiSpoofResult(
-                liveScore = finalScores[0],
-                printAttackScore = finalScores[1],
-                replayAttackScore = finalScores[2],
-                isLive = liveScore > BiometricConfig.ANTI_SPOOF_THRESHOLD,
+                liveScore = liveScore,
+                printAttackScore = printAttackScore,
+                replayAttackScore = replayAttackScore,
+                isLive = isLive,
                 error = null
             )
         } catch (e: Exception) {
@@ -148,6 +161,23 @@ class AntiSpoofService(private val context: Context) {
                 isLive = false, error = e.message
             )
         }
+    }
+
+    /**
+     * Compute softmax across raw logits: exp(z_i - max) / sum(exp(z_j - max)).
+     */
+    private fun softmax(logits: FloatArray): FloatArray {
+        val maxVal = logits.maxOrNull() ?: 0f
+        val exp = FloatArray(logits.size)
+        var sum = 0f
+        for (i in logits.indices) {
+            exp[i] = kotlin.math.exp(logits[i] - maxVal)
+            sum += exp[i]
+        }
+        if (sum > 0f) {
+            for (i in exp.indices) exp[i] /= sum
+        }
+        return exp
     }
 
     /**
@@ -166,13 +196,15 @@ class AntiSpoofService(private val context: Context) {
 
         val sorted = frameScores.sorted()
         val median = sorted[sorted.size / 2]
-        val passed = median > BiometricConfig.ANTI_SPOOF_THRESHOLD
+        val passed = median >= BiometricConfig.ANTI_SPOOF_THRESHOLD
 
         return AntiSpoofAggregatedResult(
             passed = passed,
             medianLiveScore = median,
             frameCount = frameScores.size,
-            reason = if (!passed) "Presentation attack detected. Median live score: ${"%.3f".format(median)}" else null
+            reason = if (!passed) {
+                "Presentation attack detected (printed photo or screen replay). Live score: ${"%.3f".format(median)} (required >= ${BiometricConfig.ANTI_SPOOF_THRESHOLD})"
+            } else null
         )
     }
 
@@ -202,7 +234,7 @@ class AntiSpoofService(private val context: Context) {
     /**
      * Preprocess bitmap for MiniFASNet:
      * - RGB → BGR channel swap
-     * - Normalize: pixel / 255.0
+     * - Raw byte range: [0..255] float (do NOT divide by 255.0!)
      * - Transpose to [1, 3, 80, 80] NCHW planar format
      */
     private fun preprocessForMiniFASNet(bitmap: Bitmap): FloatBuffer {
@@ -218,9 +250,9 @@ class AntiSpoofService(private val context: Context) {
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val pixel = pixels[y * w + x]
-                val r = ((pixel shr 16) and 0xFF) / 255f
-                val g = ((pixel shr 8) and 0xFF) / 255f
-                val b = (pixel and 0xFF) / 255f
+                val r = ((pixel shr 16) and 0xFF).toFloat()
+                val g = ((pixel shr 8) and 0xFF).toFloat()
+                val b = (pixel and 0xFF).toFloat()
 
                 // BGR channel-first planar layout
                 val pixelIdx = y * w + x

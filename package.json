@@ -23,7 +23,10 @@
     "test:staff-auth": "node --env-file=.env scripts/test-staff-self-registration.js",
     "test:staff-face-lock": "node --env-file=.env scripts/test-staff-face-lock-workflow.js",
     "test:staff-face-local": "node scripts/test-staff-face-local-enrollment.js",
-    "test:supabase": "node --env-file=.env scripts/test-supabase-connection.js"
+    "test:supabase": "node --env-file=.env scripts/test-supabase-connection.js",
+    "test:pad": "npx tsx scripts/test-pad-liveness-attacks.js",
+    "test:face-workflow": "npx tsx scripts/test-face-verification-workflow.js",
+    "test:head-liveness": "npx tsx scripts/test-head-movement-liveness.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

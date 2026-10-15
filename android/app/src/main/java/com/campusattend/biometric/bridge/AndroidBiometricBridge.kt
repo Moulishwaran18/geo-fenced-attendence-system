@@ -34,6 +34,16 @@ class AndroidBiometricBridge(
     private val webView: WebView?
 ) {
 
+    companion object {
+        private val usedAttemptNonces = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        private const val NONCE_TTL_MS = 180_000L
+
+        fun cleanExpiredNonces() {
+            val cutoff = System.currentTimeMillis() - NONCE_TTL_MS
+            usedAttemptNonces.entries.removeIf { it.value < cutoff }
+        }
+    }
+
     private val keystoreManager = BiometricKeystoreManager(context)
     private val repository: BiometricRepository by lazy {
         BiometricRepository(CampusAttendApp.instance.database)
@@ -961,6 +971,17 @@ class AndroidBiometricBridge(
         liveEmbeddingJson: String?,
         challenge: String?
     ): String {
+        return verifyLocalFaceWithEvidence(staffId, deviceId, liveEmbeddingJson, challenge, null)
+    }
+
+    @JavascriptInterface
+    fun verifyLocalFaceWithEvidence(
+        staffId: String?,
+        deviceId: String?,
+        liveEmbeddingJson: String?,
+        challenge: String?,
+        livenessEvidenceJson: String?
+    ): String {
         return try {
             if (!isCallingOriginTrusted()) {
                 return JSONObject().apply {
@@ -1000,6 +1021,7 @@ class AndroidBiometricBridge(
                 return JSONObject().apply {
                     put("matched", false)
                     put("error", "INVALID_DIMENSION")
+                    put("message", "Embedding must contain exactly 512 float values.")
                 }.toString()
             }
 
@@ -1013,6 +1035,82 @@ class AndroidBiometricBridge(
             val norm = sqrt(sumSq).toFloat()
             if (norm > 0) {
                 for (i in liveFloats.indices) liveFloats[i] /= norm
+            }
+
+            // Extract and validate liveness & anti-spoof evidence
+            var livenessCompleted = false
+            var antiSpoofScore = 0f
+            var attemptNonce: String? = null
+            var challengeName: String? = challenge
+
+            val evidenceRaw = livenessEvidenceJson?.takeIf { it.isNotBlank() }
+                ?: challenge?.takeIf { it.trim().startsWith("{") }
+
+            if (!evidenceRaw.isNullOrBlank()) {
+                try {
+                    val evJson = JSONObject(evidenceRaw)
+                    livenessCompleted = evJson.optBoolean("livenessCompleted", evJson.optBoolean("livenessPassed", false))
+                    antiSpoofScore = evJson.optDouble("antiSpoofScore", 0.0).toFloat()
+                    if (evJson.has("attemptNonce")) {
+                        attemptNonce = evJson.getString("attemptNonce")
+                    } else if (evJson.has("nonce")) {
+                        attemptNonce = evJson.getString("nonce")
+                    }
+                    val evChallenge = if (evJson.has("challenge")) {
+                        evJson.getString("challenge")
+                    } else if (evJson.has("challengeCategory")) {
+                        evJson.getString("challengeCategory")
+                    } else null
+                    if (!evChallenge.isNullOrBlank()) challengeName = evChallenge
+                } catch (_: Throwable) {}
+            }
+
+            // Mandatory PAD & Liveness enforcement:
+            // A recognized face MUST NEVER be sufficient by itself to mark attendance or receive an attestation token!
+            if (!BiometricConfig.DEV_MODE_BYPASS_LIVENESS) {
+                if (!livenessCompleted) {
+                    return JSONObject().apply {
+                        put("matched", false)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("error", "LIVENESS_REQUIRED")
+                        put("message", "Attendance rejected: Active randomized liveness challenge must be completed before biometric match.")
+                    }.toString()
+                }
+
+                if (antiSpoofScore < BiometricConfig.ANTI_SPOOF_THRESHOLD || antiSpoofScore <= 0f) {
+                    return JSONObject().apply {
+                        put("matched", false)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("error", "SPOOF_DETECTED")
+                        put("antiSpoofScore", antiSpoofScore.toDouble())
+                        put("message", "Attendance rejected: Presentation attack detected (print or screen spoof). Anti-spoof confidence score (${String.format("%.3f", antiSpoofScore)}) is below mandatory threshold (${BiometricConfig.ANTI_SPOOF_THRESHOLD}).")
+                    }.toString()
+                }
+
+                val cleanNonce = attemptNonce?.trim() ?: ""
+                if (cleanNonce.length < 8) {
+                    return JSONObject().apply {
+                        put("matched", false)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("error", "MISSING_CHALLENGE_NONCE")
+                        put("message", "Attendance rejected: Valid challenge attempt nonce is required for replay protection.")
+                    }.toString()
+                }
+
+                cleanExpiredNonces()
+                if (usedAttemptNonces.containsKey(cleanNonce)) {
+                    return JSONObject().apply {
+                        put("matched", false)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("error", "CHALLENGE_NONCE_REPLAYED")
+                        put("message", "Attendance rejected: Challenge session nonce was already consumed or replayed.")
+                    }.toString()
+                }
+                usedAttemptNonces[cleanNonce] = System.currentTimeMillis()
             }
 
             runBlocking(Dispatchers.IO) {
@@ -1065,8 +1163,10 @@ class AndroidBiometricBridge(
                         staffId = cleanId,
                         distance = bestDistance,
                         margin = null,
-                        livenessPassed = true,
-                        challenge = challenge
+                        livenessPassed = livenessCompleted,
+                        challenge = challengeName,
+                        antiSpoofScore = if (antiSpoofScore > 0f) antiSpoofScore else null,
+                        attemptNonce = attemptNonce
                     )
 
                     JSONObject().apply {
@@ -1075,6 +1175,8 @@ class AndroidBiometricBridge(
                         put("deviceId", currentDeviceId)
                         put("distance", bestDistance.toDouble())
                         put("threshold", threshold.toDouble())
+                        put("livenessPassed", livenessCompleted)
+                        put("antiSpoofScore", antiSpoofScore.toDouble())
                         put("biometricAttestation", attestationToken)
                         put("message", "Face verified on device via Android Keystore template.")
                     }.toString()

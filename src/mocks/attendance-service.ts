@@ -205,10 +205,14 @@ export interface MarkAttendanceParams {
   recognizedStaffCode?: string | undefined;
   faceMatchDistance?: number | undefined;
   livenessPassed?: boolean | undefined;
+  antiSpoofScore?: number | undefined;
   auditId?: string | undefined;
   biometricAttestation?: string | undefined;
   deviceId?: string | undefined;
   token?: string | undefined;
+  sessionNonce?: string | undefined;
+  attemptNonce?: string | undefined;
+  livenessEvidence?: any | undefined;
 }
 
 export async function markAttendance(params?: MarkAttendanceParams): Promise<AttendanceReceipt> {

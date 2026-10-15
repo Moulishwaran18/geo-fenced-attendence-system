@@ -474,15 +474,17 @@ export async function verifyNativePersistence(staffId: string): Promise<{
 
 /**
  * Verify a live face embedding against this device's Android Keystore templates.
+ * Enforces presentation-attack detection and active liveness verification evidence.
  * Returns match result and single-use cryptographic attendance attestation token.
  */
 export async function verifyNativeFace(
   staffId: string,
   liveEmbedding: number[] | Float32Array,
   challenge?: string,
+  livenessEvidence?: any,
 ): Promise<NativeVerifyResult> {
   const bridge = getBridge();
-  if (!bridge || typeof bridge.verifyLocalFace !== "function") {
+  if (!bridge || (typeof bridge.verifyLocalFace !== "function" && typeof bridge.verifyLocalFaceWithEvidence !== "function")) {
     return {
       matched: false,
       error: "BRIDGE_UNAVAILABLE",
@@ -492,14 +494,29 @@ export async function verifyNativeFace(
 
   const deviceId = getNativeDeviceId() || "";
   const floatsArray = Array.from(liveEmbedding);
+  const evidencePayload = livenessEvidence
+    ? (typeof livenessEvidence === "string" ? livenessEvidence : JSON.stringify(livenessEvidence))
+    : (challenge && challenge.trim().startsWith("{") ? challenge : null);
 
   try {
-    const raw = bridge.verifyLocalFace(
-      staffId,
-      deviceId,
-      JSON.stringify(floatsArray),
-      challenge || "",
-    );
+    let raw: any;
+    if (typeof bridge.verifyLocalFaceWithEvidence === "function") {
+      raw = bridge.verifyLocalFaceWithEvidence(
+        staffId,
+        deviceId,
+        JSON.stringify(floatsArray),
+        challenge || "",
+        evidencePayload || "",
+      );
+    } else {
+      // Pass evidence payload in challenge parameter for 4-param bridge compatibility
+      raw = bridge.verifyLocalFace(
+        staffId,
+        deviceId,
+        JSON.stringify(floatsArray),
+        evidencePayload || challenge || "",
+      );
+    }
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     return {
       matched: Boolean(parsed.matched),

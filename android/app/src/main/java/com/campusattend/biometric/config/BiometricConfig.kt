@@ -13,14 +13,12 @@ object BiometricConfig {
     // ── Development / Testing Bypass Flags ──
 
     /**
-     * Development Mode flag to bypass liveness and anti-spoof checks during
-     * face detection, face embedding, and database matching testing.
-     *
-     * Set to true to bypass liveness.
+     * Development Mode flag to bypass liveness and anti-spoof checks.
      * Set to false for standard production liveness + anti-spoof security.
+     * Enforces active temporal challenge + MiniFASNet anti-spoof verification.
      */
     @Volatile
-    var DEV_MODE_BYPASS_LIVENESS = true
+    var DEV_MODE_BYPASS_LIVENESS = false
 
     // ── Face Recognition (ArcFace MobileFaceNet w600k_mbf.onnx) ──
 
@@ -72,10 +70,10 @@ object BiometricConfig {
 
     /**
      * Minimum "live" confidence score from MiniFASNet to pass anti-spoof.
-     * Output index 0 is typically the "live" class.
+     * Output index 1 is the "live" class (softmax probability).
      */
     @Volatile
-    var ANTI_SPOOF_THRESHOLD = 0.80f
+    var ANTI_SPOOF_THRESHOLD = 0.70f
 
     /** Number of frames to sample for anti-spoof during verification. */
     const val ANTI_SPOOF_SAMPLE_COUNT = 5
@@ -114,31 +112,31 @@ object BiometricConfig {
     var BLINK_MAX_DURATION_MS = 800L
 
     /** Maximum interval (ms) between first and second blink for double-blink. */
-    const val DOUBLE_BLINK_MAX_INTERVAL_MS = 3000L
+    const val DOUBLE_BLINK_MAX_INTERVAL_MS = 4000L
 
     // ── Liveness: Head Pose ──
 
     /** Minimum yaw angle (degrees) to consider head turned left/right. */
-    const val HEAD_TURN_ANGLE_DEG = 7.5f
+    const val HEAD_TURN_ANGLE_DEG = 14.0f
 
     /** Minimum pitch angle (degrees) to consider head tilted up. */
-    const val HEAD_PITCH_UP_DEG = 6.0f
+    const val HEAD_PITCH_UP_DEG = 9.0f
 
     /** Pitch angle threshold for looking down (negative value). */
-    const val HEAD_PITCH_DOWN_DEG = -6.0f
+    const val HEAD_PITCH_DOWN_DEG = -9.0f
 
     /** Consecutive frames the head must hold the target pose. */
-    const val POSE_CONSECUTIVE_FRAMES = 2
+    const val POSE_CONSECUTIVE_FRAMES = 3
 
     // ── Liveness: Session ──
 
-    /** Time limit (ms) for each challenge step before timeout failure. */
+    /** Time limit (ms) for challenge (0L disables countdown auto-timeout). */
     @Volatile
-    var CHALLENGE_TIMEOUT_MS = 8000L
+    var CHALLENGE_TIMEOUT_MS = 0L
 
     /** Overall session time limit (ms). */
     @Volatile
-    var SESSION_TTL_MS = 30000L
+    var SESSION_TTL_MS = 60000L
 
     // ── Camera ──
 

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Activity,
@@ -159,7 +159,10 @@ function MarkAttendancePage() {
       isIdentityMatched &&
       faceResult.distance !== undefined &&
       faceResult.distance <= FACE_CONFIG.MATCH_THRESHOLD &&
-      faceResult.livenessCompleted !== false,
+      faceResult.livenessCompleted === true &&
+      typeof faceResult.antiSpoofScore === "number" &&
+      faceResult.antiSpoofScore >= 0.70 &&
+      faceResult.attemptNonce,
   );
 
   // FINAL DECISION RULE:
@@ -614,8 +617,14 @@ function MarkAttendancePage() {
         faceVerified: true,
         recognizedStaffCode: faceResult?.staffCode || faceResult?.staffId || loggedInStaff.staffId,
         faceMatchDistance: faceResult?.distance,
-        livenessPassed: faceResult?.livenessCompleted ?? true,
+        livenessPassed: faceResult?.livenessCompleted === true,
+        antiSpoofScore: faceResult?.antiSpoofScore,
         auditId: faceResult?.auditId || faceResult?.verification?.auditId,
+        biometricAttestation: faceResult?.biometricAttestation,
+        deviceId: faceResult?.deviceId,
+        sessionNonce: faceResult?.attemptNonce,
+        attemptNonce: faceResult?.attemptNonce,
+        livenessEvidence: faceResult?.livenessEvidence,
       });
       setReceipt(result);
       setStatus("success");
@@ -630,78 +639,94 @@ function MarkAttendancePage() {
     }
   };
 
+  const handleFaceVerified = useCallback(
+    async (result: FaceScanResult) => {
+      setFace(result.snapshot ?? null);
+      setFaceResult(result);
+
+      if (!result.verified) {
+        toast.error("Face Unrecognized", {
+          description: "Biometric identity could not be verified against PostgreSQL staff database.",
+        });
+        return;
+      }
+
+      const matchedIdentity = Boolean(
+        loggedInStaff &&
+          isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId),
+      );
+      if (!matchedIdentity) {
+        toast.error("Identity Mismatch", {
+          description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff?.staffId || "None"}). Attendance rejected.`,
+        });
+        return;
+      }
+
+      toast.success("Face Recognized", {
+        description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
+      });
+
+      // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
+      if (loggedInStaff && wifiAuthorized && gpsInsideGeofence) {
+        setStatus("verifying");
+        try {
+          const attendanceReceipt = await markAttendance({
+            staffCode: loggedInStaff.staffId,
+            staffName: result.staffName || loggedInStaff.name,
+            department: loggedInStaff.department,
+            token: loggedInStaff.token,
+            location: "Main Campus, Sona College",
+            latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
+            longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
+            accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
+            verification: "Verified",
+            networkAuthToken: wifiStatus?.networkAuthToken,
+            faceVerified: true,
+            recognizedStaffCode: result.staffCode || result.staffId || loggedInStaff.staffId,
+            faceMatchDistance: result.distance,
+            livenessPassed: result.livenessCompleted === true,
+            antiSpoofScore: result.antiSpoofScore,
+            auditId: result.auditId || result.verification?.auditId,
+            biometricAttestation: result.biometricAttestation,
+            deviceId: result.deviceId,
+            sessionNonce: result.attemptNonce,
+            attemptNonce: result.attemptNonce,
+            livenessEvidence: result.livenessEvidence,
+          });
+          setReceipt(attendanceReceipt);
+          setStatus("success");
+          toast.success(`Attendance Marked Successfully!`, {
+            description: `${result.staffName || loggedInStaff.name} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
+          });
+          // Close scan dialog smoothly after confirmed database insertion
+          setTimeout(() => {
+            setScanOpen(false);
+          }, 1200);
+        } catch (err: any) {
+          setStatus("idle");
+          toast.error("Attendance Rejected by Server", {
+            description: err?.message || "Server rejected attendance verification.",
+          });
+        }
+      } else {
+        const reasons: string[] = [];
+        if (!wifiAuthorized) reasons.push("Authorized Campus Wi-Fi");
+        if (!gpsInsideGeofence) reasons.push("GPS Polygon Containment");
+        toast.warning("Attendance Blocked: Required Factors Not Satisfied", {
+          description: `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`,
+        });
+      }
+    },
+    [loggedInStaff, wifiAuthorized, gpsInsideGeofence, geofence, wifiStatus?.networkAuthToken],
+  );
+
   return (
     <AppShell nav={staffNav} role="staff">
       <FaceScanDialog
         open={scanOpen}
         onOpenChange={setScanOpen}
         expectedStaffCode={loggedInStaff?.staffId || ""}
-        onVerified={async (result) => {
-          setFace(result.snapshot ?? null);
-          setFaceResult(result);
-
-          if (!result.verified) {
-            toast.error("Face Unrecognized", {
-              description: "Biometric identity could not be verified against PostgreSQL staff database.",
-            });
-            return;
-          }
-
-          const matchedIdentity = Boolean(loggedInStaff && isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId));
-          if (!matchedIdentity) {
-            toast.error("Identity Mismatch", {
-              description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff?.staffId || "None"}). Attendance rejected.`,
-            });
-            return;
-          }
-
-          toast.success("Face Recognized", {
-            description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
-          });
-
-          // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
-          if (loggedInStaff && wifiAuthorized && gpsInsideGeofence) {
-            setStatus("verifying");
-            try {
-              const attendanceReceipt = await markAttendance({
-                staffCode: loggedInStaff.staffId,
-                staffName: result.staffName || loggedInStaff.name,
-                department: loggedInStaff.department,
-                token: loggedInStaff.token,
-                location: "Main Campus, Sona College",
-                latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
-                longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
-                accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
-                verification: "Verified",
-                networkAuthToken: wifiStatus?.networkAuthToken,
-                faceVerified: true,
-                recognizedStaffCode: result.staffCode || result.staffId || loggedInStaff.staffId,
-                faceMatchDistance: result.distance,
-                livenessPassed: result.livenessCompleted ?? true,
-                auditId: result.auditId || result.verification?.auditId,
-                biometricAttestation: result.biometricAttestation,
-                deviceId: result.deviceId,
-              });
-              setReceipt(attendanceReceipt);
-              setStatus("success");
-              toast.success(`Attendance Marked Successfully!`, {
-                description: `${result.staffName || loggedInStaff.name} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
-              });
-            } catch (err: any) {
-              setStatus("idle");
-              toast.error("Attendance Rejected by Server", {
-                description: err?.message || "Server rejected attendance verification.",
-              });
-            }
-          } else {
-            const reasons: string[] = [];
-            if (!wifiAuthorized) reasons.push("Authorized Campus Wi-Fi");
-            if (!gpsInsideGeofence) reasons.push("GPS Polygon Containment");
-            toast.warning("Attendance Blocked: Required Factors Not Satisfied", {
-              description: `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`,
-            });
-          }
-        }}
+        onVerified={handleFaceVerified}
       />
 
       <PageHeader

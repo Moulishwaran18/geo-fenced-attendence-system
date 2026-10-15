@@ -62,30 +62,35 @@ export const FACE_CONFIG = {
     MIN_NEIGHBORS: 1,
   },
 
-  /** Layer 3 & 4: Temporal Liveness & Blink Tracking */
+  /** Layer 3 & 4: Temporal Liveness & Head Movement Tracking */
   LIVENESS: {
     EAR_BLINK_THRESHOLD: 0.235,
     EAR_OPEN_THRESHOLD: 0.26,
     BLINK_MIN_CLOSED_FRAMES: 1,
     BLINK_MAX_CLOSED_FRAMES: 15,
-    DOUBLE_BLINK_MAX_INTERVAL_MS: 3000,
-    HEAD_TURN_ANGLE_DEG: 7.5,
-    HEAD_PITCH_UP_DEG: 6.0,
-    HEAD_PITCH_DOWN_DEG: -6.0,
-    POSE_CONSECUTIVE_FRAMES: 2,
-    MIN_CHALLENGES: 1,
-    MAX_CHALLENGES: 2,
-    CHALLENGE_TIMEOUT_SEC: 8,
-    SESSION_TTL_SEC: 30,
+    DOUBLE_BLINK_MAX_INTERVAL_MS: 4000,
+    HEAD_TURN_ANGLE_DEG: 14.0,
+    HEAD_PITCH_UP_DEG: 9.0,
+    HEAD_PITCH_DOWN_DEG: -9.0,
+    POSE_CONSECUTIVE_FRAMES: 3,
+    POSE_MOVEMENTS_COUNT: 3,
+    MIN_CHALLENGES: 3,
+    MAX_CHALLENGES: 3,
+    CHALLENGE_TIMEOUT_SEC: 0, // Disabled: no fixed 4s/8s timeout for head movements
+    SESSION_TTL_SEC: 60,
   },
 
-  /** Layer 5: Presentation Attack Detection (PAD) Heuristics */
+  /** Layer 5: Presentation Attack Detection (PAD) Heuristics & MiniFASNet */
   ANTI_SPOOF: {
+    MINIFASNET_MODEL_URL: "/models/MiniFASNetV2.onnx",
+    MIN_LIVE_SCORE: 0.70,
     MAX_SPOOF_RISK: 0.40,
     MOIRE_THRESHOLD: 0.35,
-    MAX_GLARE_RATIO: 0.08,
+    MAX_GLARE_RATIO: 0.22, // Calibrated from 0.08 to 0.22 (22%) to prevent natural skin shine / ambient light from triggering false rejection
     MIN_DYNAMIC_RANGE: 40.0,
     MIN_TEMPORAL_VARIANCE: 0.8,
+    CROP_SCALE: 2.7,
+    SAMPLE_FRAMES: 5,
   },
 
   /** Layer 6: GAN & Deepfake Artifact Classifier */

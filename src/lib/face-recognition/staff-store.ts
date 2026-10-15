@@ -376,6 +376,10 @@ export async function verifyLiveFace(
     faceBox?: { x: number; y: number; width: number; height: number };
     landmarks5?: number[][];
     confidence?: number;
+    attemptNonce?: string;
+    livenessCompleted?: boolean;
+    antiSpoofScore?: number;
+    livenessEvidence?: any;
   },
 ): Promise<VerifyFaceResponse> {
   try {

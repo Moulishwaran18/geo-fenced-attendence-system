@@ -429,6 +429,17 @@ function verifyNetworkAuthToken(token?: string | null): {
   }
 }
 
+const usedAttestationNonces = new Map<string, number>();
+
+function cleanExpiredNonces() {
+  const cutoff = Date.now() - 180_000;
+  for (const [nonce, ts] of usedAttestationNonces.entries()) {
+    if (ts < cutoff) {
+      usedAttestationNonces.delete(nonce);
+    }
+  }
+}
+
 /**
  * Validates a single-use cryptographic biometric attestation minted by the native Android app.
  */
@@ -476,6 +487,26 @@ function verifyBiometricAttestation(token?: string | null): {
     const ageMs = Date.now() - payload.timestamp;
     if (ageMs > 120_000 || ageMs < -30_000) {
       return { valid: false, error: "ATTESTATION_EXPIRED" };
+    }
+
+    // Attempt nonce replay protection
+    if (!payload.nonce || typeof payload.nonce !== "string" || payload.nonce.trim().length < 8) {
+      return { valid: false, error: "MISSING_ATTESTATION_NONCE" };
+    }
+
+    cleanExpiredNonces();
+    if (usedAttestationNonces.has(payload.nonce)) {
+      return { valid: false, error: "ATTESTATION_NONCE_REPLAYED" };
+    }
+    usedAttestationNonces.set(payload.nonce, payload.timestamp);
+
+    // Strict liveness and anti-spoof checks on attestation payload
+    if (payload.livenessPassed !== true) {
+      return { valid: false, error: "LIVENESS_FAILED" };
+    }
+
+    if (typeof payload.antiSpoofScore !== "number" || isNaN(payload.antiSpoofScore) || payload.antiSpoofScore < 0.70) {
+      return { valid: false, error: "SPOOF_SCORE_INSUFFICIENT" };
     }
 
     return { valid: true, payload };
@@ -937,7 +968,7 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    if (attestation.livenessPassed === false) {
+    if (attestation.livenessPassed !== true) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "LIVENESS_FAILED",
@@ -945,11 +976,19 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
+    if (typeof attestation.antiSpoofScore !== "number" || isNaN(attestation.antiSpoofScore) || attestation.antiSpoofScore < 0.70) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "SPOOF_DETECTED",
+        message: `Attendance rejected: Attestation anti-spoof score (${typeof attestation.antiSpoofScore === "number" ? attestation.antiSpoofScore.toFixed(3) : "missing"}) is below required threshold (0.70).`,
+      });
+    }
+
     verifiedBiometricMethod = "Device-Local ArcFace (Android Keystore)";
     boundDeviceId = attestation.deviceId || body.deviceId;
   } else {
     // 3B. Standard Web Browser Face Verification Gate
-    if (!recognizedStaffCode || body.faceVerified === false) {
+    if (!recognizedStaffCode || body.faceVerified !== true) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "FACE_BIOMETRIC_UNAUTHORIZED",
@@ -968,13 +1007,79 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Anti-spoofing Liveness check
-    if (body.livenessPassed === false) {
+    // Anti-spoofing Liveness check: Must be explicitly true
+    if (body.livenessPassed !== true) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "LIVENESS_FAILED",
         message:
           "Attendance rejected: Factor 3 (Face Recognition) failed. Anti-spoofing liveness verification failed.",
+      });
+    }
+
+    // Anti-spoofing score check: Must be a valid number and at least 0.70
+    if (typeof body.antiSpoofScore !== "number" || isNaN(body.antiSpoofScore) || body.antiSpoofScore < 0.70) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "SPOOF_DETECTED",
+        message: `Attendance rejected: Factor 3 (Face Recognition) failed. Valid anti-spoof confidence score (${typeof body.antiSpoofScore === "number" ? body.antiSpoofScore.toFixed(3) : "missing"}) is below required threshold (0.70).`,
+      });
+    }
+
+    // Single-use challenge nonce check (prevent replay of liveness)
+    const nonce = String(body.attemptNonce || body.sessionNonce || "").trim();
+    if (!nonce || nonce.length < 8) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "MISSING_CHALLENGE_NONCE",
+        message: "Attendance rejected: Factor 3 (Face Recognition) failed. Active challenge attempt nonce is required for replay protection.",
+      });
+    }
+    cleanExpiredNonces();
+    if (usedAttestationNonces.has(nonce)) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "CHALLENGE_NONCE_REPLAYED",
+        message: "Attendance rejected: Challenge session nonce was already consumed or replayed.",
+      });
+    }
+    usedAttestationNonces.set(nonce, Date.now());
+
+    // Durable single-use nonce verification across Vercel serverless instances
+    if (supabase) {
+      const { data: replayCheck } = await supabase
+        .from("security_events")
+        .select("id")
+        .eq("event", `LIVENESS_NONCE:${nonce}`)
+        .limit(1)
+        .maybeSingle();
+
+      if (replayCheck) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "CHALLENGE_NONCE_REPLAYED",
+          message: "Attendance rejected: Challenge session nonce was already consumed or replayed across cluster instances.",
+        });
+      }
+
+      // Record consumed nonce in durable storage
+      void supabase.from("security_events").insert({
+        time: new Date().toLocaleTimeString("en-US", { timeZone: "Asia/Kolkata" }),
+        staff: canonicalStaffCode,
+        event: `LIVENESS_NONCE:${nonce}`,
+        device: boundDeviceId ? String(boundDeviceId).slice(0, 64) : "web-device",
+        location: "Campus Attendance Gate",
+        result: "Allowed",
+        severity: "Low",
+      });
+    }
+
+    // Liveness evidence validation
+    if (!body.livenessEvidence || typeof body.livenessEvidence !== "object") {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "MISSING_LIVENESS_EVIDENCE",
+        message: "Attendance rejected: Factor 3 (Face Recognition) failed. Active temporal liveness challenge evidence is required.",
       });
     }
 

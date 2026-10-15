@@ -48,9 +48,9 @@ class LivenessService(private val landmarkService: FaceLandmarkService) {
     fun processFrame(landmarkResult: FaceLandmarkResult): LivenessState {
         if (status != LivenessStatus.ACTIVE) return getState()
 
-        // Check session timeout
+        // Check session timeout (only if CHALLENGE_TIMEOUT_MS > 0)
         val elapsed = System.currentTimeMillis() - startedAt
-        if (elapsed > BiometricConfig.CHALLENGE_TIMEOUT_MS) {
+        if (BiometricConfig.CHALLENGE_TIMEOUT_MS > 0 && elapsed > BiometricConfig.CHALLENGE_TIMEOUT_MS) {
             status = LivenessStatus.FAILED
             failureReason = "Liveness verification timed out. Please follow the instructions promptly."
             return getState()
@@ -61,23 +61,11 @@ class LivenessService(private val landmarkService: FaceLandmarkService) {
             return getState()
         }
 
-        when (currentStep.type) {
-            StepType.BLINK -> {
-                val (leftEye, rightEye) = landmarkService.extractEyePoints(landmarkResult)
-                val blinkState = blinkDetector.processFrame(leftEye, rightEye)
-                if (blinkState.isComplete) {
-                    currentStep.completed = true
-                    advanceToNextStep()
-                }
-            }
-            StepType.POSE -> {
-                val posePoints = landmarkService.extractHeadPosePoints(landmarkResult)
-                val poseState = poseDetector.processFrame(posePoints)
-                if (poseState.isSatisfied) {
-                    currentStep.completed = true
-                    advanceToNextStep()
-                }
-            }
+        val posePoints = landmarkService.extractHeadPosePoints(landmarkResult)
+        val poseState = poseDetector.processFrame(posePoints)
+        if (poseState.isSatisfied) {
+            currentStep.completed = true
+            advanceToNextStep()
         }
 
         return getState()
@@ -121,10 +109,7 @@ class LivenessService(private val landmarkService: FaceLandmarkService) {
 
     private fun configureDetectorsForCurrentStep() {
         val step = challenge.steps.getOrNull(currentStepIndex) ?: return
-        when (step.type) {
-            StepType.BLINK -> blinkDetector.reset(step.targetBlinks ?: 1)
-            StepType.POSE -> poseDetector.reset(step.targetDirection ?: HeadDirection.CENTER)
-        }
+        poseDetector.reset(step.targetDirection)
     }
 
     private fun advanceToNextStep() {
