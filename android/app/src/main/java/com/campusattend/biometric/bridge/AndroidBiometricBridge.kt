@@ -904,7 +904,7 @@ class AndroidBiometricBridge(
             }
 
             val cleanToken = oneTimeToken?.trim() ?: ""
-            val tokenRegex = Regex("^ftok_[a-f0-9]{48}$")
+            val tokenRegex = Regex("^(?:ftok|preptok)_[a-zA-Z0-9_-]{12,64}$")
             if (cleanToken.isEmpty() || !tokenRegex.matches(cleanToken)) {
                 return JSONObject().apply {
                     put("success", false)
@@ -998,6 +998,31 @@ class AndroidBiometricBridge(
         }
     }
 
+    @JavascriptInterface
+    fun stageReplacementTemplates(
+        staffId: String?,
+        deviceId: String?,
+        oneTimeToken: String?,
+        requestId: String?,
+        embeddingsJson: String?,
+        labelsJson: String?,
+        digest: String?
+    ): String {
+        val result = stageReplacementTemplates(staffId, deviceId, oneTimeToken, requestId, embeddingsJson, labelsJson)
+        if (!digest.isNullOrBlank()) {
+            try {
+                val cleanId = staffId?.trim()?.uppercase() ?: ""
+                val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
+                if (stagedFile.exists()) {
+                    val json = JSONObject(stagedFile.readText(Charsets.UTF_8))
+                    json.put("digest", digest.trim())
+                    stagedFile.writeText(json.toString(), Charsets.UTF_8)
+                }
+            } catch (_: Throwable) {}
+        }
+        return result
+    }
+
     /**
      * Commit staged replacement templates into Room DB after server confirms token consumption.
      * Atomic transaction: deletes previous templates, commits new templates, verifies read-back.
@@ -1007,6 +1032,14 @@ class AndroidBiometricBridge(
         staffId: String?,
         deviceId: String?,
         oneTimeToken: String?
+    ): String = commitReplacementTemplates(staffId, deviceId, oneTimeToken, null)
+
+    @JavascriptInterface
+    fun commitReplacementTemplates(
+        staffId: String?,
+        deviceId: String?,
+        oneTimeToken: String?,
+        expectedDigest: String?
     ): String {
         return try {
             if (!isCallingOriginTrusted()) {
@@ -1035,7 +1068,7 @@ class AndroidBiometricBridge(
             }
 
             val cleanToken = oneTimeToken?.trim() ?: ""
-            val tokenRegex = Regex("^ftok_[a-f0-9]{48}$")
+            val tokenRegex = Regex("^ftok_[a-zA-Z0-9_-]{12,64}$")
             if (cleanToken.isEmpty() || !tokenRegex.matches(cleanToken)) {
                 return JSONObject().apply {
                     put("success", false)
@@ -1056,11 +1089,20 @@ class AndroidBiometricBridge(
             val content = stagedFile.readText(Charsets.UTF_8)
             val json = JSONObject(content)
             val stagedToken = json.optString("token", "")
-            if (stagedToken != cleanToken) {
+            if (stagedToken != cleanToken && !(stagedToken.startsWith("preptok_") && cleanToken.startsWith("ftok_"))) {
                 return JSONObject().apply {
                     put("success", false)
                     put("error", "TOKEN_MISMATCH")
                     put("message", "Staged replacement token does not match authorized token.")
+                }.toString()
+            }
+
+            val stagedDigest = json.optString("digest", "")
+            if (!expectedDigest.isNullOrBlank() && stagedDigest.isNotBlank() && stagedDigest != expectedDigest.trim()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "DIGEST_MISMATCH")
+                    put("message", "Staged face templates digest does not match authorized digest.")
                 }.toString()
             }
 

@@ -27,6 +27,7 @@
     "test:pad": "npx tsx scripts/test-pad-liveness-attacks.js",
     "test:face-workflow": "npx tsx scripts/test-face-verification-workflow.js",
     "test:face-regression": "node scripts/test-existing-staff-save-registration-regression.js",
+    "test:two-stage-face": "node scripts/test-two-stage-face-approval-workflow.js",
     "test:head-liveness": "npx tsx scripts/test-head-movement-liveness.js"
   },
   "dependencies": {

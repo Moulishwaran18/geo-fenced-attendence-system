@@ -249,7 +249,12 @@ export default async function handler(req: any, res?: any) {
 
   // If URL rewrite collapsed subpath to root, resolve via body.action
   if (pathname === "/api/staff/face" || pathname === "/api/staff/face/") {
-    if (body?.action === "request-change" || body?.action === "request" || body?.action === "request-enrollment") {
+    if (
+      body?.action === "request-change" ||
+      body?.action === "request" ||
+      body?.action === "request-enrollment" ||
+      body?.action === "request-image-approval"
+    ) {
       pathname = "/api/staff/face/request-change";
     } else if (body?.action === "cancel-request" || body?.action === "cancel") {
       pathname = "/api/staff/face/cancel-request";
@@ -307,11 +312,12 @@ export default async function handler(req: any, res?: any) {
       }
 
       // Query face change or enrollment requests in security_events (newest first)
+      // Query face change or enrollment requests in security_events (newest first)
       const { data: requests, error: reqErr } = await supabase
         .from("security_events")
         .select("id, time, staff, event, device, location, result, severity, created_at")
         .eq("staff", staffCode)
-        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
+        .or("event.ilike.FACE_PERMISSION_REQUEST%,event.ilike.FACE_IMAGE_APPROVAL_REQUEST%,event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
         .order("created_at", { ascending: false })
         .limit(10);
 
@@ -321,13 +327,93 @@ export default async function handler(req: any, res?: any) {
       let expiredRequest: any = null;
       let latestRequest: any = null;
 
-      // Examine the LATEST request to determine the current approval workflow state
+      let hasStage1Permission = false;
+      let prepToken: string | null = null;
+      let permissionRequestId: string | null = null;
+      let hasPendingPermissionRequest = false;
+      let hasPendingImageApproval = false;
+      let approvedDigest: string | null = null;
+
+      // Scan all recent requests to inspect both Stage 1 permission and Stage 2 image approval
       if (requests && requests.length > 0) {
+        for (const req of requests) {
+          const typeMatch = req.device ? req.device.match(/type:([^|]+)/) : null;
+          const reqType = typeMatch
+            ? typeMatch[1]
+            : req.event.includes("FACE_IMAGE_APPROVAL_REQUEST")
+            ? "image_approval"
+            : req.event.includes("FACE_PERMISSION_REQUEST")
+            ? "permission_request"
+            : req.event.includes("FACE_ENROLLMENT_REQUEST")
+            ? "initial"
+            : "replacement";
+
+          const tokenMatch = req.device ? req.device.match(/token:([^|]+)/) : null;
+          const expiresMatch = req.device ? req.device.match(/expires_at:([^|\s]+)/) : null;
+          const digestMatch = req.device ? req.device.match(/digest:([^|]+)/) : null;
+          const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
+          const expiresMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
+          const isExpired = expiresMs > 0 && Date.now() > expiresMs;
+          const isConsumed = Boolean(req.device && req.device.includes("status:consumed"));
+
+          // Check if this row is an active Stage 1 permission approval
+          if (
+            (reqType === "permission_request" || req.event.includes("FACE_PERMISSION_REQUEST")) &&
+            req.result === "Allowed" &&
+            !isExpired &&
+            !hasStage1Permission
+          ) {
+            hasStage1Permission = true;
+            prepToken = tokenMatch ? tokenMatch[1] : null;
+            permissionRequestId = req.id;
+          }
+
+          // Check if there is an active pending permission request
+          if (
+            (reqType === "permission_request" || req.event.includes("FACE_PERMISSION_REQUEST")) &&
+            req.result === "Flagged" &&
+            !isConsumed
+          ) {
+            hasPendingPermissionRequest = true;
+          }
+
+          // Check if there is an active pending image approval
+          if (
+            (reqType === "image_approval" || req.event.includes("FACE_IMAGE_APPROVAL_REQUEST")) &&
+            req.result === "Flagged" &&
+            !isConsumed
+          ) {
+            hasPendingImageApproval = true;
+          }
+
+          // Check if there is an approved Stage 2 image approval
+          if (
+            (reqType === "image_approval" || req.event.includes("FACE_IMAGE_APPROVAL_REQUEST")) &&
+            req.result === "Allowed" &&
+            !isExpired &&
+            !isConsumed &&
+            !approvedDigest &&
+            digestMatch
+          ) {
+            approvedDigest = digestMatch[1];
+          }
+        }
+
+        // Now evaluate the LATEST request for primary lifecycle state
         const latestR = requests[0]!;
         const isConsumed = Boolean(latestR.device && latestR.device.includes("status:consumed"));
-        const isApproved = latestR.result === "Allowed" && Boolean(latestR.device && latestR.device.includes("status:approved"));
-        const isRejected = latestR.result === "Blocked" || (Boolean(latestR.device && latestR.device.includes("status:rejected")) && !isApproved);
-        const isPending = latestR.result === "Flagged" || (!isApproved && !isRejected && !isConsumed && Boolean(latestR.device && latestR.device.includes("status:pending")));
+        const isApproved =
+          latestR.result === "Allowed" &&
+          Boolean(
+            latestR.device &&
+              (latestR.device.includes("status:approved") || latestR.device.includes("status:prep_approved"))
+          );
+        const isRejected =
+          latestR.result === "Blocked" ||
+          (Boolean(latestR.device && latestR.device.includes("status:rejected")) && !isApproved);
+        const isPending =
+          latestR.result === "Flagged" ||
+          (!isApproved && !isRejected && !isConsumed && Boolean(latestR.device && latestR.device.includes("status:pending")));
 
         const tokenMatch = latestR.device ? latestR.device.match(/token:([^|]+)/) : null;
         const expiresMatch = latestR.device ? latestR.device.match(/expires_at:([^|\s]+)/) : null;
@@ -335,6 +421,8 @@ export default async function handler(req: any, res?: any) {
         const devMatch = latestR.device ? latestR.device.match(/device_id:([^|]+)/) : null;
         const countMatch = latestR.device ? latestR.device.match(/count:(\d+)/) : null;
         const typeMatch = latestR.device ? latestR.device.match(/type:([^|]+)/) : null;
+        const linkedMatch = latestR.device ? latestR.device.match(/linked_req:([^|]+)/) : null;
+        const digestMatch = latestR.device ? latestR.device.match(/digest:([^|]+)/) : null;
 
         const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
         const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
@@ -343,10 +431,18 @@ export default async function handler(req: any, res?: any) {
         const isExpired = expiresMs > 0 && nowMs > expiresMs;
 
         const cleanReason = latestR.event
-          .replace(/^FACE_(?:CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
+          .replace(/^FACE_(?:PERMISSION|IMAGE_APPROVAL|CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
           .replace(/^FACE_REQUEST_[^:]+:\s*/i, "");
 
-        const reqType = typeMatch ? typeMatch[1] : (latestR.event.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
+        const reqType = typeMatch
+          ? typeMatch[1]
+          : latestR.event.includes("FACE_IMAGE_APPROVAL_REQUEST")
+          ? "image_approval"
+          : latestR.event.includes("FACE_PERMISSION_REQUEST")
+          ? "permission_request"
+          : latestR.event.includes("FACE_ENROLLMENT_REQUEST")
+          ? "initial"
+          : "replacement";
 
         if (isConsumed) {
           latestRequest = {
@@ -356,6 +452,8 @@ export default async function handler(req: any, res?: any) {
             deviceId: devMatch ? devMatch[1] : null,
             sampleCount: countMatch ? parseInt(countMatch[1], 10) : 5,
             requestType: reqType,
+            linkedRequestId: linkedMatch ? linkedMatch[1] : null,
+            digest: digestMatch ? digestMatch[1] : null,
             created_at: latestR.created_at || latestR.time,
             adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
           };
@@ -367,6 +465,8 @@ export default async function handler(req: any, res?: any) {
             deviceId: devMatch ? devMatch[1] : null,
             sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
             requestType: reqType,
+            linkedRequestId: linkedMatch ? linkedMatch[1] : null,
+            digest: digestMatch ? digestMatch[1] : null,
             created_at: latestR.created_at || latestR.time,
           };
           latestRequest = pendingRequest;
@@ -378,6 +478,7 @@ export default async function handler(req: any, res?: any) {
               status: "expired",
               expires_at: expiresAtIso,
               approved_at: approvedAtIso,
+              requestType: reqType,
               adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
               created_at: latestR.created_at || latestR.time,
             };
@@ -391,6 +492,9 @@ export default async function handler(req: any, res?: any) {
               deviceId: devMatch ? devMatch[1] : null,
               sampleCount: countMatch ? parseInt(countMatch[1], 10) : 1,
               requestType: reqType,
+              linkedRequestId: linkedMatch ? linkedMatch[1] : null,
+              digest: digestMatch ? digestMatch[1] : null,
+              approvedDigest: digestMatch ? digestMatch[1] : null,
               created_at: latestR.created_at || latestR.time,
               approved_at: approvedAtIso,
               expires_at: expiresAtIso,
@@ -404,6 +508,7 @@ export default async function handler(req: any, res?: any) {
             id: latestR.id,
             reason: cleanReason,
             status: "rejected",
+            requestType: reqType,
             created_at: latestR.created_at || latestR.time,
             adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
           };
@@ -413,12 +518,22 @@ export default async function handler(req: any, res?: any) {
 
       // Determine face profile status:
       // When enrolled on device/server, face registration is locked and active ("approved")
-      // canEdit/canSaveReplacement are ONLY true when a fresh, unconsumed approved token is available
+      // canSaveReplacement is ONLY true when Stage 2 (image approval) OR legacy approved replacement has a fresh token!
+      // The first approval (permission_request) gives preparation permission only — NEVER canSaveReplacement!
       let status: "not_registered" | "pending_approval" | "approved" | "rejected" | "expired" = "not_registered";
       let enrollmentStatus: "not_registered" | "pending_approval" | "approved" | "rejected" | "expired" = "not_registered";
       let isLocked = false;
       let canEdit = false;
       let oneTimeToken: string | null = null;
+
+      const isStage2Approved = Boolean(
+        approvedRequest &&
+        approvedRequest.oneTimeToken &&
+        (approvedRequest.requestType === "image_approval" ||
+         approvedRequest.requestType === "replacement" ||
+         approvedRequest.requestType === "initial") &&
+        approvedRequest.requestType !== "permission_request"
+      );
 
       if (isEnrolled) {
         isLocked = true;
@@ -430,7 +545,7 @@ export default async function handler(req: any, res?: any) {
           ? "rejected"
           : "approved";
 
-        if (approvedRequest && approvedRequest.oneTimeToken) {
+        if (isStage2Approved && approvedRequest?.oneTimeToken) {
           status = "approved";
           canEdit = true;
           oneTimeToken = approvedRequest.oneTimeToken;
@@ -485,19 +600,37 @@ export default async function handler(req: any, res?: any) {
         enrollmentStatus,
         isLocked,
         canEdit,
-        canSaveReplacement: Boolean(canEdit && oneTimeToken),
+        canSaveReplacement: Boolean(canEdit && oneTimeToken && isStage2Approved),
+        canPrepareReplacement: Boolean(hasStage1Permission),
+        hasStage1Permission: Boolean(hasStage1Permission),
+        hasPendingPermissionRequest: Boolean(hasPendingPermissionRequest),
+        hasPendingImageApproval: Boolean(hasPendingImageApproval),
+        prepToken: prepToken || null,
+        permissionRequestId: permissionRequestId || null,
+        approvedDigest: approvedDigest || (approvedRequest?.approvedDigest ?? null),
+        stage: hasPendingImageApproval ? 2 : (hasStage1Permission ? 2 : 1),
         embeddingCount,
         sampleCount: embeddingCount,
         samples: sanitizedSamples,
         hasPendingRequest: Boolean(pendingRequest),
         pendingRequest,
         activeRequest: pendingRequest ? { ...pendingRequest } : (approvedRequest ? { ...approvedRequest } : null),
-        approvedRequest: approvedRequest ? { id: approvedRequest.id, status: "approved", expires_at: approvedRequest.expires_at, remaining_seconds: approvedRequest.remaining_seconds } : null,
+        approvedRequest: approvedRequest
+          ? {
+              id: approvedRequest.id,
+              status: "approved",
+              requestType: approvedRequest.requestType,
+              expires_at: approvedRequest.expires_at,
+              remaining_seconds: approvedRequest.remaining_seconds,
+              oneTimeToken: isStage2Approved ? approvedRequest.oneTimeToken : null,
+              approvedDigest: approvedRequest.approvedDigest || null,
+            }
+          : null,
         expiredRequest,
         latestRequest,
         latestRequestStatus: latestRequest?.status || (isEnrolled ? "none" : "not_registered"),
         isExpired: Boolean(expiredRequest && !approvedRequest && !pendingRequest),
-        oneTimeToken,
+        oneTimeToken: isStage2Approved ? oneTimeToken : null,
       });
     }
 
@@ -594,7 +727,7 @@ export default async function handler(req: any, res?: any) {
           .eq("staff", staffCode)
           .eq("result", "Allowed")
           .ilike("device", `%token:${candidateToken}%`)
-          .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%")
+          .or("event.ilike.FACE_IMAGE_APPROVAL_REQUEST%,event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%")
           .order("created_at", { ascending: false })
           .limit(1);
 
@@ -650,6 +783,19 @@ export default async function handler(req: any, res?: any) {
             success: false,
             error: "Face approval request is bound to a different device identity.",
             code: "DEVICE_MISMATCH",
+            isLocked: true,
+          });
+        }
+
+        // Verify cryptographic template digest binding (Stage 2)
+        const digestMatch = (approvedRow.device || "").match(/digest:([^|]+)/);
+        const boundDigest = digestMatch && digestMatch[1] ? digestMatch[1].trim() : "";
+        const candidateDigest = (body?.digest || req.headers?.["x-digest"] || "").toString().trim();
+        if (boundDigest && candidateDigest && boundDigest !== candidateDigest) {
+          return sendJsonResponse(res, 403, {
+            success: false,
+            error: "Cryptographic digest of submitted templates does not match administrator-approved digest.",
+            code: "DIGEST_MISMATCH",
             isLocked: true,
           });
         }
@@ -893,9 +1039,16 @@ export default async function handler(req: any, res?: any) {
         }
       }
 
+      const isImageApproval =
+        body?.action === "request-image-approval" ||
+        body?.requestType === "image_approval" ||
+        Boolean(body?.digest);
+
       const rawReason = (body?.reason || "").toString().trim();
-      const defaultReason = hasEnrollment
-        ? "Face biometric re-enrollment request"
+      const defaultReason = isImageApproval
+        ? "Replacement face images submitted for administrator approval"
+        : hasEnrollment
+        ? "Face biometric re-enrollment permission request"
         : "Initial face biometric registration";
       const reasonCandidate = rawReason || defaultReason;
 
@@ -903,23 +1056,6 @@ export default async function handler(req: any, res?: any) {
         return sendJsonResponse(res, 400, {
           success: false,
           error: "Reason must be between 5 and 250 characters.",
-        });
-      }
-
-      // Check if a pending request already exists
-      const { data: existingPending } = await supabase
-        .from("security_events")
-        .select("id, created_at")
-        .eq("staff", staffCode)
-        .eq("result", "Flagged")
-        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%")
-        .maybeSingle();
-
-      if (existingPending) {
-        return sendJsonResponse(res, 409, {
-          success: false,
-          error: "A face approval request is already pending administrator approval. Please wait for a decision.",
-          requestId: existingPending.id,
         });
       }
 
@@ -931,9 +1067,51 @@ export default async function handler(req: any, res?: any) {
           ? body.templateCount
           : 1;
 
+      const digest = (body?.digest || req.headers?.["x-digest"] || "").toString().trim();
+      const linkedRequestId = (body?.linkedRequestId || body?.permissionRequestId || "").toString().trim();
+
+      if (isImageApproval && !digest) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: "Cryptographic digest of staged face templates is required for replacement image approval.",
+        });
+      }
+
+      // Check if a pending request already exists for this staff member
+      const { data: existingPending } = await supabase
+        .from("security_events")
+        .select("id, created_at, event, device")
+        .eq("staff", staffCode)
+        .eq("result", "Flagged")
+        .or("event.ilike.FACE_PERMISSION_REQUEST%,event.ilike.FACE_IMAGE_APPROVAL_REQUEST%,event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%")
+        .maybeSingle();
+
+      if (existingPending) {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          error: "A face approval request is already pending administrator approval. Please wait for a decision.",
+          requestId: existingPending.id,
+        });
+      }
+
       const nowIso = new Date().toISOString();
-      const reqType = hasEnrollment ? "replacement" : "initial";
-      const eventPrefix = hasEnrollment ? "FACE_CHANGE_REQUEST" : "FACE_ENROLLMENT_REQUEST";
+      let reqType: string;
+      let eventPrefix: string;
+      let devicePayload: string;
+
+      if (isImageApproval) {
+        reqType = "image_approval";
+        eventPrefix = "FACE_IMAGE_APPROVAL_REQUEST";
+        devicePayload = `status:pending|device_id:${deviceId}|count:${sampleCount}|type:image_approval|linked_req:${linkedRequestId}|digest:${digest}`;
+      } else if (hasEnrollment) {
+        reqType = "permission_request";
+        eventPrefix = "FACE_PERMISSION_REQUEST";
+        devicePayload = `status:pending|device_id:${deviceId}|count:1|type:permission_request`;
+      } else {
+        reqType = "initial";
+        eventPrefix = "FACE_ENROLLMENT_REQUEST";
+        devicePayload = `status:pending|device_id:${deviceId}|count:${sampleCount}|type:initial`;
+      }
 
       const { data: createdReq, error: reqInsErr } = await supabase
         .from("security_events")
@@ -941,7 +1119,7 @@ export default async function handler(req: any, res?: any) {
           time: nowIso,
           staff: staffCode,
           event: `${eventPrefix}: ${reasonCandidate.slice(0, 180)}`,
-          device: `status:pending|device_id:${deviceId}|count:${sampleCount}|type:${reqType}`,
+          device: devicePayload,
           location: `Staff: ${staffRecord.name.slice(0, 80)}`,
           result: "Flagged", // 'Flagged' indicates Pending Approval
           severity: "Medium",
@@ -959,8 +1137,10 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 201, {
         success: true,
-        message: hasEnrollment
-          ? "Face change request submitted successfully. Awaiting administrator approval."
+        message: isImageApproval
+          ? "Replacement face images submitted successfully. Awaiting administrator approval."
+          : hasEnrollment
+          ? "Face re-enrollment permission request submitted successfully. Awaiting administrator approval."
           : "Face enrollment request submitted successfully. Awaiting administrator approval.",
         requestId: createdReq.id,
         request: {
@@ -968,8 +1148,10 @@ export default async function handler(req: any, res?: any) {
           status: "pending",
           reason: reasonCandidate,
           deviceId,
-          sampleCount,
+          sampleCount: isImageApproval ? sampleCount : 1,
           requestType: reqType,
+          linkedRequestId: linkedRequestId || undefined,
+          digest: digest || undefined,
           created_at: createdReq.created_at || nowIso,
         },
       });
@@ -985,7 +1167,7 @@ export default async function handler(req: any, res?: any) {
         .delete()
         .eq("staff", staffCode)
         .eq("result", "Flagged")
-        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%");
+        .or("event.ilike.FACE_PERMISSION_REQUEST%,event.ilike.FACE_IMAGE_APPROVAL_REQUEST%,event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%");
 
       if (cancelErr) {
         return sendJsonResponse(res, 500, {

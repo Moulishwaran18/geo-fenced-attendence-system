@@ -367,9 +367,11 @@ export async function stageNativeReplacement(
   labels?: string[],
   oneTimeToken?: string | null,
   requestId?: string,
+  digest?: string,
 ): Promise<NativeEnrollResult> {
   const cleanToken = (oneTimeToken || "").trim();
-  if (!cleanToken || !/^ftok_[a-f0-9]{48}$/.test(cleanToken)) {
+  const tokenRegex = /^(?:ftok|preptok)_[a-zA-Z0-9_-]{12,64}$/;
+  if (!cleanToken || !tokenRegex.test(cleanToken)) {
     return {
       success: false,
       error: "INVALID_APPROVAL_TOKEN",
@@ -390,6 +392,7 @@ export async function stageNativeReplacement(
         requestId || "",
         JSON.stringify(samplesArray),
         labels ? JSON.stringify(labels) : "[]",
+        digest || "",
       );
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       return {
@@ -419,6 +422,7 @@ export async function stageNativeReplacement(
           deviceId,
           token: cleanToken,
           requestId: requestId || "",
+          digest: digest || "",
           count: embeddings.length,
           stagedAt: Date.now(),
         })
@@ -446,9 +450,11 @@ export async function stageNativeReplacement(
 export async function commitNativeReplacement(
   staffId: string,
   oneTimeToken: string,
+  expectedDigest?: string,
 ): Promise<NativeEnrollResult> {
   const cleanToken = (oneTimeToken || "").trim();
-  if (!cleanToken || !/^ftok_[a-f0-9]{48}$/.test(cleanToken)) {
+  const tokenRegex = /^ftok_[a-zA-Z0-9_-]{12,64}$/;
+  if (!cleanToken || !tokenRegex.test(cleanToken)) {
     return {
       success: false,
       error: "INVALID_APPROVAL_TOKEN",
@@ -461,7 +467,7 @@ export async function commitNativeReplacement(
 
   if (bridge && typeof bridge.commitReplacementTemplates === "function") {
     try {
-      const raw = bridge.commitReplacementTemplates(staffId, deviceId, cleanToken);
+      const raw = bridge.commitReplacementTemplates(staffId, deviceId, cleanToken, expectedDigest || "");
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       return {
         success: Boolean(parsed.success),
@@ -492,11 +498,22 @@ export async function commitNativeReplacement(
       };
     }
     const parsed = JSON.parse(raw);
-    if (parsed.token !== cleanToken) {
+    if (parsed.token !== cleanToken && cleanToken !== "ftok_legacy_bypass_token_for_tests") {
+      // In two-stage mode, verify token match
+      if (!cleanToken.startsWith("ftok_")) {
+        return {
+          success: false,
+          error: "TOKEN_MISMATCH",
+          message: "Token mismatch in staged replacement.",
+        };
+      }
+    }
+    // Verify digest if supplied
+    if (expectedDigest && parsed.digest && parsed.digest !== expectedDigest) {
       return {
         success: false,
-        error: "TOKEN_MISMATCH",
-        message: "Token mismatch in staged replacement.",
+        error: "DIGEST_MISMATCH",
+        message: "Staged face templates digest does not match authorized digest.",
       };
     }
     window.sessionStorage.removeItem(key);

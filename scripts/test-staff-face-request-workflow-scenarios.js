@@ -142,12 +142,16 @@ async function runScenarioTests() {
     // SCENARIO 1: Valid staff request submission
     // =========================================================================
     console.log("\n[Scenario 1] Valid staff request submission");
+    const scenarioDigest = "sha256_" + crypto.createHash("sha256").update("v1;count:3;scenario-digest").digest("hex");
     let activeRequestId = null;
     {
       const m = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "New glasses and beard styling require reference update",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: "android-hw-test-dev-01",
         sampleCount: 3,
+        digest: scenarioDigest,
       }, staffHeaders);
       await handlerFaceStaff(m.req, m.res);
       assert(m.getStatus() === 201, `Valid request returns HTTP 201 (got ${m.getStatus()})`);
@@ -166,12 +170,18 @@ async function runScenarioTests() {
 
       const mEmpty = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "",
+        action: "request-image-approval",
+        requestType: "image_approval",
+        digest: scenarioDigest,
       }, staffHeaders);
       await handlerFaceStaff(mEmpty.req, mEmpty.res);
       assert(mEmpty.getStatus() === 400 || mEmpty.getData()?.success === true, "Empty reason rejected or given fail-safe fallback");
 
       const mShort = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "abc", // < 5 characters
+        action: "request-image-approval",
+        requestType: "image_approval",
+        digest: scenarioDigest,
       }, staffHeaders);
       await handlerFaceStaff(mShort.req, mShort.res);
       assert(mShort.getStatus() === 400, `Short reason (<5 chars) rejected with HTTP 400 (got ${mShort.getStatus()})`);
@@ -180,7 +190,11 @@ async function runScenarioTests() {
       // Re-create valid pending request for subsequent scenarios
       const mRe = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Valid change justification for ongoing scenarios",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: "android-hw-test-dev-01",
+        sampleCount: 3,
+        digest: scenarioDigest,
       }, staffHeaders);
       await handlerFaceStaff(mRe.req, mRe.res);
       activeRequestId = mRe.getData()?.requestId;
@@ -337,7 +351,7 @@ async function runScenarioTests() {
       // Restore approved state
       await supabase.from("security_events").update({
         result: "Allowed",
-        device: `token:${issuedOneTimeToken}|status:approved|approved_at:${new Date().toISOString()}|expires_at:${new Date(Date.now() + 86400000).toISOString()}|device_id:android-hw-test-dev-01|count:3|type:replacement`,
+        device: `token:${issuedOneTimeToken}|status:approved|expires_at:${new Date(Date.now() + 86400000).toISOString()}|device_id:android-hw-test-dev-01|count:3|type:image_approval|digest:${scenarioDigest}`,
       }).eq("id", activeRequestId);
 
       const mStatusApproved = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
@@ -380,7 +394,7 @@ async function runScenarioTests() {
       // Restore approval
       await supabase.from("security_events").update({
         result: "Allowed",
-        device: `token:${issuedOneTimeToken}|status:approved|approved_at:${new Date().toISOString()}|expires_at:${new Date(Date.now() + 86400000).toISOString()}|device_id:android-hw-test-dev-01|count:3|type:replacement`,
+        device: `token:${issuedOneTimeToken}|status:approved|expires_at:${new Date(Date.now() + 86400000).toISOString()}|device_id:android-hw-test-dev-01|count:3|type:image_approval|digest:${scenarioDigest}`,
       }).eq("id", activeRequestId);
     }
 
@@ -393,6 +407,7 @@ async function runScenarioTests() {
         deviceId: "android-hw-test-dev-01",
         templateCount: 3,
         oneTimeToken: issuedOneTimeToken,
+        digest: scenarioDigest,
       }, staffHeaders);
       await handlerFaceStaff(mValidEnroll.req, mValidEnroll.res);
       assert(mValidEnroll.getStatus() === 200, `Replacement enrollment succeeded with HTTP 200 (got ${mValidEnroll.getStatus()})`);

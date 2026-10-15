@@ -288,14 +288,18 @@ async function runBypassSecurityTests() {
     // TEST 4: Blocked when replacement samples submitted without approval token
     // =========================================================================
     console.log("\n[Test 4] Negative: Blocked when replacement samples submitted without approval token");
+    const bypassDigest = "sha256_" + crypto.createHash("sha256").update("v1;count:5;bypass-digest").digest("hex");
     let validTokenA = null;
     let approvedReqId = null;
     {
       // Submit fresh request
       const reqSubmit2 = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Valid replacement attempt with new phone camera",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: deviceA,
         sampleCount: 5,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(reqSubmit2.req, reqSubmit2.res);
       approvedReqId = reqSubmit2.getData()?.requestId;
@@ -314,6 +318,7 @@ async function runBypassSecurityTests() {
       const mEnrollNoToken = mockReqRes("POST", "/api/staff/face/enroll", {
         deviceId: deviceA,
         templateCount: 5,
+        digest: bypassDigest,
         // oneTimeToken omitted
       }, headersA);
       await handlerFaceStaff(mEnrollNoToken.req, mEnrollNoToken.res);
@@ -332,6 +337,7 @@ async function runBypassSecurityTests() {
         templateCount: 5,
         oneTimeToken: validTokenA,
         requestId: approvedReqId,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(mValidEnroll.req, mValidEnroll.res);
       if (mValidEnroll.getStatus() !== 200) {
@@ -354,6 +360,7 @@ async function runBypassSecurityTests() {
         templateCount: 5,
         oneTimeToken: validTokenA,
         requestId: approvedReqId,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(mReuseEnroll.req, mReuseEnroll.res);
       assert(mReuseEnroll.getStatus() === 403, `Reusing consumed token blocked with HTTP 403 (got ${mReuseEnroll.getStatus()})`);
@@ -405,8 +412,11 @@ async function runBypassSecurityTests() {
       // Create request & approval for staff B
       const reqB = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Staff B request for replacement",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: deviceB,
         sampleCount: 5,
+        digest: bypassDigest,
       }, headersB);
       await handlerFaceStaff(reqB.req, reqB.res);
       const reqBId = reqB.getData()?.requestId;
@@ -424,6 +434,7 @@ async function runBypassSecurityTests() {
         deviceId: deviceA,
         templateCount: 5,
         oneTimeToken: tokenForB,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(mStealEnroll.req, mStealEnroll.res);
       assert(mStealEnroll.getStatus() === 403, `Cross-staff token reuse blocked with HTTP 403 (got ${mStealEnroll.getStatus()})`);
@@ -438,8 +449,11 @@ async function runBypassSecurityTests() {
       // Create fresh request bound to deviceA
       const reqDev = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Device-bound request",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: deviceA,
         sampleCount: 5,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(reqDev.req, reqDev.res);
       const devReqId = reqDev.getData()?.requestId;
@@ -456,6 +470,8 @@ async function runBypassSecurityTests() {
         deviceId: "device-unauthorized-x99",
         templateCount: 5,
         oneTimeToken: devToken,
+        requestId: devReqId,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(mDevMismatch.req, mDevMismatch.res);
       assert(mDevMismatch.getStatus() === 403, `Device mismatch blocked with HTTP 403 (got ${mDevMismatch.getStatus()})`);
@@ -469,8 +485,11 @@ async function runBypassSecurityTests() {
     {
       const reqFresh = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Request mismatch test",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: deviceA,
         sampleCount: 5,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(reqFresh.req, reqFresh.res);
       const freshReqId = reqFresh.getData()?.requestId;
@@ -486,10 +505,23 @@ async function runBypassSecurityTests() {
         templateCount: 5,
         oneTimeToken: freshToken,
         requestId: "00000000-0000-0000-0000-000000000000",
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(mMismatchedReq.req, mMismatchedReq.res);
       assert(mMismatchedReq.getStatus() === 403, `Mismatched requestId blocked with HTTP 403 (got ${mMismatchedReq.getStatus()})`);
       assert(mMismatchedReq.getData()?.code === "REQUEST_MISMATCH", "Error code is REQUEST_MISMATCH");
+
+      // TEST 9b: Blocked when cryptographic template digest does not match approved digest
+      const mDigestMismatch = mockReqRes("POST", "/api/staff/face/enroll", {
+        deviceId: deviceA,
+        templateCount: 5,
+        oneTimeToken: freshToken,
+        requestId: freshReqId,
+        digest: "sha256_unauthorized_forged_digest_00000000000000000000000000000000",
+      }, headersA);
+      await handlerFaceStaff(mDigestMismatch.req, mDigestMismatch.res);
+      assert(mDigestMismatch.getStatus() === 403, `Digest mismatch blocked with HTTP 403 (got ${mDigestMismatch.getStatus()})`);
+      assert(mDigestMismatch.getData()?.code === "DIGEST_MISMATCH", "Error code is DIGEST_MISMATCH");
     }
 
     // =========================================================================
@@ -499,8 +531,11 @@ async function runBypassSecurityTests() {
     {
       const reqConcur = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Concurrency test request",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: deviceA,
         sampleCount: 5,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(reqConcur.req, reqConcur.res);
       const concurReqId = reqConcur.getData()?.requestId;
@@ -516,6 +551,7 @@ async function runBypassSecurityTests() {
         templateCount: 5,
         oneTimeToken: concurToken,
         requestId: concurReqId,
+        digest: bypassDigest,
       }, headersA);
 
       const mReq2 = mockReqRes("POST", "/api/staff/face/enroll", {
@@ -523,6 +559,7 @@ async function runBypassSecurityTests() {
         templateCount: 5,
         oneTimeToken: concurToken,
         requestId: concurReqId,
+        digest: bypassDigest,
       }, headersA);
 
       await Promise.all([
@@ -695,8 +732,11 @@ async function runBypassSecurityTests() {
       // 1. Submit fresh request
       const reqPos = mockReqRes("POST", "/api/staff/face/request-change", {
         reason: "Legitimate end-to-end face replacement flow",
+        action: "request-image-approval",
+        requestType: "image_approval",
         deviceId: deviceA,
         sampleCount: 5,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(reqPos.req, reqPos.res);
       const posReqId = reqPos.getData()?.requestId;
@@ -723,6 +763,7 @@ async function runBypassSecurityTests() {
         templateCount: 5,
         oneTimeToken: posToken,
         requestId: posReqId,
+        digest: bypassDigest,
       }, headersA);
       await handlerFaceStaff(mConsumePos.req, mConsumePos.res);
       assert(mConsumePos.getStatus() === 200, `Valid replacement successfully consumed token (HTTP 200)`);

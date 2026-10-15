@@ -314,7 +314,7 @@ export default async function handler(req: any, res?: any) {
       const { data: rows, error: qErr } = await supabase
         .from("security_events")
         .select("id, time, staff, event, device, location, result, severity, created_at")
-        .or("event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
+        .or("event.ilike.FACE_PERMISSION_REQUEST%,event.ilike.FACE_IMAGE_APPROVAL_REQUEST%,event.ilike.FACE_CHANGE_REQUEST%,event.ilike.FACE_ENROLLMENT_REQUEST%,event.ilike.FACE_REQUEST_%")
         .order("created_at", { ascending: false });
 
       if (qErr) {
@@ -363,6 +363,8 @@ export default async function handler(req: any, res?: any) {
         const devMatch = r.device ? r.device.match(/device_id:([^|]+)/) : null;
         const countMatch = r.device ? r.device.match(/count:(\d+)/) : null;
         const typeMatch = r.device ? r.device.match(/type:([^|]+)/) : null;
+        const linkedMatch = r.device ? r.device.match(/linked_req:([^|]+)/) : null;
+        const digestMatch = r.device ? r.device.match(/digest:([^|]+)/) : null;
 
         const rawDeviceId = devMatch ? devMatch[1] : "";
         const maskedDeviceId = rawDeviceId
@@ -374,9 +376,21 @@ export default async function handler(req: any, res?: any) {
         const sampleCount = countMatch ? parseInt(countMatch[1], 10) : 1;
         const requestType = typeMatch
           ? typeMatch[1]
+          : r.event.includes("FACE_IMAGE_APPROVAL_REQUEST")
+          ? "image_approval"
+          : r.event.includes("FACE_PERMISSION_REQUEST")
+          ? "permission_request"
           : r.event.includes("FACE_ENROLLMENT_REQUEST")
           ? "initial"
           : "replacement";
+
+        const stage = requestType === "image_approval" ? 2 : 1;
+        const rawDigest = digestMatch ? digestMatch[1] : "";
+        const maskedDigest = rawDigest
+          ? rawDigest.length > 20
+            ? rawDigest.slice(0, 14) + "…" + rawDigest.slice(-6)
+            : rawDigest
+          : undefined;
 
         const expiresAtIso = expiresMatch ? expiresMatch[1] : null;
         const approvedAtIso = approvedMatch ? approvedMatch[1] : null;
@@ -401,7 +415,7 @@ export default async function handler(req: any, res?: any) {
         }
 
         const reason = r.event
-          .replace(/^FACE_(?:CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
+          .replace(/^FACE_(?:PERMISSION|IMAGE_APPROVAL|CHANGE|ENROLLMENT)_REQUEST:\s*/i, "")
           .replace(/^FACE_REQUEST_[^:]+:\s*/i, "");
         const adminNotes = r.location?.replace(/^AdminNote:\s*/, "") || "";
 
@@ -413,6 +427,10 @@ export default async function handler(req: any, res?: any) {
           currentEmbeddingCount: staffMeta.embeddingCount || 0,
           sampleCount,
           requestType,
+          stage,
+          linkedRequestId: linkedMatch ? linkedMatch[1] : undefined,
+          digest: rawDigest || undefined,
+          maskedDigest,
           deviceId: rawDeviceId,
           maskedDeviceId,
           reason,
@@ -437,10 +455,15 @@ export default async function handler(req: any, res?: any) {
 
     // -------------------------------------------------------------------------
     // 2. POST /api/admin/face-requests/:id/approve
-    // Approve Face Request and Issue 24-Hour One-Time Authorization Token
+    // Approve Face Request: Stage 1 issues preparation permission; Stage 2 authorizes final commit.
     // -------------------------------------------------------------------------
     const approveMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/approve\/?$/);
-    const isFlatApprove = (pathname === "/api/admin/face-requests/approve" || pathname.endsWith("/approve")) && (body?.id || body?.requestId);
+    const isFlatApprove =
+      (pathname === "/api/admin/face-requests/approve" ||
+        pathname.endsWith("/approve") ||
+        ((pathname === "/api/admin/face-requests" || pathname.endsWith("/face-requests")) &&
+          body?.action === "approve")) &&
+      (body?.id || body?.requestId);
     if ((approveMatch || isFlatApprove) && method === "POST") {
       const requestId = (approveMatch ? decodeURIComponent(approveMatch[1]!) : (body?.id || body?.requestId || "")).toString().trim();
       const adminNotes = (body?.adminNotes || body?.notes || "").toString().trim();
@@ -479,28 +502,64 @@ export default async function handler(req: any, res?: any) {
 
       const adminIdentity = auth.payload?.name || auth.payload?.username || "moulish";
 
-      // Mint secure one-time cryptographic token valid for exactly 24 hours
-      const oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
+      const devMatch = targetReq.device ? targetReq.device.match(/device_id:([^|]+)/) : null;
+      const targetDev = (devMatch ? devMatch[1] : "").slice(0, 32);
+      const cntMatch = targetReq.device ? targetReq.device.match(/count:(\d+)/) : null;
+      const sampleCnt = cntMatch ? cntMatch[1] : "1";
+      const typeMatch = targetReq.device ? targetReq.device.match(/type:([^|]+)/) : null;
+      const linkedMatch = targetReq.device
+        ? targetReq.device.match(/linked_req:([^|\s]+)/)
+        : targetReq.location?.match(/linked_req:([^|\s)]+)/);
+      const digestMatch = targetReq.device ? targetReq.device.match(/digest:([^|]+)/) : null;
+
+      const isPermissionRequest =
+        typeMatch?.[1] === "permission_request" ||
+        targetReq.event?.includes("FACE_PERMISSION_REQUEST");
+      const isImageApproval =
+        typeMatch?.[1] === "image_approval" ||
+        targetReq.event?.includes("FACE_IMAGE_APPROVAL_REQUEST");
+
       const approvedAtDate = new Date();
       const approvedAtIso = approvedAtDate.toISOString();
       const expiresAtDate = new Date(approvedAtDate.getTime() + 24 * 60 * 60 * 1000);
       const expiresAtIso = expiresAtDate.toISOString();
 
-      const devMatch = targetReq.device ? targetReq.device.match(/device_id:([^|]+)/) : null;
-      const targetDev = devMatch ? devMatch[1] : "";
-      const cntMatch = targetReq.device ? targetReq.device.match(/count:(\d+)/) : null;
-      const sampleCnt = cntMatch ? cntMatch[1] : "1";
-      const typeMatch = targetReq.device ? targetReq.device.match(/type:([^|]+)/) : null;
-      const reqType = typeMatch ? typeMatch[1] : (targetReq.event?.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
+      let oneTimeToken: string;
+      let devicePayload: string;
+      let adminNoteText: string;
+      let auditEvent: string;
 
-      const devicePayload = `token:${oneTimeToken}|status:approved|approved_at:${approvedAtIso}|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}|admin:${adminIdentity}`;
+      if (isPermissionRequest) {
+        // STAGE 1 APPROVAL: Grants permission to prepare replacement images only.
+        // NEVER replaces or activates templates.
+        oneTimeToken = `preptok_${crypto.randomBytes(24).toString("hex")}`;
+        devicePayload = `token:${oneTimeToken}|status:prep_approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:1|type:permission_request`;
+        adminNoteText = `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Permission granted by ${adminIdentity})`.slice(0, 240);
+        auditEvent = `FACE_PERMISSION_GRANTED: Permission to prepare replacement images granted for ${targetReq.staff} by ${adminIdentity}`;
+      } else if (isImageApproval) {
+        // STAGE 2 APPROVAL: Authorizes replacing active templates with the exact staged template digest.
+        oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
+        const boundDigest = digestMatch ? digestMatch[1] : "";
+        const boundLinked = linkedMatch ? linkedMatch[1] : "";
+        // Keep within 250 chars: token (53) + status (16) + expires_at (35) + device_id (32 max) + count (8) + type (20) + digest (79) = 243 chars max
+        devicePayload = `token:${oneTimeToken}|status:approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:image_approval|digest:${boundDigest}`;
+        adminNoteText = `AdminNote: ${boundLinked ? "linked:" + boundLinked + " " : ""}${adminNotes ? adminNotes + " " : ""}(Approved by ${adminIdentity})`.slice(0, 240);
+        auditEvent = `FACE_IMAGE_APPROVAL_GRANTED: Approved replacement images for ${targetReq.staff} by ${adminIdentity} with digest ${boundDigest}`;
+      } else {
+        // Legacy replacement / initial registration fallback
+        oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
+        const reqType = typeMatch ? typeMatch[1] : (targetReq.event?.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
+        devicePayload = `token:${oneTimeToken}|status:approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}`;
+        adminNoteText = `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Approved by ${adminIdentity})`.slice(0, 240);
+        auditEvent = `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff} by ${adminIdentity}`;
+      }
 
       const { error: updErr } = await supabase
         .from("security_events")
         .update({
           result: "Allowed", // 'Allowed' indicates Approved
           device: devicePayload,
-          location: `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Approved by administrator ${adminIdentity})`,
+          location: adminNoteText,
           time: approvedAtIso,
           severity: "Low",
         })
@@ -517,7 +576,7 @@ export default async function handler(req: any, res?: any) {
       await supabase.from("security_events").insert({
         time: approvedAtIso,
         staff: targetReq.staff,
-        event: `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff} by ${adminIdentity}`,
+        event: auditEvent,
         device: `token_issued:${oneTimeToken}|expires_at:${expiresAtIso}|device_id:${targetDev}|admin:${adminIdentity}`,
         location: adminNotes || `Admin Console Approval by ${adminIdentity}`,
         result: "Allowed",
@@ -526,10 +585,13 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 200, {
         success: true,
-        message: `Face approval request for ${targetReq.staff} approved successfully. Single-use authorization valid for 24 hours granted.`,
+        message: isPermissionRequest
+          ? `Permission to prepare replacement face images granted for ${targetReq.staff}. Staff may now capture reference photos.`
+          : `Replacement face images for ${targetReq.staff} approved successfully. Single-use commit authorization issued.`,
         requestId,
         staff_code: targetReq.staff,
         oneTimeToken,
+        stage: isPermissionRequest ? 1 : 2,
         approvedAt: approvedAtIso,
         expiresAt: expiresAtIso,
       });
@@ -540,7 +602,12 @@ export default async function handler(req: any, res?: any) {
     // Reject Face Request
     // -------------------------------------------------------------------------
     const rejectMatch = pathname.match(/\/api\/admin\/face-requests\/([^/]+)\/reject\/?$/);
-    const isFlatReject = (pathname === "/api/admin/face-requests/reject" || pathname.endsWith("/reject")) && (body?.id || body?.requestId);
+    const isFlatReject =
+      (pathname === "/api/admin/face-requests/reject" ||
+        pathname.endsWith("/reject") ||
+        ((pathname === "/api/admin/face-requests" || pathname.endsWith("/face-requests")) &&
+          body?.action === "reject")) &&
+      (body?.id || body?.requestId);
     if ((rejectMatch || isFlatReject) && method === "POST") {
       const requestId = (rejectMatch ? decodeURIComponent(rejectMatch[1]!) : (body?.id || body?.requestId || "")).toString().trim();
       const adminNotes = (body?.adminNotes || body?.notes || "").toString().trim();
