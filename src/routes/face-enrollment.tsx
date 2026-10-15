@@ -657,8 +657,59 @@ function StaffFaceEnrollmentPage() {
 
       // REPLACEMENT ENROLLMENT (Staff already enrolled & locked)
       if (isEnrolled) {
-        // CASE 1: STAGE 1 PREPARATION APPROVED -> STAGE TEMPLATES LOCALLY & SUBMIT STAGE 2 REQUEST
-        if (serverStatus?.hasStage1Permission || serverStatus?.canPrepareReplacement) {
+        // CASE 1: STAGE 2 APPROVED (Fresh single-use ftok_ token issued for exact digest) -> COMMIT REPLACEMENT
+        if (serverStatus?.canSaveReplacement && oneTimeToken) {
+          const approvedDigest = serverStatus?.approvedDigest;
+
+          // STEP 1: COMMIT REPLACEMENT LOCALLY (Only after verifying staged digest matches approved digest)
+          const commitRes = await commitNativeReplacement(staffId, oneTimeToken, approvedDigest || undefined);
+          if (!commitRes.success) {
+            toast.error(commitRes.message || "Failed to commit replacement templates. Digest mismatch or corrupted staged file.");
+            return;
+          }
+
+          // STEP 2: VERIFY LOCAL PERSISTENCE IN ANDROID KEYSTORE
+          const verifyCheck = await verifyNativePersistence(staffId);
+          if (!verifyCheck.verified || verifyCheck.count === 0) {
+            toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+            return;
+          }
+
+          // STEP 3: SERVER AUTHORIZATION & ATOMIC CONSUMPTION
+          const serverEnrollRes = await submitStaffFaceEnrollment(
+            {
+              deviceId: nativeDeviceId || undefined,
+              templateCount: verifyCheck.count,
+              oneTimeToken,
+              requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
+              digest: approvedDigest || undefined,
+            },
+            oneTimeToken
+          );
+
+          if (!serverEnrollRes.success) {
+            toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server. Existing templates remain intact.");
+            return;
+          }
+
+          // STEP 4: CONFIRM SUCCESS & RE-LOCK PROFILE
+          toast.success("Face registration successfully replaced and locked!", {
+            description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore. Single-use authorization consumed.`,
+          });
+
+          stopCamera();
+          setSamples([]);
+          setIsReplacementMode(false);
+          await checkStatus();
+          return;
+        }
+
+        // CASE 2: STAGE 1 PREPARATION APPROVED -> STAGE TEMPLATES LOCALLY & SUBMIT STAGE 2 REQUEST
+        if (
+          (serverStatus?.hasStage1Permission || serverStatus?.canPrepareReplacement) &&
+          !serverStatus?.canSaveReplacement &&
+          !serverStatus?.hasPendingImageApproval
+        ) {
           if (isPendingApproval || serverStatus?.hasPendingRequest || serverStatus?.hasPendingImageApproval) {
             toast.warning("A face image approval request is already pending administrator review.");
             return;
@@ -699,53 +750,6 @@ function StaffFaceEnrollmentPage() {
 
           toast.success("Replacement face images submitted for administrator approval!", {
             description: `Request ID: ${res.requestId || res.request?.id || "Pending"}. Staged digest: ${digest.slice(0, 16)}… Existing face templates remain active until final approval.`,
-          });
-
-          stopCamera();
-          setSamples([]);
-          setIsReplacementMode(false);
-          await checkStatus();
-          return;
-        }
-
-        // CASE 2: STAGE 2 APPROVED (Fresh single-use ftok_ token issued for exact digest)
-        if (serverStatus?.canSaveReplacement && oneTimeToken) {
-          const approvedDigest = serverStatus?.approvedDigest;
-
-          // STEP 1: COMMIT REPLACEMENT LOCALLY (Only after verifying staged digest matches approved digest)
-          const commitRes = await commitNativeReplacement(staffId, oneTimeToken, approvedDigest || undefined);
-          if (!commitRes.success) {
-            toast.error(commitRes.message || "Failed to commit replacement templates. Digest mismatch or corrupted staged file.");
-            return;
-          }
-
-          // STEP 2: VERIFY LOCAL PERSISTENCE IN ANDROID KEYSTORE
-          const verifyCheck = await verifyNativePersistence(staffId);
-          if (!verifyCheck.verified || verifyCheck.count === 0) {
-            toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
-            return;
-          }
-
-          // STEP 3: SERVER AUTHORIZATION & ATOMIC CONSUMPTION
-          const serverEnrollRes = await submitStaffFaceEnrollment(
-            {
-              deviceId: nativeDeviceId || undefined,
-              templateCount: verifyCheck.count,
-              oneTimeToken,
-              requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
-              digest: approvedDigest || undefined,
-            },
-            oneTimeToken
-          );
-
-          if (!serverEnrollRes.success) {
-            toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server. Existing templates remain intact.");
-            return;
-          }
-
-          // STEP 4: CONFIRM SUCCESS & RE-LOCK PROFILE
-          toast.success("Face registration successfully replaced and locked!", {
-            description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore. Single-use authorization consumed.`,
           });
 
           stopCamera();
@@ -1089,7 +1093,14 @@ function StaffFaceEnrollmentPage() {
   );
   const isEnrolled = isEnrolledOnDevice || isEnrolledOnServer;
 
-  const hasStage1Permission = Boolean(serverStatus?.hasStage1Permission || serverStatus?.canPrepareReplacement);
+  const latestReqStatus = (
+    serverStatus?.latestRequest?.status ||
+    serverStatus?.latestRequestStatus ||
+    (serverStatus?.hasPendingRequest ? "pending" : (serverStatus?.status === "rejected" ? "rejected" : (serverStatus?.status === "expired" ? "expired" : "none")))
+  ).toLowerCase();
+
+  const isCompleted = latestReqStatus === "completed";
+
   const hasStage2Approval = Boolean(
     isEnrolled &&
     serverStatus?.canSaveReplacement === true &&
@@ -1108,14 +1119,16 @@ function StaffFaceEnrollmentPage() {
        serverStatus?.pendingRequest?.requestType === "image_approval"))
   );
 
+  const hasStage1Permission = Boolean(
+    !isCompleted &&
+    latestReqStatus !== "completed" &&
+    !hasPendingImage &&
+    !hasStage2Approval &&
+    (serverStatus?.hasStage1Permission || serverStatus?.canPrepareReplacement)
+  );
+
   // Strict replacement authorization: Requires active enrolled profile, Stage 2 server approval, and single-use token
   const isApprovedForReplacement = hasStage2Approval;
-
-  const latestReqStatus = (
-    serverStatus?.latestRequest?.status ||
-    serverStatus?.latestRequestStatus ||
-    (serverStatus?.hasPendingRequest ? "pending" : (serverStatus?.status === "rejected" ? "rejected" : (serverStatus?.status === "expired" ? "expired" : "none")))
-  ).toLowerCase();
 
   const isPendingApproval =
     hasPendingPermission ||
@@ -1125,7 +1138,6 @@ function StaffFaceEnrollmentPage() {
     serverStatus?.status === "pending_approval" ||
     serverStatus?.enrollmentStatus === "pending_approval";
   const isRejected = latestReqStatus === "rejected" || serverStatus?.status === "rejected" || serverStatus?.enrollmentStatus === "rejected";
-  const isCompleted = latestReqStatus === "completed";
   const isExpiredRequest = latestReqStatus === "expired" || serverStatus?.status === "expired";
   const isApproved = hasStage2Approval;
 
@@ -1580,6 +1592,50 @@ function StaffFaceEnrollmentPage() {
                   </Button>
                 </div>
               </div>
+            ) : latestReqStatus === "completed" || isCompleted ? (
+              <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-5 shadow-sm">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-3.5">
+                    <CheckCircle2 className="size-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-sm font-semibold text-foreground">Latest Face Change Request Completed</h4>
+                        <Badge variant="outline" className="border-sky-500/40 text-sky-700 dark:text-sky-300">
+                          Completed
+                        </Badge>
+                        <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                          Single-Use Token Consumed
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                        Your previous face change was successfully finalized and locked to this device. A fresh administrator approval is required for any future face replacement.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <Button
+                      variant="default"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
+                      onClick={() => {
+                        setRequestSubmitError(null);
+                        setRequestModalOpen(true);
+                      }}
+                    >
+                      <ScanFace className="mr-1.5 size-4" />
+                      Re-enroll / Change Face
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void checkStatus()}
+                      disabled={loadingNative}
+                    >
+                      <RefreshCw className={`mr-1.5 size-3.5 ${loadingNative ? "animate-spin" : ""}`} />
+                      Refresh Status
+                    </Button>
+                  </div>
+                </div>
+              </div>
             ) : hasStage1Permission ? (
               <div className="rounded-2xl border border-primary/30 bg-primary/10 p-5 shadow-sm">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1607,56 +1663,6 @@ function StaffFaceEnrollmentPage() {
                     <Camera className="mr-1.5 size-4" />
                     Prepare Replacement Face Images
                   </Button>
-                </div>
-              </div>
-            ) : latestReqStatus === "completed" || isCompleted ? (
-              <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-5 shadow-sm">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="flex items-start gap-3.5">
-                    <CheckCircle2 className="size-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-foreground">Latest Face Change Request Completed</h4>
-                        <Badge variant="outline" className="border-sky-500/40 text-sky-700 dark:text-sky-300">
-                          Completed
-                        </Badge>
-                        <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                          Single-Use Token Consumed
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                        Your previous face change was successfully finalized and locked to this device. A fresh administrator approval is required for any future face replacement.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <Button
-                      variant="default"
-                      className="bg-primary text-primary-foreground hover:bg-primary/90"
-                      onClick={() => {
-                        if (hasStage1Permission) {
-                          setIsReplacementMode(true);
-                          setSamples([]);
-                        } else {
-                          setRequestSubmitError(null);
-                          setRequestModalOpen(true);
-                        }
-                      }}
-                    >
-                      <ScanFace className="mr-1.5 size-4" />
-                      Re-enroll / Change Face
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                      onClick={() => {
-                        setRequestSubmitError(null);
-                        setRequestModalOpen(true);
-                      }}
-                    >
-                      Request Face Change
-                    </Button>
-                  </div>
                 </div>
               </div>
             ) : latestReqStatus === "rejected" || isRejected ? (

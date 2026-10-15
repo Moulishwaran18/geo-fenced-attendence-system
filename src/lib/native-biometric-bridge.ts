@@ -414,19 +414,18 @@ export async function stageNativeReplacement(
 
   // Web fallback simulation mode
   try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      window.sessionStorage.setItem(
-        `staged_replacement_${staffId.trim().toUpperCase()}`,
-        JSON.stringify({
-          staffId: staffId.trim().toUpperCase(),
-          deviceId,
-          token: cleanToken,
-          requestId: requestId || "",
-          digest: digest || "",
-          count: embeddings.length,
-          stagedAt: Date.now(),
-        })
-      );
+    if (typeof window !== "undefined") {
+      const payload = JSON.stringify({
+        staffId: staffId.trim().toUpperCase(),
+        deviceId,
+        token: cleanToken,
+        requestId: requestId || "",
+        digest: digest || "",
+        count: embeddings.length,
+        stagedAt: Date.now(),
+      });
+      try { window.sessionStorage?.setItem(`staged_replacement_${staffId.trim().toUpperCase()}`, payload); } catch {}
+      try { window.localStorage?.setItem(`staged_replacement_${staffId.trim().toUpperCase()}`, payload); } catch {}
     }
     return {
       success: true,
@@ -487,9 +486,10 @@ export async function commitNativeReplacement(
   }
 
   // Web fallback simulation mode
-  if (typeof window !== "undefined" && window.sessionStorage) {
+  if (typeof window !== "undefined") {
     const key = `staged_replacement_${staffId.trim().toUpperCase()}`;
-    const raw = window.sessionStorage.getItem(key);
+    const raw = (window.sessionStorage ? window.sessionStorage.getItem(key) : null) ||
+                (window.localStorage ? window.localStorage.getItem(key) : null);
     if (!raw) {
       return {
         success: false,
@@ -516,15 +516,15 @@ export async function commitNativeReplacement(
         message: "Staged face templates digest does not match authorized digest.",
       };
     }
-    window.sessionStorage.removeItem(key);
-    window.sessionStorage.setItem(
-      `enrolled_face_${staffId.trim().toUpperCase()}`,
-      JSON.stringify({
-        enrolled: true,
-        count: parsed.count || 5,
-        enrolledAt: Date.now(),
-      })
-    );
+    try { window.sessionStorage?.removeItem(key); } catch {}
+    try { window.localStorage?.removeItem(key); } catch {}
+    const enrolledPayload = JSON.stringify({
+      enrolled: true,
+      count: parsed.count || 5,
+      enrolledAt: Date.now(),
+    });
+    try { window.sessionStorage?.setItem(`enrolled_face_${staffId.trim().toUpperCase()}`, enrolledPayload); } catch {}
+    try { window.localStorage?.setItem(`enrolled_face_${staffId.trim().toUpperCase()}`, enrolledPayload); } catch {}
     return {
       success: true,
       staffId: staffId.trim().toUpperCase(),

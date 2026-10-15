@@ -336,6 +336,17 @@ export default async function handler(req: any, res?: any) {
 
       // Scan all recent requests to inspect both Stage 1 permission and Stage 2 image approval
       if (requests && requests.length > 0) {
+        // Identify timestamp of latest completed/consumed face replacement cycle
+        let lastCompletedMs = 0;
+        for (const r of requests) {
+          if (r.device && r.device.includes("status:consumed")) {
+            const t = new Date(r.created_at || r.time).getTime();
+            if (t > lastCompletedMs) {
+              lastCompletedMs = t;
+            }
+          }
+        }
+
         for (const req of requests) {
           const typeMatch = req.device ? req.device.match(/type:([^|]+)/) : null;
           const reqType = typeMatch
@@ -355,12 +366,16 @@ export default async function handler(req: any, res?: any) {
           const expiresMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
           const isExpired = expiresMs > 0 && Date.now() > expiresMs;
           const isConsumed = Boolean(req.device && req.device.includes("status:consumed"));
+          const reqMs = new Date(req.created_at || req.time).getTime();
+          const isSupersededByCompletion = lastCompletedMs > 0 && reqMs <= lastCompletedMs;
 
           // Check if this row is an active Stage 1 permission approval
           if (
             (reqType === "permission_request" || req.event.includes("FACE_PERMISSION_REQUEST")) &&
             req.result === "Allowed" &&
             !isExpired &&
+            !isConsumed &&
+            !isSupersededByCompletion &&
             !hasStage1Permission
           ) {
             hasStage1Permission = true;
@@ -372,7 +387,8 @@ export default async function handler(req: any, res?: any) {
           if (
             (reqType === "permission_request" || req.event.includes("FACE_PERMISSION_REQUEST")) &&
             req.result === "Flagged" &&
-            !isConsumed
+            !isConsumed &&
+            !isSupersededByCompletion
           ) {
             hasPendingPermissionRequest = true;
           }
@@ -381,7 +397,8 @@ export default async function handler(req: any, res?: any) {
           if (
             (reqType === "image_approval" || req.event.includes("FACE_IMAGE_APPROVAL_REQUEST")) &&
             req.result === "Flagged" &&
-            !isConsumed
+            !isConsumed &&
+            !isSupersededByCompletion
           ) {
             hasPendingImageApproval = true;
           }
@@ -392,6 +409,7 @@ export default async function handler(req: any, res?: any) {
             req.result === "Allowed" &&
             !isExpired &&
             !isConsumed &&
+            !isSupersededByCompletion &&
             !approvedDigest &&
             digestMatch
           ) {
@@ -588,6 +606,9 @@ export default async function handler(req: any, res?: any) {
       // DEVICE-ONLY POLICY: Zero raw photos or biometric vectors returned
       const sanitizedSamples: any[] = [];
 
+      const isCompletedRequest = latestRequest?.status === "completed";
+      const effectiveStage1Permission = Boolean(hasStage1Permission && !hasPendingImageApproval && !isStage2Approved && !isCompletedRequest);
+
       return sendJsonResponse(res, 200, {
         success: true,
         staff: {
@@ -601,14 +622,14 @@ export default async function handler(req: any, res?: any) {
         isLocked,
         canEdit,
         canSaveReplacement: Boolean(canEdit && oneTimeToken && isStage2Approved),
-        canPrepareReplacement: Boolean(hasStage1Permission),
-        hasStage1Permission: Boolean(hasStage1Permission),
+        canPrepareReplacement: effectiveStage1Permission,
+        hasStage1Permission: effectiveStage1Permission,
         hasPendingPermissionRequest: Boolean(hasPendingPermissionRequest),
         hasPendingImageApproval: Boolean(hasPendingImageApproval),
-        prepToken: prepToken || null,
-        permissionRequestId: permissionRequestId || null,
+        prepToken: effectiveStage1Permission ? (prepToken || null) : null,
+        permissionRequestId: effectiveStage1Permission ? (permissionRequestId || null) : null,
         approvedDigest: approvedDigest || (approvedRequest?.approvedDigest ?? null),
-        stage: hasPendingImageApproval ? 2 : (hasStage1Permission ? 2 : 1),
+        stage: isCompletedRequest ? 2 : (hasPendingImageApproval ? 2 : (isStage2Approved ? 2 : (effectiveStage1Permission ? 2 : 1))),
         embeddingCount,
         sampleCount: embeddingCount,
         samples: sanitizedSamples,
@@ -948,6 +969,34 @@ export default async function handler(req: any, res?: any) {
           result: "Allowed",
           severity: "Low",
         });
+
+        // Invalidate linked or prior Stage 1 permission requests so they cannot leak as active
+        const boundLinkedMatch = (approvedRow.location || "").match(/linked_req:([^|\s)]+)/) ||
+                                (approvedRow.device || "").match(/linked_req:([^|\s)]+)/);
+        const linkedReqId = boundLinkedMatch ? boundLinkedMatch[1] : null;
+
+        if (linkedReqId) {
+          try {
+            await supabase
+              .from("security_events")
+              .update({
+                device: `token:consumed|status:consumed|consumed_at:${nowIso}`,
+              })
+              .eq("id", linkedReqId)
+              .ilike("device", "%status:prep_approved%");
+          } catch {}
+        }
+
+        try {
+          await supabase
+            .from("security_events")
+            .update({
+              device: `token:consumed|status:consumed|consumed_at:${nowIso}`,
+            })
+            .eq("staff", staffCode)
+            .ilike("device", "%status:prep_approved%")
+            .lte("created_at", approvedRow.created_at || nowIso);
+        } catch {}
 
         return sendJsonResponse(res, 200, {
           success: true,

@@ -442,6 +442,23 @@ async function runTestSuite() {
     assert(localBiometrics.activeTemplates[0].id === "new_1", "Active template 1 replaced with new sample 1");
 
     // =========================================================================
+    // ITEM 14b: Post-Commit Refreshed Staff Status Verification
+    // =========================================================================
+    console.log("\n[Item 14b] Post-Commit Refreshed Staff Status Verification");
+    const statusAfterCommit = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(statusAfterCommit.req, statusAfterCommit.res);
+    const postCommitData = statusAfterCommit.getData();
+    assert(statusAfterCommit.getStatus() === 200, "Refreshed status query returns HTTP 200");
+    assert(postCommitData?.latestRequestStatus === "completed", `latestRequestStatus is 'completed' (got '${postCommitData?.latestRequestStatus}')`);
+    assert(postCommitData?.hasStage1Permission === false, "hasStage1Permission is STRICTLY FALSE after successful commit");
+    assert(postCommitData?.canPrepareReplacement === false, "canPrepareReplacement is STRICTLY FALSE after successful commit");
+    assert(postCommitData?.canSaveReplacement === false, "canSaveReplacement is reset to false");
+    assert(postCommitData?.oneTimeToken === null, "oneTimeToken is reset to null");
+    assert(postCommitData?.prepToken === null, "prepToken is reset to null");
+    assert(postCommitData?.isLocked === true, "Profile remains permanently isLocked: true");
+    assert(postCommitData?.status === "approved", "Profile status is 'approved'");
+
+    // =========================================================================
     // ITEM 17: Request cancellation endpoint
     // =========================================================================
     console.log("\n[Item 17] Request cancellation endpoint");

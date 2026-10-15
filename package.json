@@ -28,6 +28,7 @@
     "test:face-workflow": "npx tsx scripts/test-face-verification-workflow.js",
     "test:face-regression": "node scripts/test-existing-staff-save-registration-regression.js",
     "test:two-stage-face": "node scripts/test-two-stage-face-approval-workflow.js",
+    "test:stage2-commit": "node scripts/test-stage2-replacement-commit-status-regression.js",
     "test:face-controls": "node scripts/test-initial-enrollment-controls-regression.js",
     "test:head-liveness": "npx tsx scripts/test-head-movement-liveness.js"
   },
