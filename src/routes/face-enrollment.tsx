@@ -568,10 +568,54 @@ function StaffFaceEnrollmentPage() {
       // REPLACEMENT ENROLLMENT (Staff already enrolled & locked)
       if (isEnrolled) {
         if (!oneTimeToken || !serverStatus?.canSaveReplacement) {
-          toast.error("Your face registration is locked. A fresh administrator approval is required for face replacement.");
-          setIsReplacementMode(false);
+          // Check if a request is already pending to prevent duplicate submissions
+          if (isPendingApproval || serverStatus?.hasPendingRequest) {
+            toast.warning("A face change request is already pending administrator approval. Please wait for an administrator to review your request.");
+            return;
+          }
+
+          // Step 1: Securely stage newly captured embeddings locally (Existing active templates remain untouched!)
+          const stageRes = await stageNativePendingEnrollment(staffId, embeddings, labels);
+          if (!stageRes.success) {
+            toast.error(stageRes.message || "Failed to encrypt and stage templates in Android Keystore.");
+            return;
+          }
+
+          // Step 2: If an institutional reason was already provided in state, submit directly
+          const trimmedReason = requestReason.trim();
+          if (trimmedReason.length >= 5 && trimmedReason.length <= 250) {
+            const res = await requestStaffFaceChange(trimmedReason, {
+              deviceId: nativeDeviceId || undefined,
+              sampleCount: validSamples.length,
+            });
+
+            if (!res.success) {
+              const errMsg = res.error || "Failed to submit face change request to administrator.";
+              toast.error(errMsg);
+              return;
+            }
+
+            toast.success("Face change request submitted to administrator!", {
+              description: `Request ID: ${res.requestId || res.request?.id || "Pending"}. Your templates are safely encrypted and staged on this device.`,
+            });
+
+            setRequestModalOpen(false);
+            setRequestReason("");
+            setRequestSubmitError(null);
+            stopCamera();
+            setIsReplacementMode(false);
+            await checkStatus();
+            return;
+          }
+
+          // Step 3: Automatically open the face-change request dialog to ask for the institutional reason
+          setRequestSubmitError(null);
+          setRequestModalOpen(true);
+          toast.info("Reference photos encrypted and staged locally. Please provide your institutional reason to submit the change request.");
           return;
         }
+
+        // APPROVED REPLACEMENT FLOW (Staff has valid, fresh one-time approval token)
 
         // STEP 1: STAGE REPLACEMENT TEMPLATES LOCALLY (Fail-safe: Existing templates remain untouched!)
         const stageRes = await stageNativeReplacement(
@@ -804,21 +848,48 @@ function StaffFaceEnrollmentPage() {
       return;
     }
 
+    if (isPendingApproval || serverStatus?.hasPendingRequest) {
+      toast.warning("A face change request is already pending administrator approval.");
+      setRequestModalOpen(false);
+      return;
+    }
+
     if (isSubmittingRequest) return;
     setIsSubmittingRequest(true);
     setRequestSubmitError(null);
 
     try {
+      const validSamples = samples.filter((s) => s.status === "valid" && s.embedding);
+      const effectiveSampleCount = validSamples.length > 0 ? validSamples.length : (validCount || 1);
+
+      // If valid samples exist on screen and haven't been staged yet, stage them securely in Android Keystore
+      if (validSamples.length >= MIN_SAMPLES && validSamples.length <= MAX_SAMPLES) {
+        const embeddings = validSamples.map((s) => s.embedding!);
+        const labels = validSamples.map((s, idx) => `sample_${idx + 1}`);
+        const stageRes = await stageNativePendingEnrollment(staffId, embeddings, labels);
+        if (!stageRes.success) {
+          const errMsg = stageRes.message || "Failed to encrypt and stage templates in Android Keystore.";
+          setRequestSubmitError(errMsg);
+          toast.error(errMsg);
+          return;
+        }
+      }
+
       const res = await requestStaffFaceChange(trimmed, {
         deviceId: nativeDeviceId || undefined,
-        sampleCount: validCount || 1,
+        sampleCount: effectiveSampleCount,
       });
 
       if (res.success) {
-        toast.success("Face change request submitted to administrator!");
+        toast.success("Face change request submitted to administrator!", {
+          description: `Request ID: ${res.requestId || res.request?.id || "Pending"}. Your templates are safely encrypted and staged on this device.`,
+        });
         setRequestModalOpen(false);
         setRequestReason("");
         setRequestSubmitError(null);
+        stopCamera();
+        setSamples([]);
+        setIsReplacementMode(false);
 
         // Optimistically update status to pending immediately
         setServerStatus((prev) => ({
@@ -839,6 +910,8 @@ function StaffFaceEnrollmentPage() {
             id: res.requestId || "req-pending",
             reason: trimmed,
             status: "pending",
+            deviceId: nativeDeviceId || undefined,
+            sampleCount: effectiveSampleCount,
             created_at: new Date().toISOString(),
           },
         }));
@@ -1338,16 +1411,29 @@ function StaffFaceEnrollmentPage() {
                       </p>
                     </div>
                   </div>
-                  <Button
-                    variant="outline"
-                    className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                    onClick={() => {
-                      setRequestSubmitError(null);
-                      setRequestModalOpen(true);
-                    }}
-                  >
-                    Request Face Change
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <Button
+                      variant="default"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
+                      onClick={() => {
+                        setIsReplacementMode(true);
+                        setSamples([]);
+                      }}
+                    >
+                      <ScanFace className="mr-1.5 size-4" />
+                      Re-enroll / Change Face
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
+                      onClick={() => {
+                        setRequestSubmitError(null);
+                        setRequestModalOpen(true);
+                      }}
+                    >
+                      Request Face Change
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : latestReqStatus === "rejected" || isRejected ? (
@@ -1370,16 +1456,29 @@ function StaffFaceEnrollmentPage() {
                       </p>
                     </div>
                   </div>
-                  <Button
-                    variant="outline"
-                    className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                    onClick={() => {
-                      setRequestSubmitError(null);
-                      setRequestModalOpen(true);
-                    }}
-                  >
-                    Submit New Request
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <Button
+                      variant="default"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
+                      onClick={() => {
+                        setIsReplacementMode(true);
+                        setSamples([]);
+                      }}
+                    >
+                      <ScanFace className="mr-1.5 size-4" />
+                      Re-capture & Re-enroll
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
+                      onClick={() => {
+                        setRequestSubmitError(null);
+                        setRequestModalOpen(true);
+                      }}
+                    >
+                      Submit New Request
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : latestReqStatus === "expired" || isExpiredRequest ? (
@@ -1399,16 +1498,29 @@ function StaffFaceEnrollmentPage() {
                       </p>
                     </div>
                   </div>
-                  <Button
-                    variant="outline"
-                    className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                    onClick={() => {
-                      setRequestSubmitError(null);
-                      setRequestModalOpen(true);
-                    }}
-                  >
-                    Submit New Request
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <Button
+                      variant="default"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
+                      onClick={() => {
+                        setIsReplacementMode(true);
+                        setSamples([]);
+                      }}
+                    >
+                      <ScanFace className="mr-1.5 size-4" />
+                      Re-enroll / Change Face
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
+                      onClick={() => {
+                        setRequestSubmitError(null);
+                        setRequestModalOpen(true);
+                      }}
+                    >
+                      Submit New Request
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -1417,19 +1529,32 @@ function StaffFaceEnrollmentPage() {
                   <div>
                     <h4 className="text-sm font-semibold text-foreground">Need to Change Your Face Registration?</h4>
                     <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                      Biometric profiles are locked to prevent tampering. Submit a change request to college administration to authorize a replacement.
+                      Biometric profiles are locked to prevent tampering. Capture new reference photos or submit a change request to college administration.
                     </p>
                   </div>
-                  <Button
-                    variant="outline"
-                    className="shrink-0 border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
-                    onClick={() => {
-                      setRequestSubmitError(null);
-                      setRequestModalOpen(true);
-                    }}
-                  >
-                    Request Face Change
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <Button
+                      variant="default"
+                      className="bg-primary text-primary-foreground hover:bg-primary/90"
+                      onClick={() => {
+                        setIsReplacementMode(true);
+                        setSamples([]);
+                      }}
+                    >
+                      <ScanFace className="mr-1.5 size-4" />
+                      Re-enroll / Change Face
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-primary/40 text-primary hover:bg-primary/5 hover:text-primary"
+                      onClick={() => {
+                        setRequestSubmitError(null);
+                        setRequestModalOpen(true);
+                      }}
+                    >
+                      Request Face Change
+                    </Button>
+                  </div>
                 </div>
               </div>
             )}
@@ -1735,6 +1860,13 @@ function StaffFaceEnrollmentPage() {
           </DialogHeader>
 
           <div className="space-y-4 py-2">
+            {validCount > 0 && (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
+                <CheckCircle2 className="size-4 shrink-0" />
+                <span>{validCount} reference photo sample{validCount === 1 ? "" : "s"} staged securely on this device.</span>
+              </div>
+            )}
+
             {requestSubmitError && (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2.5">
                 <AlertCircle className="size-4 shrink-0 mt-0.5" />
