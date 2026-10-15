@@ -108,31 +108,30 @@ async function runTestSuite() {
   console.log("===============================================================================\n");
 
   let passed = 0;
-  const total = 18;
+  const total = 19;
 
   // ---------------------------------------------------------------------------
   // TEST 1: Randomized directional challenge generation
   // ---------------------------------------------------------------------------
   console.log("--- TEST 1: Randomized Directional Challenge Generation ---");
   {
-    const seq1 = generateRandomDirectionSequence(3);
-    const seq2 = generateRandomDirectionSequence(3);
+    const seq1 = generateRandomDirectionSequence(1);
+    const seq2 = generateRandomDirectionSequence(1);
 
     const validDirections = ["left", "right", "up", "down"];
     const allValid1 = seq1.every((d) => validDirections.includes(d));
-    const noConsecutiveRepeats1 = seq1[0] !== seq1[1] && seq1[1] !== seq1[2];
 
     const challenge = generateRandomChallenge();
     const hasNonce = Boolean(challenge.nonce && challenge.nonce.length >= 8);
-    const has3Movements = challenge.steps.filter((s) => !s.isReturnToCenter).length === 3;
+    const has1Movement = challenge.steps.filter((s) => !s.isReturnToCenter).length === 1;
 
-    console.log("Sequence 1:", seq1.join(" -> "));
-    console.log("Sequence 2:", seq2.join(" -> "));
-    console.log("No consecutive repeats:", noConsecutiveRepeats1 ? "YES" : "NO");
+    console.log("Random Direction 1:", seq1[0]);
+    console.log("Random Direction 2:", seq2[0]);
     console.log("Unique Attempt Nonce:", challenge.nonce);
+    console.log("Steps Count:", challenge.steps.length, `(${challenge.steps.map((s) => s.targetDirection).join(" -> ")})`);
 
-    if (seq1.length === 3 && allValid1 && noConsecutiveRepeats1 && hasNonce && has3Movements) {
-      console.log("✓ TEST 1 PASSED: Fresh randomized 3-movement challenge without consecutive repeats!\n");
+    if (seq1.length === 1 && allValid1 && hasNonce && has1Movement && challenge.steps.length === 2) {
+      console.log("✓ TEST 1 PASSED: Fresh simplified single randomized movement challenge (movement + return to center) generated!\n");
       passed++;
     } else {
       throw new Error("Test 1 Failed: Challenge generation violates requirements");
@@ -190,9 +189,9 @@ async function runTestSuite() {
   }
 
   // ---------------------------------------------------------------------------
-  // TEST 4: Three movements completed in requested order
+  // TEST 4: Single randomized movement completed in requested order
   // ---------------------------------------------------------------------------
-  console.log("--- TEST 4: Three Movements Completed in Requested Order ---");
+  console.log("--- TEST 4: Single Randomized Movement Completed in Requested Order ---");
   {
     const session = new LivenessSession();
     session.setNeutralBaseline({ yaw: 0, pitch: 0 });
@@ -201,7 +200,7 @@ async function runTestSuite() {
     const baseBox = { x: 150, y: 150, width: 140, height: 140 };
     let curTime = Date.now();
 
-    // Trace sequence of steps
+    // Trace sequence of steps (1: Directional Movement, 2: Return to Center)
     const steps = state0.steps;
     console.log(`Challenge Steps (${steps.length}):`, steps.map((s) => s.targetDirection).join(" -> "));
 
@@ -211,7 +210,7 @@ async function runTestSuite() {
       const targetYaw = target === "left" ? 18 : target === "right" ? -18 : 0;
       const targetPitch = target === "up" ? 12 : target === "down" ? -12 : 0;
 
-      // Hold target pose for 3 consecutive frames
+      // Hold target pose for required consecutive frames
       const requiredFrames = target === "center" ? 2 : 3;
       for (let f = 0; f < requiredFrames; f++) {
         curTime += 100;
@@ -226,10 +225,10 @@ async function runTestSuite() {
     console.log("Completed Steps:", evidence?.stepsCompleted);
 
     if (curState.status === "passed" && evidence?.livenessPassed && evidence.stepsCompleted === steps.length) {
-      console.log("✓ TEST 4 PASSED: All 3 movements plus center resets completed sequentially!\n");
+      console.log("✓ TEST 4 PASSED: Single randomized movement plus return to center completed cleanly!\n");
       passed++;
     } else {
-      throw new Error("Test 4 Failed: Multi-step movement sequence did not pass");
+      throw new Error("Test 4 Failed: Movement sequence did not pass");
     }
   }
 
@@ -296,18 +295,24 @@ async function runTestSuite() {
   }
 
   // ---------------------------------------------------------------------------
-  // TEST 7: Lost landmarks and multiple faces handling
+  // TEST 7: Lost landmarks and multiple faces handling (temporal confirmation)
   // ---------------------------------------------------------------------------
   console.log("--- TEST 7: Lost Landmarks and Multiple Faces Handling ---");
   {
-    // Part A: Multiple faces
+    // Part A: Single noisy frame of multiple faces does NOT immediately abort session
     const sessionA = new LivenessSession();
     sessionA.start();
     const baseBox = { x: 150, y: 150, width: 140, height: 140 };
-    const multiState = sessionA.processFrame(createMockLandmarks(0, 0), baseBox, Date.now(), 2);
+    const singleNoisyMultiFrame = sessionA.processFrame(createMockLandmarks(0, 0), baseBox, Date.now(), 2);
+    console.log("1 transient multi-face frame status:", singleNoisyMultiFrame.status, "(expected: active, not failed)");
 
-    console.log("Multiple faces status:", multiState.status);
-    console.log("Multiple faces reason:", multiState.failureReason);
+    // 4 consecutive frames of confirmed multiple faces DOES reject
+    let confirmedMultiState;
+    for (let f = 1; f <= 4; f++) {
+      confirmedMultiState = sessionA.processFrame(createMockLandmarks(0, 0), baseBox, Date.now() + f * 100, 2);
+    }
+    console.log("4 consecutive multi-face frames status:", confirmedMultiState.status);
+    console.log("Confirmed multi-face failure reason:", confirmedMultiState.failureReason);
 
     // Part B: Lost landmarks for > 25 frames
     const sessionB = new LivenessSession();
@@ -321,15 +326,16 @@ async function runTestSuite() {
     console.log("Lost face reason:", lostState.failureReason);
 
     if (
-      multiState.status === "failed" &&
-      multiState.failureReason?.includes("Multiple faces") &&
+      singleNoisyMultiFrame.status === "active" &&
+      confirmedMultiState.status === "failed" &&
+      confirmedMultiState.failureReason?.includes("Multiple faces") &&
       lostState.status === "failed" &&
       lostState.failureReason?.includes("Face tracking lost")
     ) {
-      console.log("✓ TEST 7 PASSED: Multiple faces and tracking loss safely rejected!\n");
+      console.log("✓ TEST 7 PASSED: Transient noise tolerated; 4 consecutive multi-face frames and tracking loss safely rejected!\n");
       passed++;
     } else {
-      throw new Error("Test 7 Failed: Face tracking loss or multi-face was not handled");
+      throw new Error("Test 7 Failed: Multi-frame temporal confirmation or tracking loss failed");
     }
   }
 
@@ -745,6 +751,80 @@ async function runTestSuite() {
       passed++;
     } else {
       throw new Error("Test 18 Failed: Glare discrimination failed");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 19: Live user with 20.7% Replay Score is NOT falsely rejected as replay attack
+  // ---------------------------------------------------------------------------
+  console.log("--- TEST 19: Non-Attack Classification of Baseline 20.7% Replay Score on Live User ---");
+  {
+    const antiSpoof = new AntiSpoofService();
+    antiSpoof.reset();
+    // Simulate live user where MiniFASNet produces ~78% Live, ~20.7% Replay (below 33.3% baseline), and camera sharpness high frequency
+    for (let f = 0; f < 5; f++) {
+      antiSpoof.sampledAnalyses.push({
+        passed: true,
+        liveScore: 0.78,
+        spoofRiskScore: 0.05,
+        printAttackScore: 0.013,
+        replayAttackScore: 0.207, // 20.7% Replay score (uniform baseline 33.3%)
+        attackType: "none",
+        moirePatternDetected: false, // Not corroborated by elevated replay logit >= 0.35
+        specularGlareDetected: false,
+        colorGamutAnomalous: false,
+        staticMatrixDetected: false,
+        details: {
+          moireEnergy: 0.38, // High-frequency edge energy from sensor/hair
+          glareRatio: 0.08,
+          colorDynamicRange: 85,
+          temporalMotionVariance: 2.2,
+        },
+      });
+    }
+
+    const liveResult = antiSpoof.getAggregatedResult();
+    console.log("Live User Aggregated Passed:", liveResult.passed ? "PASSED ✓" : "REJECTED ✗");
+    console.log("Attack Type:", liveResult.attackType);
+    console.log("Median Live Score:", (liveResult.medianLiveScore * 100).toFixed(1) + "%");
+    console.log("p75 Replay Score:", (liveResult.p75ReplayAttackScore * 100).toFixed(1) + "%");
+
+    // Also test inconclusive borderline lighting (live score 0.65, no attack):
+    antiSpoof.reset();
+    for (let f = 0; f < 5; f++) {
+      antiSpoof.sampledAnalyses.push({
+        passed: false,
+        liveScore: 0.65, // Borderline lighting
+        spoofRiskScore: 0.25,
+        printAttackScore: 0.15,
+        replayAttackScore: 0.20,
+        attackType: "none",
+        moirePatternDetected: false,
+        specularGlareDetected: false,
+        colorGamutAnomalous: false,
+        staticMatrixDetected: false,
+        details: {
+          moireEnergy: 0.1,
+          glareRatio: 0.05,
+          colorDynamicRange: 55,
+          temporalMotionVariance: 1.5,
+        },
+      });
+    }
+    const borderlineResult = antiSpoof.getAggregatedResult();
+    console.log("Borderline Lighting Reason:", borderlineResult.reason);
+
+    if (
+      liveResult.passed &&
+      liveResult.attackType === "none" &&
+      !borderlineResult.passed &&
+      borderlineResult.attackType === "none" &&
+      borderlineResult.reason?.includes("Unable to verify—adjust lighting or reposition")
+    ) {
+      console.log("✓ TEST 19 PASSED: 20.7% replay score passes cleanly; inconclusive score shows repositioning guidance!\n");
+      passed++;
+    } else {
+      throw new Error("Test 19 Failed: 20.7% replay score falsely rejected or inconclusive message missing");
     }
   }
 

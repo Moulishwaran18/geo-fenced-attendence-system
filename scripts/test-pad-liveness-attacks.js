@@ -298,25 +298,41 @@ async function runAttackSuite() {
   // -------------------------------------------------------------------------
   // TEST 7: Multiple faces in the frame
   // -------------------------------------------------------------------------
-  console.log("--- TEST 7: Multiple Faces in Frame ---");
+  console.log("--- TEST 7: Multiple Faces in Frame (Temporal Confirmation) ---");
   {
     const session = new LivenessSession();
-    session.start("blink-once");
+    session.start();
     const baseBox = { x: 150, y: 150, width: 140, height: 140 };
 
-    // 2 faces detected in frame
-    const multiState = session.processFrame(
+    // 1 transient frame of 2 faces is tolerated without immediate abort
+    const transientState = session.processFrame(
       createMock68Landmarks(0.28, 0.28, 0),
       baseBox,
       Date.now(),
       2, // faceCount = 2
     );
+    console.log("1 transient multi-face frame status:", transientState.status);
 
-    console.log("Multi-face Status:", multiState.status);
-    console.log("Multi-face Reason:", multiState.failureReason);
+    // 4 consecutive frames confirm multiple faces and reject
+    let confirmedMultiState;
+    for (let f = 1; f <= 4; f++) {
+      confirmedMultiState = session.processFrame(
+        createMock68Landmarks(0.28, 0.28, 0),
+        baseBox,
+        Date.now() + f * 100,
+        2,
+      );
+    }
 
-    if (multiState.status === "failed" && multiState.failureReason?.includes("Multiple faces")) {
-      console.log("✓ TEST 7 PASSED: Multiple faces immediately aborted verification attempt!\n");
+    console.log("4 consecutive multi-face frames status:", confirmedMultiState.status);
+    console.log("Multi-face Reason:", confirmedMultiState.failureReason);
+
+    if (
+      transientState.status === "active" &&
+      confirmedMultiState.status === "failed" &&
+      confirmedMultiState.failureReason?.includes("Multiple faces")
+    ) {
+      console.log("✓ TEST 7 PASSED: Transient noise tolerated; 4 confirmed multi-face frames safely rejected!\n");
       passedTests++;
     } else {
       throw new Error("Test 7 Failed: Multiple faces did not abort session");

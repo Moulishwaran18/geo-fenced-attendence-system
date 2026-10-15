@@ -208,7 +208,6 @@ export class AntiSpoofService {
     }
 
     const moireEnergy = this.computeHighFrequencyMoireEnergy(data, roiWidth, roiHeight);
-    const moirePatternDetected = moireEnergy > FACE_CONFIG.ANTI_SPOOF.MOIRE_THRESHOLD;
 
     const glareRatio = this.computeSpecularGlareRatio(data, roiWidth, roiHeight);
 
@@ -285,6 +284,15 @@ export class AntiSpoofService {
       }
     }
 
+    // Moiré evaluation: Fused neural and optical criteria.
+    // Raw Laplacian high-frequency edge energy can be triggered by camera sensor sharpness, facial hair, or glasses frames.
+    // True electronic display moiré manifests as high-frequency repeating interference patterns,
+    // which in genuine attacks are corroborated by neural replay logits (replayAttackScore >= 0.35) or low live score (< 0.70).
+    const isHighFrequencyEnergy = moireEnergy > FACE_CONFIG.ANTI_SPOOF.MOIRE_THRESHOLD;
+    const moirePatternDetected =
+      isHighFrequencyEnergy &&
+      (replayAttackScore >= 0.35 || miniFASNetLiveScore < FACE_CONFIG.ANTI_SPOOF.MIN_LIVE_SCORE);
+
     // Glare evaluation: Fused neural and optical criteria.
     // Natural skin highlights (forehead, nose ridge, glasses) cover 3-12% of facial pixels.
     // Harsh planar electronic glass reflections cover >22%, or >14% corroborated by neural replay signals or moiré.
@@ -316,10 +324,10 @@ export class AntiSpoofService {
     let attackType: "none" | "print_attack" | "replay_attack" | "static_photo" | "screen_reflection" = "none";
     let failureReason: string | undefined;
 
-    if (printAttackScore > 0.40 || colorGamutAnomalous) {
+    if (printAttackScore >= 0.40 || colorGamutAnomalous) {
       attackType = "print_attack";
       failureReason = `Printed photograph detected (Print confidence: ${(printAttackScore * 100).toFixed(1)}%). Genuine live face required.`;
-    } else if (replayAttackScore > 0.40 || moirePatternDetected) {
+    } else if (replayAttackScore >= 0.40 || (moirePatternDetected && replayAttackScore >= 0.35)) {
       attackType = "replay_attack";
       failureReason = `Screen or video replay attack detected (Screen confidence: ${(replayAttackScore * 100).toFixed(1)}%). Presentation attack rejected.`;
     } else if (staticMatrixDetected) {
@@ -329,8 +337,8 @@ export class AntiSpoofService {
       attackType = "screen_reflection";
       failureReason = "Harsh electronic screen glass reflection detected. Use direct live camera.";
     } else if (liveScore < FACE_CONFIG.ANTI_SPOOF.MIN_LIVE_SCORE) {
-      attackType = "print_attack";
-      failureReason = `Low anti-spoof confidence score (${(liveScore * 100).toFixed(1)}% < ${(FACE_CONFIG.ANTI_SPOOF.MIN_LIVE_SCORE * 100)}%). Verification rejected.`;
+      attackType = "none";
+      failureReason = "Unable to verify—adjust lighting or reposition. Keep your face centered in natural light.";
     }
 
     const passed =
@@ -423,7 +431,11 @@ export class AntiSpoofService {
     const maxMoireEnergy = Math.max(...this.sampledAnalyses.map((a) => a.details.moireEnergy), 0);
 
     // Optical cues require at least 2 consistent frames to trigger a hard rejection
-    const hasMoire = moireCount >= 2;
+    // Moiré requires repeated optical detection corroborated by elevated replay signal
+    const corroboratedMoireCount = this.sampledAnalyses.filter(
+      (a) => a.moirePatternDetected && (a.replayAttackScore >= 0.35 || a.liveScore < FACE_CONFIG.ANTI_SPOOF.MIN_LIVE_SCORE),
+    ).length;
+    const hasCorroboratedMoire = corroboratedMoireCount >= 2;
     const hasStaticMatrix = staticMatrixCount >= 2;
 
     // Glare requires either extreme screen glare across multiple frames (>22%)
@@ -444,7 +456,7 @@ export class AntiSpoofService {
       p75PrintAttackScore < 0.40 &&
       p75ReplayAttackScore < 0.40 &&
       !hasStaticMatrix &&
-      !hasMoire &&
+      !hasCorroboratedMoire &&
       !hasGlare;
 
     let attackType: "none" | "print_attack" | "replay_attack" | "static_photo" | "screen_reflection" = "none";
@@ -454,7 +466,7 @@ export class AntiSpoofService {
       if (p75PrintAttackScore >= 0.40) {
         attackType = "print_attack";
         reason = `Presentation attack detected: Printed photograph (Print score: ${(p75PrintAttackScore * 100).toFixed(1)}%).`;
-      } else if (p75ReplayAttackScore >= 0.40 || hasMoire) {
+      } else if (p75ReplayAttackScore >= 0.40 || (hasCorroboratedMoire && p75ReplayAttackScore >= 0.35)) {
         attackType = "replay_attack";
         reason = `Presentation attack detected: Electronic screen or video replay (Replay score: ${(p75ReplayAttackScore * 100).toFixed(1)}%).`;
       } else if (hasStaticMatrix) {
@@ -464,8 +476,8 @@ export class AntiSpoofService {
         attackType = "screen_reflection";
         reason = "Presentation attack detected: Harsh electronic display glass glare.";
       } else {
-        attackType = failedSample?.attackType || "print_attack";
-        reason = failedSample?.failureReason || `Anti-spoof score insufficient (Median: ${(medianLiveScore * 100).toFixed(1)}%).`;
+        attackType = "none";
+        reason = "Unable to verify—adjust lighting or reposition. Keep your face centered in natural light.";
       }
     }
 

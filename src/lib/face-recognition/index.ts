@@ -31,6 +31,8 @@ export {
   getSsdOptions,
   createAuthoritativeDetection,
   isValidFaceGeometry,
+  computeBoxIoU,
+  deduplicateFaces,
   detectFaces,
   detectFacesWithLandmarks,
   detectSingleFace,

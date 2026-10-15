@@ -119,12 +119,119 @@ export function isValidFaceGeometry(
 }
 
 /**
+ * Calculates Intersection-over-Union (IoU) between two bounding boxes.
+ */
+export function computeBoxIoU(
+  b1: { x: number; y: number; width: number; height: number },
+  b2: { x: number; y: number; width: number; height: number },
+): number {
+  const x1 = Math.max(b1.x, b2.x);
+  const y1 = Math.max(b1.y, b2.y);
+  const x2 = Math.min(b1.x + b1.width, b2.x + b2.width);
+  const y2 = Math.min(b1.y + b1.height, b2.y + b2.height);
+
+  const intersectionW = Math.max(0, x2 - x1);
+  const intersectionH = Math.max(0, y2 - y1);
+  const intersectionArea = intersectionW * intersectionH;
+
+  const area1 = b1.width * b1.height;
+  const area2 = b2.width * b2.height;
+  const unionArea = area1 + area2 - intersectionArea;
+
+  return unionArea > 0 ? intersectionArea / unionArea : 0;
+}
+
+/**
+ * Deduplicates overlapping candidate face detections (Non-Maximum Suppression):
+ * 1. Sort candidate detections by confidence descending.
+ * 2. Suppress detections having high IoU (> 0.30) or high containment (> 0.50) with an already selected face.
+ * 3. Filter out weak background noise / ghost artifacts (confidence < 0.60 or tiny size relative to primary face).
+ */
+export type BoxConfidenceTarget = {
+  box?: faceapi.Box | { x: number; y: number; width: number; height: number };
+  confidence?: number;
+  detection?: {
+    box: faceapi.Box | { x: number; y: number; width: number; height: number };
+    score: number;
+  };
+};
+
+/**
+ * Deduplicates overlapping candidate face detections (Non-Maximum Suppression):
+ * 1. Sort candidate detections by confidence descending.
+ * 2. Suppress detections having high IoU (> 0.30) or high containment (> 0.50) with an already selected face.
+ * 3. Filter out weak background noise / ghost artifacts (confidence < 0.60 or tiny size relative to primary face).
+ */
+export function deduplicateFaces<T extends BoxConfidenceTarget>(
+  faces: T[],
+  iouThreshold = 0.30,
+  containmentThreshold = 0.50,
+): T[] {
+  if (faces.length <= 1) return faces;
+
+  const getBox = (item: T) => item.box ?? item.detection?.box!;
+  const getConf = (item: T) => item.confidence ?? item.detection?.score ?? 0;
+
+  // Sort descending by confidence score
+  const sorted = [...faces].sort((a, b) => getConf(b) - getConf(a));
+  const preserved: T[] = [];
+
+  for (const candidate of sorted) {
+    const cBox = getBox(candidate);
+    const cArea = cBox.width * cBox.height;
+    const cConf = getConf(candidate);
+
+    // Filter background noise artifacts if a strong primary face is already locked
+    if (preserved.length > 0) {
+      const primary = preserved[0]!;
+      const pBox = getBox(primary);
+      const primaryArea = pBox.width * pBox.height;
+      if (cConf < 0.60 && cArea < primaryArea * 0.25) {
+        continue;
+      }
+    }
+
+    let isDuplicate = false;
+    for (const kept of preserved) {
+      const kBox = getBox(kept);
+      const kArea = kBox.width * kBox.height;
+
+      const x1 = Math.max(cBox.x, kBox.x);
+      const y1 = Math.max(cBox.y, kBox.y);
+      const x2 = Math.min(cBox.x + cBox.width, kBox.x + kBox.width);
+      const y2 = Math.min(cBox.y + cBox.height, kBox.y + kBox.height);
+
+      const intW = Math.max(0, x2 - x1);
+      const intH = Math.max(0, y2 - y1);
+      const intArea = intW * intH;
+
+      const union = cArea + kArea - intArea;
+      const iou = union > 0 ? intArea / union : 0;
+      const containment = Math.max(intArea / cArea, intArea / kArea);
+
+      if (iou > iouThreshold || containment > containmentThreshold) {
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (!isDuplicate) {
+      preserved.push(candidate);
+    }
+  }
+
+  return preserved;
+}
+
+/**
  * Build one authoritative detection object from a set of detections.
  */
 export function createAuthoritativeDetection(
   faces: { landmarks?: faceapi.FaceLandmarks68; confidence: number; box: faceapi.Box }[],
 ): AuthoritativeFaceDetection {
-  const validFaces = faces.filter((f) => isValidFaceGeometry(f.box, f.landmarks));
+  const validFaces = deduplicateFaces(
+    faces.filter((f) => isValidFaceGeometry(f.box, f.landmarks)),
+  );
 
   if (validFaces.length === 1 && validFaces[0]) {
     const f = validFaces[0];
@@ -150,7 +257,7 @@ export function createAuthoritativeDetection(
 
 /**
  * Detect all faces with landmarks (optimized for real-time tracking).
- * Filters out false positive hair / shadow / background detections.
+ * Filters out false positive hair / shadow / background detections and deduplicates overlapping anchor boxes.
  */
 export async function detectFacesWithLandmarks(
   input: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement,
@@ -165,13 +272,15 @@ export async function detectFacesWithLandmarks(
     .detectAllFaces(input, getSsdOptions())
     .withFaceLandmarks();
 
-  return detections
+  const valid = detections
     .filter((d) => isValidFaceGeometry(d.detection.box, d.landmarks))
     .map((d) => ({
       landmarks: d.landmarks,
       confidence: d.detection.score,
       box: d.detection.box,
     }));
+
+  return deduplicateFaces(valid);
 }
 
 /**
@@ -191,12 +300,16 @@ export async function detectFaces(
     .withFaceLandmarks()
     .withFaceDescriptors();
 
-  return detections.map((d) => ({
-    descriptor: d.descriptor,
-    landmarks: d.landmarks,
-    confidence: d.detection.score,
-    box: d.detection.box,
-  }));
+  const valid = detections
+    .filter((d) => isValidFaceGeometry(d.detection.box, d.landmarks))
+    .map((d) => ({
+      descriptor: d.descriptor,
+      landmarks: d.landmarks,
+      confidence: d.detection.score,
+      box: d.detection.box,
+    }));
+
+  return deduplicateFaces(valid);
 }
 
 /**

@@ -73,9 +73,9 @@ export const FACE_CONFIG = {
     HEAD_PITCH_UP_DEG: 9.0,
     HEAD_PITCH_DOWN_DEG: -9.0,
     POSE_CONSECUTIVE_FRAMES: 3,
-    POSE_MOVEMENTS_COUNT: 3,
-    MIN_CHALLENGES: 3,
-    MAX_CHALLENGES: 3,
+    POSE_MOVEMENTS_COUNT: 1, // Simplified: 1 randomized directional head movement + return to center
+    MIN_CHALLENGES: 1,
+    MAX_CHALLENGES: 1,
     CHALLENGE_TIMEOUT_SEC: 0, // Disabled: no fixed 4s/8s timeout for head movements
     SESSION_TTL_SEC: 60,
   },
@@ -85,7 +85,7 @@ export const FACE_CONFIG = {
     MINIFASNET_MODEL_URL: "/models/MiniFASNetV2.onnx",
     MIN_LIVE_SCORE: 0.70,
     MAX_SPOOF_RISK: 0.40,
-    MOIRE_THRESHOLD: 0.35,
+    MOIRE_THRESHOLD: 0.45, // Calibrated from 0.35 to 0.45 to prevent camera sharpness/glasses from triggering false replay attack
     MAX_GLARE_RATIO: 0.22, // Calibrated from 0.08 to 0.22 (22%) to prevent natural skin shine / ambient light from triggering false rejection
     MIN_DYNAMIC_RANGE: 40.0,
     MIN_TEMPORAL_VARIANCE: 0.8,

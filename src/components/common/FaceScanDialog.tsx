@@ -48,6 +48,7 @@ import {
   runArcFaceDoubleInference,
   computeFloat32Checksum,
   detectFacesWithLandmarks,
+  deduplicateFaces,
   createAuthoritativeDetection,
   isValidFaceGeometry,
   getSsdOptions,
@@ -247,6 +248,7 @@ export function FaceScanDialog({
 
   const livenessSessionRef = useRef<LivenessSession | null>(null);
   const antiSpoofServiceRef = useRef<AntiSpoofService>(new AntiSpoofService());
+  const multiFaceConsecutiveFramesRef = useRef<number>(0);
 
   const [phase, setPhase] = useState<VerificationPhase>("loading-models");
   const [errorMessage, setErrorMessage] = useState("");
@@ -335,7 +337,7 @@ export function FaceScanDialog({
     framesSampled: 0,
     framesDropped: 0,
     blinkReason: "Awaiting natural movement",
-    movementProgressText: "Movement 1 of 3: Turn head LEFT",
+    movementProgressText: "Movement 1 of 1: Turn head LEFT",
     targetDirection: "left",
     detectedDirection: "none",
     currentYaw: 0,
@@ -357,7 +359,7 @@ export function FaceScanDialog({
     },
     padRawLogits: null,
   });
-  const [showDiag, setShowDiag] = useState(true);
+  const [showDiag, setShowDiag] = useState(false);
 
   const stableBaselineRef = useRef<{ yaw: number; pitch: number } | null>(null);
   const stablePoseAccumulatorRef = useRef<Array<{ yaw: number; pitch: number }>>([]);
@@ -375,6 +377,7 @@ export function FaceScanDialog({
     isLivenessRunningRef.current = false;
     isFaceDetectedRef.current = false;
     stableFaceFramesRef.current = 0;
+    multiFaceConsecutiveFramesRef.current = 0;
     activeSessionIdRef.current = "";
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
@@ -441,7 +444,8 @@ export function FaceScanDialog({
           .detectAllFaces(snapCanvas, getSsdOptions())
           .withFaceLandmarks();
 
-        const validDetections = rawDetections.filter((d) =>
+        const deduplicated = deduplicateFaces(rawDetections);
+        const validDetections = deduplicated.filter((d) =>
           isValidFaceGeometry(d.detection.box, d.landmarks),
         );
 
@@ -911,6 +915,7 @@ export function FaceScanDialog({
             }
           }
         } else if (faces.length === 0) {
+          multiFaceConsecutiveFramesRef.current = 0;
           stableFaceFramesRef.current = 0;
           setStableFaceProgress(0);
           setLiveGuidance("No face detected. Center your face in camera.");
@@ -932,14 +937,20 @@ export function FaceScanDialog({
             }));
           }
         } else if (faces.length > 1) {
-          stableFaceFramesRef.current = 0;
-          setStableFaceProgress(0);
-          setLiveGuidance(`Multiple faces detected (${faces.length}). Only 1 face allowed.`);
-          if (isFaceDetectedRef.current) {
-            isFaceDetectedRef.current = false;
-            setFaceDetected(false);
+          multiFaceConsecutiveFramesRef.current++;
+          if (multiFaceConsecutiveFramesRef.current >= 4) {
+            stableFaceFramesRef.current = 0;
+            setStableFaceProgress(0);
+            setLiveGuidance(`Multiple faces detected (${faces.length}). Only one individual must be in view.`);
+            if (isFaceDetectedRef.current) {
+              isFaceDetectedRef.current = false;
+              setFaceDetected(false);
+            }
+          } else {
+            setLiveGuidance("Checking face framing...");
           }
         } else {
+          multiFaceConsecutiveFramesRef.current = 0;
           const face = faces[0]!;
           const box = authDetection.boundingBox;
           const validBox = Boolean(box && box.width >= 80 && box.height >= 80);
@@ -1427,7 +1438,7 @@ export function FaceScanDialog({
                   </span>
                   <div className="flex items-center gap-1.5">
                     <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[10px] bg-emerald-500/10 font-bold">
-                      Movement {livenessState.movementProgress?.currentMovement ?? 1} of {livenessState.movementProgress?.totalMovements ?? 3}
+                      Step {(livenessState.currentStepIndex ?? 0) + 1} of {livenessState.steps?.length ?? 2}
                     </Badge>
                   </div>
                 </div>
@@ -1436,9 +1447,9 @@ export function FaceScanDialog({
                   value={Math.min(
                     100,
                     Math.round(
-                      (((livenessState.movementProgress?.currentMovement ?? 1) - 1 +
+                      (((livenessState.currentStepIndex ?? 0) +
                         (livenessState.currentStep?.completed ? 1 : 0)) /
-                        (livenessState.movementProgress?.totalMovements ?? 3)) *
+                        Math.max(1, livenessState.steps?.length ?? 2)) *
                         100,
                     ),
                   )}
@@ -1634,7 +1645,10 @@ export function FaceScanDialog({
                   setMatchCode("");
                   isVerifyingRef.current = false;
                   stableFaceFramesRef.current = 0;
+                  multiFaceConsecutiveFramesRef.current = 0;
                   setStableFaceProgress(0);
+                  antiSpoofServiceRef.current.reset();
+                  livenessSessionRef.current = null;
                   recordStage("RETRY", "DETECTING", "RESET", "User restarted challenge verification");
                   startDetectionLoopRef.current();
                 }}

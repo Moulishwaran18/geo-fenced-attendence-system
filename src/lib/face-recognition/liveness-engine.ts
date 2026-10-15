@@ -156,51 +156,65 @@ function getDirectionInstruction(direction: HeadDirection, movementNumber: numbe
 }
 
 /**
- * Build interleaved challenge steps:
- * Movement 1 -> Return Center -> Movement 2 -> Return Center -> Movement 3
+ * Build single randomized movement challenge:
+ * Movement 1 (e.g. Left/Right/Up/Down) -> Return to Center
  */
-export function generateRandomChallenge(): GeneratedChallenge {
+export function generateRandomChallenge(specifiedDirection?: HeadDirection): GeneratedChallenge {
   const nonce = generateNonce();
-  const sequence = generateRandomDirectionSequence(3);
-  const steps: ChallengeStep[] = [];
+  const validDirections: HeadDirection[] = ["left", "right", "up", "down"];
+  const target =
+    specifiedDirection && validDirections.includes(specifiedDirection)
+      ? specifiedDirection
+      : validDirections[Math.floor(Math.random() * validDirections.length)]!;
 
-  for (let i = 0; i < sequence.length; i++) {
-    const dir = sequence[i]!;
-    const movementIndex = i + 1;
+  let moveInstruction = "";
+  switch (target) {
+    case "left":
+      moveInstruction = "Turn your head LEFT, then return to center";
+      break;
+    case "right":
+      moveInstruction = "Turn your head RIGHT, then return to center";
+      break;
+    case "up":
+      moveInstruction = "Tilt your head UP, then return to center";
+      break;
+    case "down":
+      moveInstruction = "Tilt your head DOWN, then return to center";
+      break;
+    default:
+      moveInstruction = "Turn your head LEFT, then return to center";
+      break;
+  }
 
-    // Directional movement step
-    steps.push({
-      id: `step-${movementIndex}-move`,
+  const steps: ChallengeStep[] = [
+    {
+      id: "step-1-move",
       type: "pose",
-      instruction: getDirectionInstruction(dir, movementIndex, sequence.length),
-      targetDirection: dir,
-      movementIndex,
-      totalMovements: sequence.length,
+      instruction: moveInstruction,
+      targetDirection: target,
+      movementIndex: 1,
+      totalMovements: 1,
       isReturnToCenter: false,
       completed: false,
-    });
-
-    // Return to center step (except after the final movement)
-    if (i < sequence.length - 1) {
-      steps.push({
-        id: `step-${movementIndex}-center`,
-        type: "pose",
-        instruction: `Return your head to CENTER`,
-        targetDirection: "center",
-        movementIndex,
-        totalMovements: sequence.length,
-        isReturnToCenter: true,
-        completed: false,
-      });
-    }
-  }
+    },
+    {
+      id: "step-2-center",
+      type: "pose",
+      instruction: "Now return your head to CENTER",
+      targetDirection: "center",
+      movementIndex: 1,
+      totalMovements: 1,
+      isReturnToCenter: true,
+      completed: false,
+    },
+  ];
 
   return {
     category: "head-movement",
-    name: "Randomized 3-Direction Head Movement",
+    name: `Randomized Head Movement (${target.toUpperCase()})`,
     nonce,
     steps,
-    directionalSequence: sequence,
+    directionalSequence: [target],
   };
 }
 
@@ -226,6 +240,7 @@ export class LivenessSession {
   // Face Tracking & Anti-Spoof Telemetry
   private trackedFrames: number = 0;
   private faceLostFrames: number = 0;
+  private multiFaceFrames: number = 0;
   private lastBox: { x: number; y: number; width: number; height: number } | null = null;
   private lastTimestamp: number = 0;
   private earReadings: number[] = [];
@@ -266,6 +281,7 @@ export class LivenessSession {
     this.failureReason = undefined;
     this.trackedFrames = 0;
     this.faceLostFrames = 0;
+    this.multiFaceFrames = 0;
     this.lastBox = null;
     this.lastTimestamp = 0;
     this.earReadings = [];
@@ -313,9 +329,15 @@ export class LivenessSession {
     }
     this.lastTimestamp = now;
 
-    // 1. Multiple Faces Check
+    // 1. Multiple Faces Check with temporal hysteresis confirmation (4 consecutive frames)
     if (faceCount > 1) {
-      return this.fail(`Multiple faces detected (${faceCount}). Only one individual must be in view.`);
+      this.multiFaceFrames++;
+      if (this.multiFaceFrames >= 4) {
+        return this.fail(`Multiple faces detected (${faceCount}). Only one individual must be in view.`);
+      }
+      return this.getState(); // transient noise: do not fail immediately on 1 frame
+    } else {
+      this.multiFaceFrames = 0;
     }
 
     // 2. Lost Face Check
@@ -408,12 +430,12 @@ export class LivenessSession {
 
   private evaluateCompletion(): LivenessState {
     // Check static photograph rejection across tracked frames:
-    // A genuine human turning head 3 times will have significant yaw or pitch variance (> 1.0)
-    if (this.trackedFrames >= 10) {
+    // A genuine human turning head has significant yaw or pitch variance (> 0.02)
+    if (this.trackedFrames >= 5) {
       const yawVariance = this.computeVariance(this.yawReadings);
       const pitchVariance = this.computeVariance(this.pitchReadings);
 
-      if (yawVariance < 0.05 && pitchVariance < 0.05) {
+      if (yawVariance < 0.02 && pitchVariance < 0.02) {
         return this.fail("Static photograph detected. Zero physical head rotation or 3D depth variance observed.");
       }
     }
@@ -475,7 +497,7 @@ export class LivenessSession {
 
     const movementProgress: MovementProgress = {
       currentMovement: movementIndex,
-      totalMovements: 3,
+      totalMovements: this.challenge.directionalSequence.length || 1,
       isReturnToCenter,
       targetDirection,
       instruction,
