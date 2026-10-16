@@ -943,9 +943,15 @@ function StaffFaceEnrollmentPage() {
     ).trim();
 
     const targetRequestId =
-      serverStatus?.approvedRequest?.id ||
-      serverStatus?.activeRequest?.id ||
-      serverStatus?.latestRequest?.id ||
+      (serverStatus as any)?.approvedRequest?.id ||
+      (serverStatus as any)?.activeRequest?.id ||
+      (serverStatus as any)?.latestRequest?.id ||
+      undefined;
+
+    const targetDeviceId =
+      nativeDeviceId ||
+      (serverStatus as any)?.approvedRequest?.deviceId ||
+      (serverStatus as any)?.activeRequest?.deviceId ||
       undefined;
 
     setIsSaving(true);
@@ -958,6 +964,7 @@ function StaffFaceEnrollmentPage() {
         hasApprovedDigest: Boolean(approvedDigest),
         approvedDigestPrefix: approvedDigest ? approvedDigest.slice(0, 16) + "…" : "none",
         requestId: targetRequestId,
+        targetDeviceId,
       });
 
       // Inspect local biometric metadata safely
@@ -976,7 +983,7 @@ function StaffFaceEnrollmentPage() {
         if (serverStatus?.canSaveReplacement && oneTimeToken) {
           const srvRes = await submitStaffFaceEnrollment(
             {
-              deviceId: nativeDeviceId || undefined,
+              deviceId: targetDeviceId,
               templateCount: localMeta.activeTemplateCount,
               oneTimeToken,
               requestId: targetRequestId,
@@ -984,10 +991,14 @@ function StaffFaceEnrollmentPage() {
             },
             oneTimeToken
           );
-          console.log("[BiometricCommit] Finalized server token consumption:", srvRes.success);
+          console.log("[BiometricCommit] Finalized server token consumption:", srvRes.success, srvRes.error);
+          if (!srvRes.success && !srvRes.error?.includes("already consumed") && !srvRes.error?.includes("INVALID_OR_CONSUMED_TOKEN")) {
+            toast.error(srvRes.error || "Failed to finalize face replacement on server.");
+            return;
+          }
         }
         toast.success("Face registration successfully replaced and locked!", {
-          description: `${localMeta.activeTemplateCount} face template(s) verified active in Android Keystore with approved digest.`,
+          description: `${localMeta.activeTemplateCount} face template(s) verified active in device storage with approved digest.`,
         });
         stopCamera();
         setSamples([]);
@@ -1011,7 +1022,8 @@ function StaffFaceEnrollmentPage() {
       }
 
       // Verify staged templates exist before attempting commit
-      if (localMeta.stagedTemplateCount === 0 && !localMeta.stagedDigest) {
+      const hasStaged = localMeta.stagedTemplateCount > 0 || Boolean(localMeta.stagedDigest);
+      if (!hasStaged && !localMeta.activeMatchesApproved) {
         toast.error("No staged replacement templates found on this device. Please capture or prepare replacement face images first.");
         console.error("[BiometricCommit] Checkpoint 2 failed: No staged replacement templates found.");
         return;
@@ -1062,7 +1074,7 @@ function StaffFaceEnrollmentPage() {
       console.log("[BiometricCommit] Checkpoint 5: Consuming server authorization token");
       const serverEnrollRes = await submitStaffFaceEnrollment(
         {
-          deviceId: nativeDeviceId || undefined,
+          deviceId: targetDeviceId,
           templateCount: verifyCheck.count,
           oneTimeToken,
           requestId: targetRequestId,

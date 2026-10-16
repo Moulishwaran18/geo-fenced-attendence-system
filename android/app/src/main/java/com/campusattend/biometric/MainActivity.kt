@@ -9,6 +9,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
@@ -19,6 +20,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -113,6 +115,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WebView.setWebContentsDebuggingEnabled(true)
         locationService = NativeLocationService(this)
 
         checkAndRequestPermissions()
@@ -238,6 +241,17 @@ class MainActivity : ComponentActivity() {
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
+                                            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                                                val msg = consoleMessage?.message() ?: ""
+                                                val src = "${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()}"
+                                                when (consoleMessage?.messageLevel()) {
+                                                    ConsoleMessage.MessageLevel.ERROR -> Log.e("WebConsole", "[$src] $msg")
+                                                    ConsoleMessage.MessageLevel.WARNING -> Log.w("WebConsole", "[$src] $msg")
+                                                    else -> Log.d("WebConsole", "[$src] $msg")
+                                                }
+                                                return true
+                                            }
+
                                             override fun onGeolocationPermissionsShowPrompt(
                                                 origin: String?,
                                                 callback: GeolocationPermissions.Callback?

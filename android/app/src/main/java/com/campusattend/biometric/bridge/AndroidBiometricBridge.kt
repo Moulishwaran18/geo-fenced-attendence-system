@@ -615,7 +615,7 @@ class AndroidBiometricBridge(
      * Optionally validates against expected cryptographic template digest.
      */
     @JavascriptInterface
-    fun verifyPersistence(staffId: String?, expectedDigest: String? = null): String {
+    fun verifyPersistence(staffId: String?, expectedDigest: String?): String {
         return try {
             if (!isCallingOriginTrusted()) {
                 return JSONObject().apply {
@@ -731,9 +731,6 @@ class AndroidBiometricBridge(
     /**
      * Safely inspect biometric metadata without exposing raw photos, embeddings, or keys.
      */
-    @JavascriptInterface
-    fun getBiometricMetadata(staffId: String?): String = getBiometricMetadata(staffId, null)
-
     @JavascriptInterface
     fun getBiometricMetadata(staffId: String?, approvedDigest: String?): String {
         return try {
@@ -1059,7 +1056,7 @@ class AndroidBiometricBridge(
         requestId: String?,
         embeddingsJson: String?,
         labelsJson: String?,
-        digest: String? = null
+        digest: String?
     ): String {
         return try {
             if (!isCallingOriginTrusted()) {
@@ -1197,7 +1194,7 @@ class AndroidBiometricBridge(
         staffId: String?,
         deviceId: String?,
         oneTimeToken: String?,
-        expectedDigest: String? = null
+        expectedDigest: String?
     ): String {
         return try {
             if (!isCallingOriginTrusted()) {
