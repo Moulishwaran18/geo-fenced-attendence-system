@@ -78,6 +78,9 @@ export type {
 export {
   generateRandomChallenge,
   generateRandomDirectionSequence,
+  generateSingleActionChallenge,
+  getActionInstruction,
+  SUPPORTED_LIVENESS_ACTIONS,
   LivenessSession,
 } from "./liveness-engine";
 export type {
@@ -89,6 +92,7 @@ export type {
   LivenessState,
   MovementProgress,
   LivenessEvidence,
+  LivenessAction,
 } from "./liveness-engine";
 
 // Module 6: antiSpoofService

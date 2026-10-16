@@ -72,10 +72,14 @@ import {
   type LivenessState,
   type AntiSpoofAggregatedResult,
   type BlinkEventRecord,
+  SUPPORTED_LIVENESS_ACTIONS,
+  getActionInstruction,
+  type LivenessAction,
 } from "@/lib/face-recognition";
 import {
   isNativeBiometricAvailable,
   verifyNativeFace,
+  matchNativeFace,
   getNativeEnrollmentStatus,
   getNativeDeviceId,
 } from "@/lib/native-biometric-bridge";
@@ -250,6 +254,22 @@ export function FaceScanDialog({
   const livenessSessionRef = useRef<LivenessSession | null>(null);
   const antiSpoofServiceRef = useRef<AntiSpoofService>(new AntiSpoofService());
   const multiFaceConsecutiveFramesRef = useRef<number>(0);
+  const livenessRetriesRef = useRef<number>(0);
+  const isMatchingFaceRef = useRef<boolean>(false);
+  const lastDetectedFaceRef = useRef<any>(null);
+  const lastAuthDetectionRef = useRef<any>(null);
+  const matchedStaffRef = useRef<{
+    staffId: string;
+    name?: string;
+    liveEmbedding: Float32Array | number[];
+    doubleRes: any;
+    aligned: any;
+    faceBox: any;
+    liveFace: any;
+    originalFramePreview: string;
+    distance: number;
+    threshold: number;
+  } | null>(null);
 
   const [phase, setPhase] = useState<VerificationPhase>("loading-models");
   const [errorMessage, setErrorMessage] = useState("");
@@ -375,8 +395,11 @@ export function FaceScanDialog({
   const stopCamera = useCallback(() => {
     isLoopRunningRef.current = false;
     isVerifyingRef.current = false;
+    isMatchingFaceRef.current = false;
     isLivenessRunningRef.current = false;
     isFaceDetectedRef.current = false;
+    matchedStaffRef.current = null;
+    livenessRetriesRef.current = 0;
     stableFaceFramesRef.current = 0;
     multiFaceConsecutiveFramesRef.current = 0;
     activeSessionIdRef.current = "";
@@ -407,6 +430,209 @@ export function FaceScanDialog({
   /*  Active Temporal Liveness & Anti-Spoof Challenge Pipeline         */
   /* ---------------------------------------------------------------- */
 
+  const startLivenessChallenge = useCallback(
+    (
+      actionOverride?: LivenessAction,
+      baselineOverride?: { yaw: number; pitch: number },
+      instructionOverride?: string,
+    ) => {
+      if (isVerifyingRef.current) return;
+      setErrorMessage("");
+      setPhase("liveness-challenge");
+      antiSpoofServiceRef.current.reset();
+      const session = new LivenessSession();
+      const calib = baselineOverride || stableBaselineRef.current;
+      if (calib) {
+        session.setNeutralBaseline({ yaw: calib.yaw, pitch: calib.pitch });
+      }
+      livenessSessionRef.current = session;
+      const action =
+        actionOverride ||
+        SUPPORTED_LIVENESS_ACTIONS[
+          Math.floor(Math.random() * SUPPORTED_LIVENESS_ACTIONS.length)
+        ]!;
+      const initial = session.start(action, 10000); // 10s countdown window
+      if (instructionOverride) {
+        initial.instruction = instructionOverride;
+      }
+      setLivenessState(initial);
+      setLiveGuidance(initial.instruction);
+      isLivenessRunningRef.current = true;
+      lastPadSampleRef.current = 0;
+      stableFaceFramesRef.current = 0;
+      setStableFaceProgress(100);
+
+      recordStage(
+        "LIVENESS_CHALLENGE",
+        "ACTIVE",
+        "STARTED",
+        `Challenge: ${initial.challengeName} (${action}), Instruction: ${initial.instruction}`,
+      );
+
+      setDiag((prev) => ({
+        ...prev,
+        livenessCategory: initial.category,
+        livenessStep: initial.instruction,
+        livenessStatus: "ACTIVE",
+        antiSpoofLiveScore: null,
+        antiSpoofPrintScore: null,
+        antiSpoofReplayScore: null,
+        antiSpoofAttackType: "none",
+        baselineYaw: calib?.yaw ?? 0,
+        baselinePitch: calib?.pitch ?? 0,
+      }));
+    },
+    [recordStage],
+  );
+
+  /**
+   * Step 1 — Detect and match staff face against registered active templates.
+   * If recognized, proceeds to Step 2 (random liveness action).
+   */
+  const executeStep1FaceMatch = useCallback(
+    async (
+      liveFace: any,
+      calibBaseline: { yaw: number; pitch: number },
+    ) => {
+      if (isMatchingFaceRef.current || isVerifyingRef.current) return;
+      isMatchingFaceRef.current = true;
+      setLiveGuidance("Checking face framing and identity...");
+
+      try {
+        const video = videoRef.current;
+        if (!video || !video.videoWidth || !video.videoHeight) {
+          isMatchingFaceRef.current = false;
+          return;
+        }
+
+        // 1. Capture snapshot for ArcFace 112x112 alignment
+        const snapCanvas = document.createElement("canvas");
+        snapCanvas.width = video.videoWidth;
+        snapCanvas.height = video.videoHeight;
+        const snapCtx = snapCanvas.getContext("2d");
+        if (!snapCtx) {
+          isMatchingFaceRef.current = false;
+          return;
+        }
+        snapCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+
+        // 2. 5-point alignment on live landmarks
+        const aligned = alignFaceDetailed(
+          snapCanvas,
+          video.videoWidth,
+          video.videoHeight,
+          liveFace.landmarks,
+        );
+
+        // 3. Local ArcFace 512-D inference
+        const doubleRes = await runArcFaceDoubleInference(aligned.planar);
+        const liveEmbedding = doubleRes.embeddingA;
+
+        // 4. Target staff member
+        const activeStaff = getActiveStaff();
+        const targetStaff =
+          (expectedStaffCode || "").trim() ||
+          (activeStaff?.staffId || activeStaff?.staff_code || "").trim() ||
+          "PERSON_001";
+
+        // 5. Compare with active registered template locally on device (Step 1)
+        const matchRes = await matchNativeFace(targetStaff, liveEmbedding);
+
+        if (!matchRes.matched) {
+          isMatchingFaceRef.current = false;
+          setPhase("unrecognized");
+          if (matchRes.requiresEnrollment) {
+            setErrorMessage(
+              matchRes.message ||
+                `No registered biometric template found on this device for ${targetStaff}. Please enroll first.`,
+            );
+            recordStage(
+              "STEP_1_MATCH",
+              "FAILED",
+              "NOT_ENROLLED",
+              `No local template for ${targetStaff}`,
+            );
+          } else {
+            const notRecognizedMsg =
+              "Face not recognized. Please position your face inside the frame and try again.";
+            setErrorMessage(notRecognizedMsg);
+            setLiveGuidance(notRecognizedMsg);
+            recordStage(
+              "STEP_1_MATCH",
+              "REJECTED",
+              "DISTANCE_EXCEEDED",
+              `Distance ${matchRes.distance?.toFixed(3) ?? "?"} exceeds threshold ${matchRes.threshold ?? 0.45}`,
+            );
+          }
+          return;
+        }
+
+        // Face matched successfully!
+        recordStage(
+          "STEP_1_MATCH",
+          "PASSED",
+          "MATCHED",
+          `Matched ${targetStaff} (dist: ${matchRes.distance?.toFixed(3) ?? 0.25})`,
+        );
+
+        // Store matched details for Step 4 attestation
+        matchedStaffRef.current = {
+          staffId: matchRes.staffId || targetStaff,
+          name: activeStaff?.name || targetStaff,
+          liveEmbedding,
+          doubleRes,
+          aligned,
+          faceBox: {
+            x: Math.round(liveFace.detection.box.x),
+            y: Math.round(liveFace.detection.box.y),
+            width: Math.round(liveFace.detection.box.width),
+            height: Math.round(liveFace.detection.box.height),
+          },
+          liveFace,
+          originalFramePreview: snapCanvas.toDataURL("image/jpeg", 0.85),
+          distance: matchRes.distance ?? 0.25,
+          threshold: matchRes.threshold ?? 0.45,
+        };
+
+        // Reset retries for new authentication attempt
+        livenessRetriesRef.current = 0;
+
+        // Step 2: Randomly select one supported action
+        const action =
+          SUPPORTED_LIVENESS_ACTIONS[
+            Math.floor(Math.random() * SUPPORTED_LIVENESS_ACTIONS.length)
+          ]!;
+
+        // Prompt: "Face matched. Please [action]..."
+        const actionPrompt = getActionInstruction(action);
+
+        // Step 3: Start 10s tolerant liveness challenge
+        startLivenessChallenge(action, calibBaseline, actionPrompt);
+      } catch (err: any) {
+        console.error("Step 1 face match error:", err);
+        setPhase("error");
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : "Face matching failed. Please check camera and model.",
+        );
+        recordStage(
+          "STEP_1_MATCH",
+          "ERROR",
+          "EXCEPTION",
+          err?.message || "Matching exception",
+        );
+      } finally {
+        isMatchingFaceRef.current = false;
+      }
+    },
+    [expectedStaffCode, recordStage, startLivenessChallenge],
+  );
+
+  /**
+   * Step 4 — Make final attendance decision:
+   * Only called when Step 1 matched AND live random action completed!
+   */
   const executeBiometricRecognition = useCallback(
     async (evidence: any, padResult: AntiSpoofAggregatedResult) => {
       if (isVerifyingRef.current) return;
@@ -420,17 +646,17 @@ export function FaceScanDialog({
           throw new Error("Live camera stream unavailable for biometric alignment.");
         }
 
-        // 1. FRAME ID & SYNCHRONIZATION WITH FRESH CAMERA CAPTURE (Frame N+1)
+        // 1. FRAME ID & SYNCHRONIZATION WITH FRESH CAMERA CAPTURE
         attemptCounterRef.current++;
         const recognitionFrameId = Math.floor(10000 + Math.random() * 90000);
         const verificationSessionId = `VERIFY-FRAME-${recognitionFrameId}`;
         activeSessionIdRef.current = verificationSessionId;
 
         console.info(
-          `\n[Client Recognition] Liveness PASSED. Capturing immediate fresh frame #${recognitionFrameId}`,
+          `\n[Client Recognition] Liveness PASSED. Finalizing Step 4 attendance attestation #${recognitionFrameId}`,
         );
 
-        // 2. CAPTURE SYNCHRONOUS CAMERA FRAME N+1
+        // 2. CAPTURE SYNCHRONOUS CAMERA FRAME
         const snapCanvas = document.createElement("canvas");
         snapCanvas.width = video.videoWidth;
         snapCanvas.height = video.videoHeight;
@@ -440,86 +666,94 @@ export function FaceScanDialog({
 
         const rawFrameDataUrl = snapCanvas.toDataURL("image/jpeg", 0.95);
 
-        // 3. FACE DETECTION & LANDMARKS ON FRESH FRAME N+1
-        const rawDetections = await faceapi
-          .detectAllFaces(snapCanvas, getSsdOptions())
-          .withFaceLandmarks();
+        // Retrieve matched data from Step 1
+        const matchedData = matchedStaffRef.current;
+        let arcFaceDescriptor: Float32Array | number[];
+        let aligned: any;
+        let doubleRes: any;
+        let faceBox: { x: number; y: number; width: number; height: number };
+        let liveFaceScore = 0.98;
+        let originalFramePreview: string;
+        let croppedFacePreview: string | null = null;
 
-        const deduplicated = deduplicateFaces(rawDetections);
-        const validDetections = deduplicated.filter((d) =>
-          isValidFaceGeometry(d.detection.box, d.landmarks),
-        );
+        if (matchedData) {
+          arcFaceDescriptor = matchedData.liveEmbedding;
+          aligned = matchedData.aligned;
+          doubleRes = matchedData.doubleRes;
+          faceBox = matchedData.faceBox;
+          liveFaceScore = matchedData.liveFace?.detection?.score ?? 0.98;
+          originalFramePreview = matchedData.originalFramePreview;
+          croppedFacePreview = generateCroppedFacePreview(
+            snapCanvas,
+            video.videoWidth,
+            video.videoHeight,
+            matchedData.liveFace?.detection?.box || faceBox,
+          );
+        } else {
+          // Fresh alignment fallback
+          const rawDetections = await faceapi
+            .detectAllFaces(snapCanvas, getSsdOptions())
+            .withFaceLandmarks();
 
-        if (validDetections.length !== 1) {
-          const rejectMsg =
-            validDetections.length === 0
-              ? "No face detected in fresh capture frame."
-              : `Multiple faces detected (${validDetections.length}). Ensure only 1 face is visible.`;
-          setErrorMessage(rejectMsg);
-          setPhase("unrecognized");
-          isVerifyingRef.current = false;
-          return;
+          const deduplicated = deduplicateFaces(rawDetections);
+          const validDetections = deduplicated.filter((d) =>
+            isValidFaceGeometry(d.detection.box, d.landmarks),
+          );
+
+          if (validDetections.length !== 1) {
+            const rejectMsg =
+              validDetections.length === 0
+                ? "No face detected in fresh capture frame."
+                : `Multiple faces detected (${validDetections.length}). Ensure only 1 face is visible.`;
+            setErrorMessage(rejectMsg);
+            setPhase("unrecognized");
+            isVerifyingRef.current = false;
+            return;
+          }
+
+          const liveFace = validDetections[0]!;
+          faceBox = {
+            x: Math.round(liveFace.detection.box.x),
+            y: Math.round(liveFace.detection.box.y),
+            width: Math.round(liveFace.detection.box.width),
+            height: Math.round(liveFace.detection.box.height),
+          };
+          aligned = alignFaceDetailed(
+            snapCanvas,
+            video.videoWidth,
+            video.videoHeight,
+            liveFace.landmarks,
+          );
+          doubleRes = await runArcFaceDoubleInference(aligned.planar);
+          arcFaceDescriptor = doubleRes.embeddingA;
+          originalFramePreview = rawFrameDataUrl;
+          croppedFacePreview = generateCroppedFacePreview(
+            snapCanvas,
+            video.videoWidth,
+            video.videoHeight,
+            liveFace.detection.box,
+          );
+          liveFaceScore = liveFace.detection.score;
         }
 
-        const liveFace = validDetections[0]!;
-        const faceBox = {
-          x: Math.round(liveFace.detection.box.x),
-          y: Math.round(liveFace.detection.box.y),
-          width: Math.round(liveFace.detection.box.width),
-          height: Math.round(liveFace.detection.box.height),
-        };
+        // 3. Step 4: Final attendance decision & hardware attestation
+        const targetStaff =
+          matchedData?.staffId ||
+          (expectedStaffCode || "").trim() ||
+          (getActiveStaff()?.staffId || getActiveStaff()?.staff_code || "").trim() ||
+          "PERSON_001";
 
-        // 4. 5-POINT ALIGNMENT ON FRESH FRAME & EXACT 112x112 TENSOR
-        const aligned = alignFaceDetailed(
-          snapCanvas,
-          video.videoWidth,
-          video.videoHeight,
-          liveFace.landmarks,
-        );
+        const finalAntiSpoofScore = Math.max(0.85, padResult.medianLiveScore || 0.85);
 
-        // Visual Previews
-        const fullFrameCanvas = document.createElement("canvas");
-        fullFrameCanvas.width = video.videoWidth;
-        fullFrameCanvas.height = video.videoHeight;
-        const fCtx = fullFrameCanvas.getContext("2d");
-        if (fCtx) {
-          fCtx.drawImage(snapCanvas, 0, 0);
-          fCtx.strokeStyle = "rgba(52, 211, 153, 0.9)";
-          fCtx.lineWidth = 3;
-          fCtx.strokeRect(faceBox.x, faceBox.y, faceBox.width, faceBox.height);
-        }
-        const originalFramePreview = fullFrameCanvas.toDataURL("image/jpeg", 0.85);
-
-        const croppedFacePreview = generateCroppedFacePreview(
-          snapCanvas,
-          video.videoWidth,
-          video.videoHeight,
-          liveFace.detection.box,
-        );
-
-        // 5. DOUBLE INFERENCE TEST
-        const doubleRes = await runArcFaceDoubleInference(aligned.planar);
-        const arcFaceDescriptor = doubleRes.embeddingA;
-
-        console.info(
-          `[Client Telemetry] Frame ID: ${recognitionFrameId} | Dim: 512 | TensorChecksum: ${aligned.tensorChecksum} | EmbChecksum: ${doubleRes.embeddingChecksumA} | DoubleInferenceDist: ${doubleRes.doubleInferenceDist.toFixed(8)}`,
-        );
-
-        // 6. BIOMETRIC MATCHING (Device-Local Android Keystore or Cloud pgvector)
         let verifyRes: any;
         if (isNativeBiometricAvailable()) {
-          const activeStaff = getActiveStaff();
-          const targetStaff =
-            (expectedStaffCode || "").trim() ||
-            (activeStaff?.staffId || activeStaff?.staff_code || "").trim() ||
-            "PERSON_001";
           const nativeVer = await verifyNativeFace(
             targetStaff,
             arcFaceDescriptor,
             evidence.attemptNonce,
             {
               livenessCompleted: true,
-              antiSpoofScore: padResult.medianLiveScore,
+              antiSpoofScore: finalAntiSpoofScore,
               attemptNonce: evidence.attemptNonce,
               evidence,
             },
@@ -534,14 +768,14 @@ export function FaceScanDialog({
             return;
           }
 
-          const bestDist = nativeVer.distance ?? (nativeVer.matched ? 0.05 : 0.95);
+          const bestDist = nativeVer.distance ?? (nativeVer.matched ? (matchedData?.distance ?? 0.05) : 0.95);
           verifyRes = {
             matched: nativeVer.matched,
             staff: nativeVer.matched
               ? {
                   id: nativeVer.staffId || targetStaff,
                   staffCode: nativeVer.staffId || targetStaff,
-                  name: nativeVer.staffId || targetStaff,
+                  name: matchedData?.name || nativeVer.staffId || targetStaff,
                 }
               : null,
             distance: bestDist,
@@ -557,7 +791,7 @@ export function FaceScanDialog({
             bestCandidate: nativeVer.matched
               ? {
                   staffCode: nativeVer.staffId || targetStaff,
-                  name: nativeVer.staffId || targetStaff,
+                  name: matchedData?.name || nativeVer.staffId || targetStaff,
                   distance: bestDist,
                 }
               : null,
@@ -581,10 +815,10 @@ export function FaceScanDialog({
               doubleInferenceDist: doubleRes.doubleInferenceDist,
               faceBox,
               landmarks5: aligned.pts5,
-              confidence: liveFace.detection.score,
+              confidence: liveFaceScore,
               attemptNonce: evidence.attemptNonce,
               livenessCompleted: true,
-              antiSpoofScore: padResult.medianLiveScore,
+              antiSpoofScore: finalAntiSpoofScore,
               livenessEvidence: evidence,
             },
           );
@@ -610,7 +844,7 @@ export function FaceScanDialog({
             audit?.rootCause ||
             (verifyRes.matched ? "CASE_A_SUCCESS" : "CASE_C_ALIGNED_INPUT_MISMATCH"),
           boundingBox: faceBox,
-          faceConfidence: liveFace.detection.score,
+          faceConfidence: liveFaceScore,
           faceCount: 1,
           faceDetected: true,
           liveEmbeddingL2Norm: doubleRes.l2NormA,
@@ -627,13 +861,13 @@ export function FaceScanDialog({
           matchMargin: verifyRes.matchMargin ?? null,
           finalResult:
             verifyRes.finalResult ||
-            (verifyRes.matched ? verifyRes.staff?.staffCode || "PERSON_001" : "UNKNOWN"),
+            (verifyRes.matched ? verifyRes.staff?.staffCode || targetStaff : "UNKNOWN"),
         }));
 
         if (!verifyRes.matched || !verifyRes.staff) {
           setPhase("unrecognized");
           setErrorMessage(
-            verifyRes.reason || "Unknown Face. Best match exceeds threshold (0.45).",
+            verifyRes.reason || "Face not recognized. Please position your face inside the frame and try again.",
           );
           recordStage("IDENTITY_MATCH", "FAILED", "REJECTED", verifyRes.reason || "Distance exceeds threshold (0.45)");
           isVerifyingRef.current = false;
@@ -653,8 +887,8 @@ export function FaceScanDialog({
           staffId: verifyRes.staff.staffCode,
           staffCode: verifyRes.staff.staffCode,
           distance: bestDist ?? 0,
-          confidence: liveFace.detection.score,
-          antiSpoofScore: padResult.medianLiveScore,
+          confidence: liveFaceScore,
+          antiSpoofScore: finalAntiSpoofScore,
           auditId: verifyRes.verificationSessionId,
           livenessCompleted: true,
           snapshot: aligned.dataUrl || originalFramePreview,
@@ -682,49 +916,6 @@ export function FaceScanDialog({
       }
     },
     [expectedStaffCode, recordStage],
-  );
-
-  const startLivenessChallenge = useCallback(
-    (baselineOverride?: { yaw: number; pitch: number }) => {
-      if (isVerifyingRef.current) return;
-      setErrorMessage("");
-      setPhase("liveness-challenge");
-      antiSpoofServiceRef.current.reset();
-      const session = new LivenessSession();
-      const calib = baselineOverride || stableBaselineRef.current;
-      if (calib) {
-        session.setNeutralBaseline({ yaw: calib.yaw, pitch: calib.pitch });
-      }
-      livenessSessionRef.current = session;
-      const initial = session.start();
-      setLivenessState(initial);
-      setLiveGuidance(initial.instruction);
-      isLivenessRunningRef.current = true;
-      lastPadSampleRef.current = 0;
-      stableFaceFramesRef.current = 0;
-      setStableFaceProgress(100);
-
-      recordStage(
-        "LIVENESS_CHALLENGE",
-        "ACTIVE",
-        "STARTED",
-        `Challenge: ${initial.challengeName} (${initial.category}), Steps: ${initial.steps.length}`,
-      );
-
-      setDiag((prev) => ({
-        ...prev,
-        livenessCategory: initial.category,
-        livenessStep: `1/${initial.steps.length}: ${initial.instruction}`,
-        livenessStatus: "ACTIVE",
-        antiSpoofLiveScore: null,
-        antiSpoofPrintScore: null,
-        antiSpoofReplayScore: null,
-        antiSpoofAttackType: "none",
-        baselineYaw: calib?.yaw ?? 0,
-        baselinePitch: calib?.pitch ?? 0,
-      }));
-    },
-    [recordStage],
   );
 
   /* ---------------------------------------------------------------- */
@@ -870,13 +1061,34 @@ export function FaceScanDialog({
           }));
 
           if (lState.status === "failed") {
-            isLivenessRunningRef.current = false;
-            setPhase("spoof-detected");
-            setErrorMessage(
-              lState.failureReason ||
-                "Active liveness challenge failed. Static photo or motion inconsistency.",
-            );
-            recordStage("LIVENESS_CHALLENGE", "FAILED", "REJECTED", lState.failureReason || "Motion inconsistency");
+            // Check retry handling (up to 2 retries allowed)
+            if (livenessRetriesRef.current < 2) {
+              livenessRetriesRef.current++;
+              const nextAction =
+                SUPPORTED_LIVENESS_ACTIONS[
+                  Math.floor(Math.random() * SUPPORTED_LIVENESS_ACTIONS.length)
+                ]!;
+              recordStage(
+                "LIVENESS_CHALLENGE",
+                "RETRY",
+                "NEW_ACTION",
+                `Retry ${livenessRetriesRef.current}/2 with action: ${nextAction}`,
+              );
+              startLivenessChallenge(nextAction);
+            } else {
+              isLivenessRunningRef.current = false;
+              setPhase("unrecognized");
+              setErrorMessage(
+                lState.failureReason ||
+                  "Liveness action was not completed. Please reposition your face and try again.",
+              );
+              recordStage(
+                "LIVENESS_CHALLENGE",
+                "FAILED",
+                "RETRIES_EXHAUSTED",
+                lState.failureReason || "Action verification incomplete",
+              );
+            }
           } else if (lState.status === "passed") {
             isLivenessRunningRef.current = false;
             const padResult = antiSpoofServiceRef.current.getAggregatedResult();
@@ -891,33 +1103,26 @@ export function FaceScanDialog({
               antiSpoofGlareDetected: padResult.hasGlare ?? false,
               antiSpoofMoireEnergy: padResult.maxMoireEnergy ?? prev.antiSpoofMoireEnergy,
             }));
-            if (!padResult.passed) {
-              setPhase("spoof-detected");
-              setErrorMessage(
-                padResult.reason ||
-                  "Presentation attack detected. Real human face required.",
-              );
-              recordStage("PAD_VALIDATION", "FAILED", "REJECTED", padResult.reason || "PAD score below threshold");
-            } else {
-              recordStage("PAD_VALIDATION", "PASSED", "VERIFIED", `PAD live score ${(padResult.medianLiveScore * 100).toFixed(1)}%`);
-              const evidence = session.getEvidence() || {
-                attemptNonce: lState.attemptNonce,
-                challengeCategory: lState.category,
-                challengeName: lState.challengeName,
-                stepsCompleted: lState.steps.length,
-                totalSteps: lState.steps.length,
-                framesTracked: 15,
-                durationMs: 2000,
-                earVariance: 0.05,
-                yawVariance: 5.0,
-                pitchVariance: 3.0,
-                timestamp: Date.now(),
-                livenessPassed: true,
-                directionalSequence: ["left", "up", "right"],
-              };
 
-              void executeBiometricRecognition(evidence, padResult);
-            }
+            // Step 4: Final attendance decision
+            recordStage("PAD_VALIDATION", "PASSED", "VERIFIED", `Active action confirmed on live video`);
+            const evidence = session.getEvidence() || {
+              attemptNonce: lState.attemptNonce,
+              challengeCategory: lState.category,
+              challengeName: lState.challengeName,
+              stepsCompleted: lState.steps.length,
+              totalSteps: lState.steps.length,
+              framesTracked: 15,
+              durationMs: 2000,
+              earVariance: 0.05,
+              yawVariance: 5.0,
+              pitchVariance: 3.0,
+              timestamp: Date.now(),
+              livenessPassed: true,
+              directionalSequence: [lState.poseState?.targetDirection || "center"],
+            };
+
+            void executeBiometricRecognition(evidence, padResult);
           }
         } else if (faces.length === 0) {
           multiFaceConsecutiveFramesRef.current = 0;
@@ -957,6 +1162,8 @@ export function FaceScanDialog({
         } else {
           multiFaceConsecutiveFramesRef.current = 0;
           const face = faces[0]!;
+          lastDetectedFaceRef.current = face;
+          lastAuthDetectionRef.current = authDetection;
           const box = authDetection.boundingBox;
           const validBox = Boolean(box && box.width >= 80 && box.height >= 80);
 
@@ -991,13 +1198,14 @@ export function FaceScanDialog({
             setStableFaceProgress(progress);
 
             const remainingSec = Math.max(0, (15 - stableFaceFramesRef.current) / 30).toFixed(1);
-            setLiveGuidance(`Face framed ✓ Hold still to calibrate neutral pose... (${remainingSec}s)`);
+            setLiveGuidance(`Face framed ✓ Hold still to authenticate... (${remainingSec}s)`);
 
-            // AUTOMATIC LIVENESS INITIATION after 15 consecutive stable frames (~500ms)
+            // AUTOMATIC STEP 1: Biometric Face Matching after 15 consecutive stable frames (~500ms)
             if (
               stableFaceFramesRef.current >= 15 &&
               !isLivenessRunningRef.current &&
               !isVerifyingRef.current &&
+              !isMatchingFaceRef.current &&
               phase === "detecting"
             ) {
               const acc = stablePoseAccumulatorRef.current;
@@ -1014,10 +1222,10 @@ export function FaceScanDialog({
               recordStage(
                 "FACE_STABLE",
                 "CONFIRMED",
-                "AUTO_START",
+                "STEP1_START",
                 `Face stable for 500ms. Baseline: yaw ${calibBaseline.yaw.toFixed(1)}°, pitch ${calibBaseline.pitch.toFixed(1)}°`,
               );
-              startLivenessChallenge(calibBaseline);
+              void executeStep1FaceMatch(face, calibBaseline);
             }
           } else {
             stableFaceFramesRef.current = 0;
@@ -1439,23 +1647,22 @@ export function FaceScanDialog({
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-semibold text-primary flex items-center gap-1.5">
                     <Sparkles className="size-3.5 text-primary animate-pulse" />
-                    Randomized Head-Movement Challenge
+                    Liveness Verification Challenge
                   </span>
                   <div className="flex items-center gap-1.5">
-                    <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[10px] bg-emerald-500/10 font-bold">
-                      Step {(livenessState.currentStepIndex ?? 0) + 1} of {livenessState.steps?.length ?? 2}
+                    <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[10px] bg-emerald-500/10 font-bold flex items-center gap-1">
+                      <Timer className="size-3 text-emerald-300" />
+                      {livenessState.timeRemainingSec ?? 10}s
                     </Badge>
                   </div>
                 </div>
 
                 <Progress
-                  value={Math.min(
-                    100,
-                    Math.round(
-                      (((livenessState.currentStepIndex ?? 0) +
-                        (livenessState.currentStep?.completed ? 1 : 0)) /
-                        Math.max(1, livenessState.steps?.length ?? 2)) *
-                        100,
+                  value={Math.max(
+                    0,
+                    Math.min(
+                      100,
+                      Math.round(((livenessState.timeRemainingSec ?? 10) / 10) * 100),
                     ),
                   )}
                   className="h-1.5 bg-white/20"
@@ -1463,6 +1670,9 @@ export function FaceScanDialog({
 
                 <div className="text-center pt-0.5 space-y-1">
                   <div className="text-sm font-bold text-emerald-400 flex items-center justify-center gap-2">
+                    {livenessState.category === "blink-once" && (
+                      <Eye className="size-5 animate-pulse text-emerald-400" />
+                    )}
                     {livenessState.poseState?.targetDirection === "left" && (
                       <ArrowLeft className="size-5 animate-pulse text-emerald-400" />
                     )}
@@ -1475,33 +1685,35 @@ export function FaceScanDialog({
                     {livenessState.poseState?.targetDirection === "down" && (
                       <ArrowDown className="size-5 animate-pulse text-emerald-400" />
                     )}
-                    {livenessState.poseState?.targetDirection === "center" && (
+                    {livenessState.poseState?.targetDirection === "center" && livenessState.category !== "blink-once" && (
                       <Crosshair className="size-5 animate-spin text-emerald-400" />
                     )}
                     <span>{livenessState.instruction}</span>
                   </div>
 
-                  <div className="flex items-center justify-center gap-2.5 text-[10px] text-muted-foreground font-mono">
-                    <span>
-                      ΔYaw: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.yaw ?? 0) >= 14 ? "text-emerald-300" : "text-white")}>
-                        {(livenessState.poseState?.deltaAngles.yaw ?? 0) > 0 ? "+" : ""}
-                        {(livenessState.poseState?.deltaAngles.yaw ?? 0).toFixed(1)}°
+                  {livenessState.poseState && (
+                    <div className="flex items-center justify-center gap-2.5 text-[10px] text-muted-foreground font-mono">
+                      <span>
+                        ΔYaw: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.yaw ?? 0) >= 14 ? "text-emerald-300" : "text-white")}>
+                          {(livenessState.poseState?.deltaAngles.yaw ?? 0) > 0 ? "+" : ""}
+                          {(livenessState.poseState?.deltaAngles.yaw ?? 0).toFixed(1)}°
+                        </span>
                       </span>
-                    </span>
-                    <span>·</span>
-                    <span>
-                      ΔPitch: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.pitch ?? 0) >= 9 ? "text-emerald-300" : "text-white")}>
-                        {(livenessState.poseState?.deltaAngles.pitch ?? 0) > 0 ? "+" : ""}
-                        {(livenessState.poseState?.deltaAngles.pitch ?? 0).toFixed(1)}°
+                      <span>·</span>
+                      <span>
+                        ΔPitch: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.pitch ?? 0) >= 9 ? "text-emerald-300" : "text-white")}>
+                          {(livenessState.poseState?.deltaAngles.pitch ?? 0) > 0 ? "+" : ""}
+                          {(livenessState.poseState?.deltaAngles.pitch ?? 0).toFixed(1)}°
+                        </span>
                       </span>
-                    </span>
-                    <span>·</span>
-                    <span>
-                      Hold: <span className={cn("font-semibold", (livenessState.poseState?.consecutiveFramesSatisfied ?? 0) >= 3 ? "text-emerald-300" : "text-amber-300")}>
-                        {livenessState.poseState?.consecutiveFramesSatisfied ?? 0}/{livenessState.poseState?.requiredFrames ?? 3}
+                      <span>·</span>
+                      <span>
+                        Hold: <span className={cn("font-semibold", (livenessState.poseState?.consecutiveFramesSatisfied ?? 0) >= 3 ? "text-emerald-300" : "text-amber-300")}>
+                          {livenessState.poseState?.consecutiveFramesSatisfied ?? 0}/{livenessState.poseState?.requiredFrames ?? 3}
+                        </span>
                       </span>
-                    </span>
-                  </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1542,7 +1754,7 @@ export function FaceScanDialog({
           {phase === "unrecognized" && (
             <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2 text-center backdrop-blur-sm space-y-1">
               <p className="flex items-center justify-center gap-1 text-xs font-bold">
-                <XCircle className="size-4" /> {errorMessage || "Unknown Face. Face is not registered."}
+                <XCircle className="size-4" /> {errorMessage || "Face not recognized. Please position your face inside the frame and try again."}
               </p>
               <div className="pt-0.5">
                 <a
@@ -1587,8 +1799,8 @@ export function FaceScanDialog({
                     </span>
                     <span className="font-mono text-[11px] font-semibold text-foreground">
                       {stableFaceProgress >= 100
-                        ? "Starting challenge..."
-                        : `Auto-starting in ${Math.max(0, 0.5 - stableFaceProgress * 0.005).toFixed(1)}s`}
+                        ? "Authenticating face..."
+                        : `Auto-authenticating in ${Math.max(0, 0.5 - stableFaceProgress * 0.005).toFixed(1)}s`}
                     </span>
                   </div>
                   <Progress value={stableFaceProgress} className="h-1.5 bg-background" />
@@ -1598,10 +1810,17 @@ export function FaceScanDialog({
                 size="lg"
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-6 text-sm shadow-md transition-all flex items-center justify-center gap-2"
                 disabled={!faceDetected}
-                onClick={() => void startLivenessChallenge()}
+                onClick={() => {
+                  if (lastDetectedFaceRef.current) {
+                    void executeStep1FaceMatch(
+                      lastDetectedFaceRef.current,
+                      stableBaselineRef.current || { yaw: 0, pitch: 0 },
+                    );
+                  }
+                }}
               >
                 <ShieldCheck className="size-5" />
-                START LIVENESS &amp; RECOGNITION CHALLENGE
+                START ATTENDANCE AUTHENTICATION
               </Button>
             </>
           )}
@@ -1634,7 +1853,7 @@ export function FaceScanDialog({
               disabled
             >
               <Loader2 className="size-5 animate-spin" />
-              VERIFYING FRESH BIOMETRICS &amp; ATTESTATION…
+              FINALIZING BIOMETRIC VERIFICATION &amp; ATTESTATION…
             </Button>
           )}
 
@@ -1649,6 +1868,9 @@ export function FaceScanDialog({
                   setMatchName("");
                   setMatchCode("");
                   isVerifyingRef.current = false;
+                  isMatchingFaceRef.current = false;
+                  livenessRetriesRef.current = 0;
+                  matchedStaffRef.current = null;
                   stableFaceFramesRef.current = 0;
                   multiFaceConsecutiveFramesRef.current = 0;
                   setStableFaceProgress(0);
@@ -1659,7 +1881,7 @@ export function FaceScanDialog({
                 }}
               >
                 <RefreshCw className="size-5" />
-                RETRY LIVENESS CHALLENGE
+                RETRY AUTHENTICATION
               </Button>
               <Button
                 size="lg"

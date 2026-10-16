@@ -48,18 +48,40 @@ export type ChallengeCategory =
   | "turn-left-then-blink"
   | "turn-right-then-blink";
 
-export type StepType = "pose" | "blink";
+export type StepType = "pose" | "blink" | "nod";
+
+export type LivenessAction = "BLINK_ONCE" | "TURN_LEFT" | "TURN_RIGHT" | "NOD_ONCE";
+
+export const SUPPORTED_LIVENESS_ACTIONS: LivenessAction[] = [
+  "BLINK_ONCE",
+  "TURN_LEFT",
+  "TURN_RIGHT",
+  "NOD_ONCE",
+];
+
+export function getActionInstruction(action: LivenessAction): string {
+  switch (action) {
+    case "BLINK_ONCE":
+      return "Face matched. Please blink once.";
+    case "TURN_LEFT":
+      return "Face matched. Please turn your head slightly to the left.";
+    case "TURN_RIGHT":
+      return "Face matched. Please turn your head slightly to the right.";
+    case "NOD_ONCE":
+      return "Face matched. Please perform one small head nod.";
+  }
+}
 
 export interface ChallengeStep {
   id: string;
   type: StepType;
   instruction: string;
   targetDirection: HeadDirection;
-  movementIndex?: number; // 1, 2, 3
-  totalMovements?: number; // 3
-  isReturnToCenter?: boolean;
+  movementIndex?: number | undefined; // 1, 2, 3
+  totalMovements?: number | undefined; // 3
+  isReturnToCenter?: boolean | undefined;
   completed: boolean;
-  targetBlinks?: number;
+  targetBlinks?: number | undefined;
 }
 
 export interface GeneratedChallenge {
@@ -68,6 +90,7 @@ export interface GeneratedChallenge {
   steps: ChallengeStep[];
   nonce: string;
   directionalSequence: HeadDirection[];
+  selectedAction?: LivenessAction | undefined;
 }
 
 export interface LivenessEvidence {
@@ -80,7 +103,7 @@ export interface LivenessEvidence {
   durationMs: number;
   earVariance: number;
   yawVariance: number;
-  pitchVariance?: number;
+  pitchVariance?: number | undefined;
   timestamp: number;
   livenessPassed: boolean;
   directionalSequence: HeadDirection[];
@@ -108,8 +131,10 @@ export interface LivenessState {
   poseState: HeadPoseValidationState;
   blinkState: BlinkTrackerState; // Retained for backward-compatibility in diagnostics
   startedAt: number;
-  timeRemainingSec: number; // Retained for UI compatibility, 0 indicates no timeout
+  timeRemainingSec: number; // 10s countdown window
   attemptNonce: string;
+  selectedAction?: LivenessAction | undefined;
+  retriesRemaining?: number | undefined;
   evidence?: LivenessEvidence | undefined;
   failureReason?: string | undefined;
 }
@@ -218,6 +243,76 @@ export function generateRandomChallenge(specifiedDirection?: HeadDirection): Gen
   };
 }
 
+/**
+ * Generate a single random liveness action from the 4 supported actions:
+ * BLINK_ONCE, TURN_LEFT, TURN_RIGHT, NOD_ONCE.
+ */
+export function generateSingleActionChallenge(
+  specifiedAction?: LivenessAction,
+  customNonce?: string
+): GeneratedChallenge {
+  const nonce = customNonce || generateNonce();
+  const action: LivenessAction =
+    specifiedAction && SUPPORTED_LIVENESS_ACTIONS.includes(specifiedAction)
+      ? specifiedAction
+      : SUPPORTED_LIVENESS_ACTIONS[Math.floor(Math.random() * SUPPORTED_LIVENESS_ACTIONS.length)]!;
+
+  let category: ChallengeCategory = "head-movement";
+  let stepType: StepType = "pose";
+  let targetDirection: HeadDirection = "center";
+  let name = "";
+
+  switch (action) {
+    case "BLINK_ONCE":
+      category = "blink-once";
+      stepType = "blink";
+      targetDirection = "center";
+      name = "Single Blink Challenge";
+      break;
+    case "TURN_LEFT":
+      category = "turn-left";
+      stepType = "pose";
+      targetDirection = "left";
+      name = "Turn Left Challenge";
+      break;
+    case "TURN_RIGHT":
+      category = "turn-right";
+      stepType = "pose";
+      targetDirection = "right";
+      name = "Turn Right Challenge";
+      break;
+    case "NOD_ONCE":
+      category = "look-down";
+      stepType = "nod";
+      targetDirection = "down";
+      name = "Head Nod Challenge";
+      break;
+  }
+
+  const instruction = getActionInstruction(action);
+  const steps: ChallengeStep[] = [
+    {
+      id: `step-${action.toLowerCase()}`,
+      type: stepType,
+      instruction,
+      targetDirection,
+      movementIndex: 1,
+      totalMovements: 1,
+      completed: false,
+      targetBlinks: action === "BLINK_ONCE" ? 1 : undefined,
+    },
+  ];
+
+  return {
+    category,
+    name,
+    steps,
+    nonce,
+    directionalSequence: [targetDirection],
+    selectedAction: action,
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Liveness Session Controller                                        */
 /* ------------------------------------------------------------------ */
@@ -248,8 +343,16 @@ export class LivenessSession {
   private pitchReadings: number[] = [];
   private evidence: LivenessEvidence | undefined = undefined;
 
+  // Single Action Challenge State
+  private selectedAction: LivenessAction | null = null;
+  private consecutiveSatisfiedFrames: number = 0;
+  private nodDownObserved: boolean = false;
+  private retryCount: number = 0;
+  private timeoutMs: number = 0;
+
   constructor() {
-    this.challenge = generateRandomChallenge();
+    this.challenge = generateSingleActionChallenge();
+    this.selectedAction = this.challenge.selectedAction || null;
     this.poseDetector = new TemporalHeadPoseDetector("center", 3);
     this.blinkDetector = new TemporalBlinkDetector(1);
   }
@@ -271,10 +374,44 @@ export class LivenessSession {
   }
 
   /**
-   * Start a fresh randomized head movement session.
+   * Start a fresh randomized head movement or single action session.
    */
-  start(): LivenessState {
-    this.challenge = generateRandomChallenge();
+  start(
+    actionOrCategory?: LivenessAction | ChallengeCategory | HeadDirection,
+    customTimeoutMs?: number,
+  ): LivenessState {
+    if (actionOrCategory) {
+      if (SUPPORTED_LIVENESS_ACTIONS.includes(actionOrCategory as LivenessAction)) {
+        this.challenge = generateSingleActionChallenge(actionOrCategory as LivenessAction);
+        this.selectedAction = actionOrCategory as LivenessAction;
+        this.timeoutMs = customTimeoutMs ?? 10000;
+      } else if (actionOrCategory === "blink-once") {
+        this.challenge = generateSingleActionChallenge("BLINK_ONCE");
+        this.selectedAction = "BLINK_ONCE";
+        this.timeoutMs = customTimeoutMs ?? 8000;
+      } else if (actionOrCategory === "turn-left" || actionOrCategory === "left") {
+        this.challenge = generateSingleActionChallenge("TURN_LEFT");
+        this.selectedAction = "TURN_LEFT";
+        this.timeoutMs = customTimeoutMs ?? 8000;
+      } else if (actionOrCategory === "turn-right" || actionOrCategory === "right") {
+        this.challenge = generateSingleActionChallenge("TURN_RIGHT");
+        this.selectedAction = "TURN_RIGHT";
+        this.timeoutMs = customTimeoutMs ?? 8000;
+      } else if (actionOrCategory === "look-down" || actionOrCategory === "down") {
+        this.challenge = generateSingleActionChallenge("NOD_ONCE");
+        this.selectedAction = "NOD_ONCE";
+        this.timeoutMs = customTimeoutMs ?? 8000;
+      } else {
+        this.challenge = generateRandomChallenge(actionOrCategory as any);
+        this.selectedAction = null;
+        this.timeoutMs = customTimeoutMs ?? 0;
+      }
+    } else {
+      this.challenge = generateRandomChallenge();
+      this.selectedAction = null;
+      this.timeoutMs = 0;
+    }
+
     this.currentStepIndex = 0;
     this.status = "active";
     this.startedAt = Date.now();
@@ -282,6 +419,8 @@ export class LivenessSession {
     this.trackedFrames = 0;
     this.faceLostFrames = 0;
     this.multiFaceFrames = 0;
+    this.consecutiveSatisfiedFrames = 0;
+    this.nodDownObserved = false;
     this.lastBox = null;
     this.lastTimestamp = 0;
     this.earReadings = [];
@@ -298,9 +437,13 @@ export class LivenessSession {
     const current = this.challenge.steps[this.currentStepIndex];
     if (!current) return;
 
-    // Directional movements require 3 frames; return-to-center requires 2 frames
-    const reqFrames = current.targetDirection === "center" ? 2 : 3;
-    this.poseDetector.reset(current.targetDirection, reqFrames);
+    if (current.type === "blink") {
+      this.blinkDetector.reset(current.targetBlinks ?? 1);
+    } else {
+      // Directional movements require 3 frames (or 2 if baseline calibrated); return-to-center requires 2 frames
+      const reqFrames = current.targetDirection === "center" ? 2 : 3;
+      this.poseDetector.reset(current.targetDirection, reqFrames);
+    }
   }
 
   /**
@@ -329,10 +472,20 @@ export class LivenessSession {
     }
     this.lastTimestamp = now;
 
-    // 1. Multiple Faces Check with temporal hysteresis confirmation (4 consecutive frames)
+    // Check session timeout if active
+    if (this.timeoutMs > 0 && this.startedAt > 0) {
+      const elapsed = now - this.startedAt;
+      if (elapsed > this.timeoutMs) {
+        return this.fail("Liveness verification timed out. Please follow the instructions promptly.");
+      }
+    }
+
+    // 1. Multiple Faces Check
     if (faceCount > 1) {
       this.multiFaceFrames++;
-      if (this.multiFaceFrames >= 4) {
+      const maxMultiFrames =
+        this.challenge.category === "blink-once" || this.selectedAction === "BLINK_ONCE" ? 1 : 4;
+      if (this.multiFaceFrames >= maxMultiFrames) {
         return this.fail(`Multiple faces detected (${faceCount}). Only one individual must be in view.`);
       }
       return this.getState(); // transient noise: do not fail immediately on 1 frame
@@ -340,11 +493,12 @@ export class LivenessSession {
       this.multiFaceFrames = 0;
     }
 
-    // 2. Lost Face Check
+    // 2. Lost Face Check (tolerate transient loss up to 6 or 25 frames)
     if (!landmarks || !boundingBox || faceCount === 0) {
       this.faceLostFrames++;
-      // Allow temporary landmark occlusion (e.g. sharp turn) up to 25 frames (~1 sec)
-      if (this.faceLostFrames > 25) {
+      const maxAllowedLostFrames =
+        this.challenge.category === "blink-once" || this.selectedAction === "BLINK_ONCE" ? 6 : 25;
+      if (this.faceLostFrames > maxAllowedLostFrames) {
         return this.fail("Face tracking lost during liveness verification. Please keep your face centered.");
       }
       return this.getState();
@@ -410,10 +564,36 @@ export class LivenessSession {
       return this.evaluateCompletion();
     }
 
-    const poseState = this.poseDetector.processFrame(landmarks);
-    if (poseState.isSatisfied) {
-      currentStep.completed = true;
-      this.advanceToNextStep();
+    if (currentStep.type === "blink") {
+      const bState = this.blinkDetector.processFrame(landmarks, now);
+      if (bState.isComplete) {
+        currentStep.completed = true;
+        this.advanceToNextStep();
+      }
+    } else if (currentStep.type === "nod") {
+      const deltaPitch = poseInfo.pitch - this.calibratedBaseline.pitch;
+      if (deltaPitch <= -7.0) {
+        this.nodDownObserved = true;
+      }
+      if (this.nodDownObserved && deltaPitch >= -4.0) {
+        this.consecutiveSatisfiedFrames++;
+        if (this.consecutiveSatisfiedFrames >= 2) {
+          currentStep.completed = true;
+          this.advanceToNextStep();
+        }
+      } else {
+        const pState = this.poseDetector.processFrame(landmarks);
+        if (pState.isSatisfied) {
+          currentStep.completed = true;
+          this.advanceToNextStep();
+        }
+      }
+    } else {
+      const poseState = this.poseDetector.processFrame(landmarks);
+      if (poseState.isSatisfied) {
+        currentStep.completed = true;
+        this.advanceToNextStep();
+      }
     }
 
     return this.getState();
@@ -429,14 +609,22 @@ export class LivenessSession {
   }
 
   private evaluateCompletion(): LivenessState {
-    // Check static photograph rejection across tracked frames:
-    // A genuine human turning head has significant yaw or pitch variance (> 0.02)
+    // Check static photograph rejection across tracked frames
     if (this.trackedFrames >= 5) {
+      const earVariance = this.computeVariance(this.earReadings);
       const yawVariance = this.computeVariance(this.yawReadings);
       const pitchVariance = this.computeVariance(this.pitchReadings);
 
-      if (yawVariance < 0.02 && pitchVariance < 0.02) {
-        return this.fail("Static photograph detected. Zero physical head rotation or 3D depth variance observed.");
+      const isBlinkStep =
+        this.challenge.category === "blink-once" || this.selectedAction === "BLINK_ONCE";
+      if (isBlinkStep) {
+        if (earVariance < 0.0005 && yawVariance < 0.001) {
+          return this.fail("Static photograph detected. Zero physical eye blink or micro-variance observed.");
+        }
+      } else {
+        if (yawVariance < 0.01 && pitchVariance < 0.01) {
+          return this.fail("Static photograph detected. Zero physical head rotation or 3D depth variance observed.");
+        }
       }
     }
 
@@ -482,7 +670,7 @@ export class LivenessSession {
     let movementIndex = 1;
     let isReturnToCenter = false;
     let targetDirection: HeadDirection = "center";
-    let instruction = "Preparing head movement challenge...";
+    let instruction = "Preparing liveness challenge...";
 
     if (currentStep) {
       movementIndex = currentStep.movementIndex || 1;
@@ -490,9 +678,9 @@ export class LivenessSession {
       targetDirection = currentStep.targetDirection;
       instruction = currentStep.instruction;
     } else if (this.status === "passed") {
-      instruction = "Head movements verified ✓ Checking presentation attacks...";
+      instruction = "Liveness verified ✓ Live person confirmed.";
     } else if (this.status === "failed") {
-      instruction = this.failureReason || "Head movement challenge failed. Please try again.";
+      instruction = this.failureReason || "Liveness challenge failed. Please try again.";
     }
 
     const movementProgress: MovementProgress = {
@@ -502,6 +690,12 @@ export class LivenessSession {
       targetDirection,
       instruction,
     };
+
+    let timeRemainingSec = 10;
+    if (this.timeoutMs > 0 && this.startedAt > 0) {
+      const elapsedSec = (Date.now() - this.startedAt) / 1000;
+      timeRemainingSec = Math.max(0, Math.ceil(this.timeoutMs / 1000 - elapsedSec));
+    }
 
     return {
       status: this.status,
@@ -515,8 +709,9 @@ export class LivenessSession {
       poseState: this.poseDetector.getState(),
       blinkState: this.blinkDetector.getState(),
       startedAt: this.startedAt,
-      timeRemainingSec: 0, // No countdown timeout
+      timeRemainingSec,
       attemptNonce: this.challenge.nonce,
+      selectedAction: this.selectedAction || undefined,
       evidence: this.evidence,
       failureReason: this.failureReason,
     };

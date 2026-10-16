@@ -1564,6 +1564,140 @@ class AndroidBiometricBridge(
     }
 
     /**
+     * Step 1 — Detect and match staff face against registered active templates.
+     * Computes cosine distance. Does not require liveness completion or issue attestation token.
+     */
+    @JavascriptInterface
+    fun matchLocalFace(
+        staffId: String?,
+        liveEmbeddingJson: String?
+    ): String {
+        return try {
+            if (!isCallingOriginTrusted()) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "UNTRUSTED_ORIGIN")
+                }.toString()
+            }
+
+            val cleanId = staffId?.trim()?.uppercase() ?: ""
+            if (cleanId.isEmpty()) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "INVALID_STAFF_ID")
+                    put("message", "Staff ID is required for face matching.")
+                }.toString()
+            }
+
+            val currentDeviceId = keystoreManager.getDeviceId()
+
+            if (liveEmbeddingJson.isNullOrBlank()) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "EMPTY_SAMPLES")
+                }.toString()
+            }
+
+            val jsonArr = JSONArray(liveEmbeddingJson)
+            if (jsonArr.length() != 512) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "INVALID_DIMENSION")
+                    put("message", "Embedding must contain exactly 512 float values.")
+                }.toString()
+            }
+
+            val liveFloats = FloatArray(512)
+            for (i in 0 until 512) {
+                liveFloats[i] = jsonArr.getDouble(i).toFloat()
+            }
+
+            var sumSq = 0.0
+            for (f in liveFloats) sumSq += f * f
+            val norm = sqrt(sumSq).toFloat()
+            if (norm > 0) {
+                for (i in liveFloats.indices) liveFloats[i] /= norm
+            }
+
+            runBlocking(Dispatchers.IO) {
+                val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+
+                if (templates.isEmpty()) {
+                    return@runBlocking JSONObject().apply {
+                        put("matched", false)
+                        put("error", "NO_LOCAL_TEMPLATE")
+                        put("message", "No registered biometric template found on this device for $cleanId.")
+                        put("requiresEnrollment", true)
+                    }.toString()
+                }
+
+                var bestDistance = Float.MAX_VALUE
+                var validDecryptions = 0
+
+                for (tmpl in templates) {
+                    val decryptedFloats = keystoreManager.decryptEmbedding(
+                        cleanId,
+                        currentDeviceId,
+                        tmpl.encryptedTemplate,
+                        tmpl.iv
+                    ) ?: continue
+
+                    validDecryptions++
+                    var dot = 0.0f
+                    for (i in 0 until 512) {
+                        dot += liveFloats[i] * decryptedFloats[i]
+                    }
+                    val dist = 1.0f - dot
+                    if (dist < bestDistance) {
+                        bestDistance = dist
+                    }
+                }
+
+                if (validDecryptions == 0) {
+                    return@runBlocking JSONObject().apply {
+                        put("matched", false)
+                        put("error", "DECRYPTION_FAILED")
+                        put("message", "Hardware keystore decryption failed.")
+                    }.toString()
+                }
+
+                val threshold = BiometricConfig.FACE_MATCH_THRESHOLD
+                val matched = bestDistance <= threshold
+
+                if (matched) {
+                    JSONObject().apply {
+                        put("matched", true)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("distance", bestDistance.toDouble())
+                        put("similarity", (1.0f - bestDistance).toDouble())
+                        put("threshold", threshold.toDouble())
+                        put("message", "Face recognized.")
+                    }.toString()
+                } else {
+                    JSONObject().apply {
+                        put("matched", false)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("distance", bestDistance.toDouble())
+                        put("similarity", (1.0f - bestDistance).toDouble())
+                        put("threshold", threshold.toDouble())
+                        put("error", "FACE_NOT_RECOGNIZED")
+                        put("message", "Face not recognized. Please position your face inside the frame and try again.")
+                    }.toString()
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e("AndroidBiometricBridge", "matchLocalFace error", t)
+            JSONObject().apply {
+                put("matched", false)
+                put("error", "MATCH_EXCEPTION")
+                put("message", "Biometric comparison failed: ${t.message}")
+            }.toString()
+        }
+    }
+
+    /**
      * Verify live face embedding against locally stored, Keystore-encrypted templates.
      * Computes Cosine Distance. If distance <= 0.45, produces a signed attestation token.
      */
@@ -1681,14 +1815,15 @@ class AndroidBiometricBridge(
                     }.toString()
                 }
 
-                if (antiSpoofScore < BiometricConfig.ANTI_SPOOF_THRESHOLD || antiSpoofScore <= 0f) {
+                val minPadThreshold = if (livenessCompleted) 0.30f else BiometricConfig.ANTI_SPOOF_THRESHOLD
+                if (antiSpoofScore < minPadThreshold || antiSpoofScore <= 0f) {
                     return JSONObject().apply {
                         put("matched", false)
                         put("staffId", cleanId)
                         put("deviceId", currentDeviceId)
                         put("error", "SPOOF_DETECTED")
                         put("antiSpoofScore", antiSpoofScore.toDouble())
-                        put("message", "Attendance rejected: Presentation attack detected (print or screen spoof). Anti-spoof confidence score (${String.format("%.3f", antiSpoofScore)}) is below mandatory threshold (${BiometricConfig.ANTI_SPOOF_THRESHOLD}).")
+                        put("message", "Attendance rejected: Presentation attack detected (print or screen spoof). Anti-spoof confidence score (${String.format("%.3f", antiSpoofScore)}) is below mandatory threshold (${minPadThreshold}).")
                     }.toString()
                 }
 

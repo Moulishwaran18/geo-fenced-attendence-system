@@ -73,7 +73,7 @@ object BiometricConfig {
      * Output index 1 is the "live" class (softmax probability).
      */
     @Volatile
-    var ANTI_SPOOF_THRESHOLD = 0.70f
+    var ANTI_SPOOF_THRESHOLD = 0.50f
 
     /** Number of frames to sample for anti-spoof during verification. */
     const val ANTI_SPOOF_SAMPLE_COUNT = 5

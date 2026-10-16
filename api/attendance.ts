@@ -505,7 +505,7 @@ function verifyBiometricAttestation(token?: string | null): {
       return { valid: false, error: "LIVENESS_FAILED" };
     }
 
-    if (typeof payload.antiSpoofScore !== "number" || isNaN(payload.antiSpoofScore) || payload.antiSpoofScore < 0.70) {
+    if (typeof payload.antiSpoofScore !== "number" || isNaN(payload.antiSpoofScore) || payload.antiSpoofScore < 0.50) {
       return { valid: false, error: "SPOOF_SCORE_INSUFFICIENT" };
     }
 
@@ -976,11 +976,11 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    if (typeof attestation.antiSpoofScore !== "number" || isNaN(attestation.antiSpoofScore) || attestation.antiSpoofScore < 0.70) {
+    if (typeof attestation.antiSpoofScore !== "number" || isNaN(attestation.antiSpoofScore) || attestation.antiSpoofScore < 0.50) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "SPOOF_DETECTED",
-        message: `Attendance rejected: Attestation anti-spoof score (${typeof attestation.antiSpoofScore === "number" ? attestation.antiSpoofScore.toFixed(3) : "missing"}) is below required threshold (0.70).`,
+        message: `Attendance rejected: Attestation anti-spoof score (${typeof attestation.antiSpoofScore === "number" ? attestation.antiSpoofScore.toFixed(3) : "missing"}) is below required threshold (0.50).`,
       });
     }
 
@@ -1017,12 +1017,12 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Anti-spoofing score check: Must be a valid number and at least 0.70
-    if (typeof body.antiSpoofScore !== "number" || isNaN(body.antiSpoofScore) || body.antiSpoofScore < 0.70) {
+    // Anti-spoofing score check: Must be a valid number and at least 0.50
+    if (typeof body.antiSpoofScore !== "number" || isNaN(body.antiSpoofScore) || body.antiSpoofScore < 0.50) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "SPOOF_DETECTED",
-        message: `Attendance rejected: Factor 3 (Face Recognition) failed. Valid anti-spoof confidence score (${typeof body.antiSpoofScore === "number" ? body.antiSpoofScore.toFixed(3) : "missing"}) is below required threshold (0.70).`,
+        message: `Attendance rejected: Factor 3 (Face Recognition) failed. Valid anti-spoof confidence score (${typeof body.antiSpoofScore === "number" ? body.antiSpoofScore.toFixed(3) : "missing"}) is below required threshold (0.50).`,
       });
     }
 

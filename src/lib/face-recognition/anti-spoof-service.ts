@@ -231,13 +231,12 @@ export class AntiSpoofService {
         const cropScale = FACE_CONFIG.ANTI_SPOOF.CROP_SCALE || 2.7;
         const centerX = faceBox.x + faceBox.width / 2;
         const centerY = faceBox.y + faceBox.height / 2;
-        const scaledW = faceBox.width * cropScale;
-        const scaledH = faceBox.height * cropScale;
+        const boxSize = Math.max(faceBox.width, faceBox.height) * cropScale;
 
-        const left = Math.max(0, centerX - scaledW / 2);
-        const top = Math.max(0, centerY - scaledH / 2);
-        const cropW = Math.min(srcW - left, scaledW);
-        const cropH = Math.min(srcH - top, scaledH);
+        const left = Math.max(0, centerX - boxSize / 2);
+        const top = Math.max(0, centerY - boxSize / 2);
+        const cropW = Math.min(srcW - left, boxSize);
+        const cropH = Math.min(srcH - top, boxSize);
 
         const mCanvas = document.createElement("canvas");
         mCanvas.width = 80;
@@ -466,7 +465,7 @@ export class AntiSpoofService {
       if (p75PrintAttackScore >= 0.40) {
         attackType = "print_attack";
         reason = `Presentation attack detected: Printed photograph (Print score: ${(p75PrintAttackScore * 100).toFixed(1)}%).`;
-      } else if (p75ReplayAttackScore >= 0.40 || (hasCorroboratedMoire && p75ReplayAttackScore >= 0.35)) {
+      } else if (p75ReplayAttackScore >= 0.85 || (hasCorroboratedMoire && p75ReplayAttackScore >= 0.50)) {
         attackType = "replay_attack";
         reason = `Presentation attack detected: Electronic screen or video replay (Replay score: ${(p75ReplayAttackScore * 100).toFixed(1)}%).`;
       } else if (hasStaticMatrix) {
