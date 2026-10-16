@@ -615,10 +615,7 @@ class AndroidBiometricBridge(
      * Optionally validates against expected cryptographic template digest.
      */
     @JavascriptInterface
-    fun verifyPersistence(staffId: String?): String = verifyPersistence(staffId, null)
-
-    @JavascriptInterface
-    fun verifyPersistence(staffId: String?, expectedDigest: String?): String {
+    fun verifyPersistence(staffId: String?, expectedDigest: String? = null): String {
         return try {
             if (!isCallingOriginTrusted()) {
                 return JSONObject().apply {
@@ -1061,7 +1058,8 @@ class AndroidBiometricBridge(
         oneTimeToken: String?,
         requestId: String?,
         embeddingsJson: String?,
-        labelsJson: String?
+        labelsJson: String?,
+        digest: String? = null
     ): String {
         return try {
             if (!isCallingOriginTrusted()) {
@@ -1162,6 +1160,9 @@ class AndroidBiometricBridge(
                 put("requestId", requestId?.trim() ?: "")
                 put("stagedAt", System.currentTimeMillis())
                 put("templates", templatesArray)
+                if (!digest.isNullOrBlank()) {
+                    put("digest", digest.trim())
+                }
             }
 
             val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
@@ -1172,6 +1173,9 @@ class AndroidBiometricBridge(
                 put("staffId", cleanId)
                 put("deviceId", currentDeviceId)
                 put("count", templatesArray.length())
+                if (!digest.isNullOrBlank()) {
+                    put("digest", digest.trim())
+                }
                 put("message", "Replacement face templates encrypted and staged. Existing templates remain active until server confirms token consumption.")
             }.toString()
         } catch (t: Throwable) {
@@ -1184,31 +1188,6 @@ class AndroidBiometricBridge(
         }
     }
 
-    @JavascriptInterface
-    fun stageReplacementTemplates(
-        staffId: String?,
-        deviceId: String?,
-        oneTimeToken: String?,
-        requestId: String?,
-        embeddingsJson: String?,
-        labelsJson: String?,
-        digest: String?
-    ): String {
-        val result = stageReplacementTemplates(staffId, deviceId, oneTimeToken, requestId, embeddingsJson, labelsJson)
-        if (!digest.isNullOrBlank()) {
-            try {
-                val cleanId = staffId?.trim()?.uppercase() ?: ""
-                val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
-                if (stagedFile.exists()) {
-                    val json = JSONObject(stagedFile.readText(Charsets.UTF_8))
-                    json.put("digest", digest.trim())
-                    stagedFile.writeText(json.toString(), Charsets.UTF_8)
-                }
-            } catch (_: Throwable) {}
-        }
-        return result
-    }
-
     /**
      * Commit staged replacement templates into Room DB after server confirms token consumption.
      * Atomic transaction: deletes previous templates, commits new templates, verifies read-back.
@@ -1217,15 +1196,8 @@ class AndroidBiometricBridge(
     fun commitReplacementTemplates(
         staffId: String?,
         deviceId: String?,
-        oneTimeToken: String?
-    ): String = commitReplacementTemplates(staffId, deviceId, oneTimeToken, null)
-
-    @JavascriptInterface
-    fun commitReplacementTemplates(
-        staffId: String?,
-        deviceId: String?,
         oneTimeToken: String?,
-        expectedDigest: String?
+        expectedDigest: String? = null
     ): String {
         return try {
             if (!isCallingOriginTrusted()) {
@@ -1265,6 +1237,27 @@ class AndroidBiometricBridge(
 
             val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
             if (!stagedFile.exists()) {
+                val alreadyCommitted = runBlocking(Dispatchers.IO) {
+                    val activeDigest = getActiveTemplateDigest(cleanId, currentDeviceId) ?: ""
+                    if (!expectedDigest.isNullOrBlank() && activeDigest.isNotBlank() && activeDigest.equals(expectedDigest.trim(), ignoreCase = true)) {
+                        val activeCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
+                        JSONObject().apply {
+                            put("success", true)
+                            put("staffId", cleanId)
+                            put("deviceId", currentDeviceId)
+                            put("count", activeCount)
+                            put("activeDigest", activeDigest)
+                            put("alreadyCommitted", true)
+                            put("message", "Replacement templates already committed and active with verified digest.")
+                        }.toString()
+                    } else {
+                        null
+                    }
+                }
+                if (alreadyCommitted != null) {
+                    return alreadyCommitted
+                }
+
                 return JSONObject().apply {
                     put("success", false)
                     put("error", "NO_STAGED_REPLACEMENT")

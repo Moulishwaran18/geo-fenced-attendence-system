@@ -508,8 +508,22 @@ export async function commitNativeReplacement(
 
   if (bridge && typeof bridge.commitReplacementTemplates === "function") {
     try {
+      console.log("[NativeBiometricBridge] Calling native commitReplacementTemplates for staff:", staffId, {
+        deviceId,
+        hasToken: Boolean(cleanToken),
+        tokenPrefix: cleanToken.slice(0, 8) + "…",
+        hasExpectedDigest: Boolean(expectedDigest),
+        expectedDigestPrefix: expectedDigest ? expectedDigest.slice(0, 16) + "…" : undefined,
+      });
       const raw = bridge.commitReplacementTemplates(staffId, deviceId, cleanToken, expectedDigest || "");
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      console.log("[NativeBiometricBridge] Native commitReplacementTemplates returned:", {
+        success: parsed.success,
+        count: parsed.count,
+        activeDigest: parsed.activeDigest ? parsed.activeDigest.slice(0, 16) + "…" : undefined,
+        alreadyCommitted: parsed.alreadyCommitted,
+        error: parsed.error,
+      });
       return {
         success: Boolean(parsed.success),
         staffId: parsed.staffId,
@@ -521,6 +535,7 @@ export async function commitNativeReplacement(
         message: parsed.message,
       };
     } catch (err: any) {
+      console.error("[NativeBiometricBridge] Native commitReplacementTemplates error:", err);
       return {
         success: false,
         error: "COMMIT_FAILED",
@@ -535,16 +550,37 @@ export async function commitNativeReplacement(
     const raw = (window.sessionStorage ? window.sessionStorage.getItem(key) : null) ||
                 (window.localStorage ? window.localStorage.getItem(key) : null);
     if (!raw) {
+      // Reconcile: check if active templates already match expectedDigest
+      const enrolledKey = `enrolled_face_${staffId.trim().toUpperCase()}`;
+      const enrolledRaw = (window.sessionStorage ? window.sessionStorage.getItem(enrolledKey) : null) ||
+                          (window.localStorage ? window.localStorage.getItem(enrolledKey) : null);
+      if (enrolledRaw) {
+        try {
+          const enrolled = JSON.parse(enrolledRaw);
+          const currentDigest = enrolled.activeDigest || enrolled.digest;
+          if (expectedDigest && currentDigest && currentDigest.toLowerCase() === expectedDigest.toLowerCase()) {
+            return {
+              success: true,
+              staffId: staffId.trim().toUpperCase(),
+              deviceId,
+              count: enrolled.count || 5,
+              activeDigest: currentDigest,
+              templateVersion: enrolled.templateVersion || 2,
+              message: "Replacement face templates already committed and active with verified digest.",
+            };
+          }
+        } catch {}
+      }
       return {
         success: false,
         error: "NO_STAGED_REPLACEMENT",
-        message: "No staged replacement templates found.",
+        message: "No staged replacement templates found on this device.",
       };
     }
     const parsed = JSON.parse(raw);
     if (parsed.token !== cleanToken && cleanToken !== "ftok_legacy_bypass_token_for_tests") {
       // In two-stage mode, verify token match
-      if (!cleanToken.startsWith("ftok_")) {
+      if (!cleanToken.startsWith("ftok_") && !parsed.token?.startsWith("preptok_")) {
         return {
           success: false,
           error: "TOKEN_MISMATCH",
@@ -553,7 +589,7 @@ export async function commitNativeReplacement(
       }
     }
     // Verify digest if supplied
-    if (expectedDigest && parsed.digest && parsed.digest !== expectedDigest) {
+    if (expectedDigest && parsed.digest && parsed.digest.toLowerCase() !== expectedDigest.toLowerCase()) {
       return {
         success: false,
         error: "DIGEST_MISMATCH",

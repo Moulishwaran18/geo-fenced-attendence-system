@@ -47,6 +47,7 @@ import {
   getNativeDeviceId,
   enrollNativeTemplatesBatch,
   verifyNativePersistence,
+  getNativeBiometricMetadata,
   stageNativePendingEnrollment,
   stageNativeReplacement,
   commitNativeReplacement,
@@ -924,45 +925,173 @@ function StaffFaceEnrollmentPage() {
 
   // Commit authorized replacement templates into Room DB upon Stage 2 approval
   const handleFinalCommit = async () => {
-    const oneTimeToken = serverStatus?.oneTimeToken;
-    if (!oneTimeToken) {
-      toast.error("Missing one-time authorization token.");
-      return;
-    }
-    const approvedDigest = serverStatus?.approvedDigest;
+    console.log("[BiometricCommit] 'Commit Replacement Registration' clicked for staff:", staffId);
+
+    const oneTimeToken = (
+      serverStatus?.oneTimeToken ||
+      (serverStatus as any)?.approvedRequest?.oneTimeToken ||
+      (serverStatus as any)?.activeRequest?.oneTimeToken ||
+      ""
+    ).trim();
+
+    const approvedDigest = (
+      serverStatus?.approvedDigest ||
+      serverStatus?.approvedRequest?.approvedDigest ||
+      serverStatus?.activeRequest?.digest ||
+      serverStatus?.latestRequest?.digest ||
+      ""
+    ).trim();
+
+    const targetRequestId =
+      serverStatus?.approvedRequest?.id ||
+      serverStatus?.activeRequest?.id ||
+      serverStatus?.latestRequest?.id ||
+      undefined;
+
     setIsSaving(true);
     try {
-      // 1. Commit replacement templates in Android Keystore / Room DB (verifying staged digest)
+      // 0. Pre-check: Check if token was already consumed or if active templates already match approved digest
+      console.log("[BiometricCommit] Checkpoint 1: Authorization retrieval", {
+        staffId,
+        hasToken: Boolean(oneTimeToken),
+        tokenPrefix: oneTimeToken ? oneTimeToken.slice(0, 8) + "…" : "none",
+        hasApprovedDigest: Boolean(approvedDigest),
+        approvedDigestPrefix: approvedDigest ? approvedDigest.slice(0, 16) + "…" : "none",
+        requestId: targetRequestId,
+      });
+
+      // Inspect local biometric metadata safely
+      const localMeta = await getNativeBiometricMetadata(staffId, approvedDigest || undefined);
+      console.log("[BiometricCommit] Checkpoint 2: Local metadata inspection", {
+        activeCount: localMeta.activeTemplateCount,
+        stagedCount: localMeta.stagedTemplateCount,
+        activeDigest: localMeta.activeDigest ? localMeta.activeDigest.slice(0, 16) + "…" : "none",
+        stagedDigest: localMeta.stagedDigest ? localMeta.stagedDigest.slice(0, 16) + "…" : "none",
+        activeMatchesApproved: localMeta.activeMatchesApproved,
+      });
+
+      // Handle already-active templates
+      if (localMeta.activeMatchesApproved && approvedDigest) {
+        console.log("[BiometricCommit] Active templates already match the approved replacement digest.");
+        if (serverStatus?.canSaveReplacement && oneTimeToken) {
+          const srvRes = await submitStaffFaceEnrollment(
+            {
+              deviceId: nativeDeviceId || undefined,
+              templateCount: localMeta.activeTemplateCount,
+              oneTimeToken,
+              requestId: targetRequestId,
+              digest: approvedDigest,
+            },
+            oneTimeToken
+          );
+          console.log("[BiometricCommit] Finalized server token consumption:", srvRes.success);
+        }
+        toast.success("Face registration successfully replaced and locked!", {
+          description: `${localMeta.activeTemplateCount} face template(s) verified active in Android Keystore with approved digest.`,
+        });
+        stopCamera();
+        setSamples([]);
+        setIsReplacementMode(false);
+        await checkStatus();
+        return;
+      }
+
+      // If token is missing, check if request is already completed on server
+      if (!oneTimeToken) {
+        if (serverStatus?.latestRequestStatus === "completed" || isCompleted) {
+          toast.success("Latest Face Change Request Completed", {
+            description: "Your active face templates are securely locked and verified in device Keystore.",
+          });
+          await checkStatus();
+          return;
+        }
+        toast.error("Missing one-time authorization token. A fresh administrator approval is required.");
+        console.error("[BiometricCommit] Checkpoint 1 failed: Missing one-time token.");
+        return;
+      }
+
+      // Verify staged templates exist before attempting commit
+      if (localMeta.stagedTemplateCount === 0 && !localMeta.stagedDigest) {
+        toast.error("No staged replacement templates found on this device. Please capture or prepare replacement face images first.");
+        console.error("[BiometricCommit] Checkpoint 2 failed: No staged replacement templates found.");
+        return;
+      }
+
+      // Verify staged templates digest matches approved digest
+      if (approvedDigest && localMeta.stagedDigest && localMeta.stagedDigest.toLowerCase() !== approvedDigest.toLowerCase()) {
+        toast.error(`Staged templates digest mismatch. Staged: ${localMeta.stagedDigest.slice(0, 16)}…, Approved: ${approvedDigest.slice(0, 16)}… Old templates remain active.`);
+        console.error("[BiometricCommit] Checkpoint 2 failed: Staged digest does not match approved digest.");
+        return;
+      }
+
+      // 1. Commit replacement templates in Android Keystore / Room DB
+      console.log("[BiometricCommit] Checkpoint 3: Committing replacement templates locally");
       const commitRes = await commitNativeReplacement(staffId, oneTimeToken, approvedDigest || undefined);
+      console.log("[BiometricCommit] Native commit result:", {
+        success: commitRes.success,
+        count: commitRes.count,
+        activeDigest: commitRes.activeDigest ? commitRes.activeDigest.slice(0, 16) + "…" : "none",
+        error: commitRes.error,
+      });
+
       if (!commitRes.success) {
-        toast.error(commitRes.message || "Failed to commit replacement templates on this device. Digest mismatch or file corrupted.");
+        toast.error(commitRes.message || "Failed to commit replacement templates on this device. Digest mismatch or file corrupted. Old templates preserved.");
         return;
       }
 
       // 2. Read-back verification in secure storage: verify count AND cryptographic digest
+      console.log("[BiometricCommit] Checkpoint 4: Persistence read-back verification");
       const verifyCheck = await verifyNativePersistence(staffId, approvedDigest || undefined);
+      console.log("[BiometricCommit] Persistence read-back result:", {
+        verified: verifyCheck.verified,
+        count: verifyCheck.count,
+        activeDigest: verifyCheck.activeDigest ? verifyCheck.activeDigest.slice(0, 16) + "…" : "none",
+        matchesExpected: verifyCheck.matchesExpectedDigest,
+      });
+
       if (!verifyCheck.verified || verifyCheck.count === 0) {
         toast.error(verifyCheck.message || "Local persistence verification failed. Templates were not confirmed in secure device storage.");
         return;
       }
       if (approvedDigest && verifyCheck.activeDigest && verifyCheck.activeDigest.toLowerCase() !== approvedDigest.toLowerCase()) {
-        toast.error(`Persistence digest mismatch: Active digest (${verifyCheck.activeDigest.slice(0, 16)}…) does not match approved digest (${approvedDigest.slice(0, 16)}…).`);
+        toast.error(`Persistence digest mismatch: Active digest (${verifyCheck.activeDigest.slice(0, 16)}…) does not match approved digest (${approvedDigest.slice(0, 16)}…). Old templates preserved.`);
         return;
       }
 
       // 3. Complete server authorization and consume single-use token ONLY after verified local persistence
+      console.log("[BiometricCommit] Checkpoint 5: Consuming server authorization token");
       const serverEnrollRes = await submitStaffFaceEnrollment(
         {
           deviceId: nativeDeviceId || undefined,
           templateCount: verifyCheck.count,
           oneTimeToken,
-          requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
+          requestId: targetRequestId,
           digest: approvedDigest || verifyCheck.activeDigest || undefined,
         },
         oneTimeToken
       );
+      console.log("[BiometricCommit] Server enrollment response:", {
+        success: serverEnrollRes.success,
+        isLocked: serverEnrollRes.isLocked,
+        error: serverEnrollRes.error,
+      });
 
       if (!serverEnrollRes.success) {
+        // If the token was already consumed in a previous attempt, check if server recorded it completed
+        if (serverEnrollRes.error?.includes("already consumed") || serverEnrollRes.error?.includes("INVALID_OR_CONSUMED_TOKEN")) {
+          const srvCheck = await getStaffFaceStatus();
+          if (srvCheck.latestRequestStatus === "completed" || srvCheck.status === "approved") {
+            console.log("[BiometricCommit] Server token already consumed and request completed. Reconciled successfully.");
+            toast.success("Face registration successfully replaced and locked!", {
+              description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore. Single-use authorization consumed.`,
+            });
+            stopCamera();
+            setSamples([]);
+            setIsReplacementMode(false);
+            await checkStatus();
+            return;
+          }
+        }
         toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server.");
         return;
       }
@@ -976,6 +1105,7 @@ function StaffFaceEnrollmentPage() {
       setIsReplacementMode(false);
       await checkStatus();
     } catch (err: any) {
+      console.error("[BiometricCommit] Unexpected error during commit:", err);
       toast.error("Failed to commit biometric replacement", { description: err?.message || String(err) });
     } finally {
       setIsSaving(false);
@@ -1103,12 +1233,20 @@ function StaffFaceEnrollmentPage() {
     (serverStatus?.hasPendingRequest ? "pending" : (serverStatus?.status === "rejected" ? "rejected" : (serverStatus?.status === "expired" ? "expired" : "none")))
   ).toLowerCase();
 
-  const isCompleted = latestReqStatus === "completed";
+  const isCompleted = latestReqStatus === "completed" || (serverStatus?.status as string) === "completed";
+
+  const availableToken = (
+    serverStatus?.oneTimeToken ||
+    (serverStatus as any)?.approvedRequest?.oneTimeToken ||
+    (serverStatus as any)?.activeRequest?.oneTimeToken ||
+    ""
+  ).trim();
 
   const hasStage2Approval = Boolean(
     isEnrolled &&
-    serverStatus?.canSaveReplacement === true &&
-    Boolean(serverStatus?.oneTimeToken?.startsWith("ftok_"))
+    !isCompleted &&
+    (serverStatus?.canSaveReplacement === true || serverStatus?.approvedRequest?.status === "approved" || serverStatus?.activeRequest?.status === "approved") &&
+    Boolean(availableToken.startsWith("ftok_"))
   );
   const hasPendingPermission = Boolean(
     serverStatus?.hasPendingPermissionRequest ||
@@ -1604,9 +1742,10 @@ function StaffFaceEnrollmentPage() {
                     </div>
                   </div>
                   <Button
+                    id="btn-commit-replacement"
                     onClick={handleFinalCommit}
                     disabled={isSaving}
-                    className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-700"
+                    className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-700 font-medium"
                   >
                     {isSaving ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Lock className="mr-1.5 size-4" />}
                     Commit Replacement Registration
