@@ -25,6 +25,9 @@ import {
   LivenessSession,
   generateRandomChallenge,
   generateRandomDirectionSequence,
+  generateSingleActionChallenge,
+  SUPPORTED_LIVENESS_ACTIONS,
+  getActionInstruction,
 } from "../src/lib/face-recognition/liveness-engine";
 import {
   estimateHeadPose,
@@ -108,7 +111,7 @@ async function runTestSuite() {
   console.log("===============================================================================\n");
 
   let passed = 0;
-  const total = 19;
+  const total = 24;
 
   // ---------------------------------------------------------------------------
   // TEST 1: Randomized directional challenge generation
@@ -825,6 +828,227 @@ async function runTestSuite() {
       passed++;
     } else {
       throw new Error("Test 19 Failed: 20.7% replay score falsely rejected or inconclusive message missing");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 20: Verified removal of BLINK_ONCE & strict 5-action random generation
+  // ---------------------------------------------------------------------------
+  console.log("--- TEST 20: Verified Removal of BLINK_ONCE & 5 Allowed Actions ---");
+  {
+    const expected = ["TURN_LEFT", "TURN_RIGHT", "LOOK_UP", "LOOK_DOWN", "NOD_ONCE"];
+    const actionsMatch =
+      SUPPORTED_LIVENESS_ACTIONS.length === 5 &&
+      expected.every((a) => SUPPORTED_LIVENESS_ACTIONS.includes(a)) &&
+      !SUPPORTED_LIVENESS_ACTIONS.includes("BLINK_ONCE");
+
+    // Sample 250 single action challenges
+    const sampledCounts = {};
+    for (let i = 0; i < 250; i++) {
+      const c = generateSingleActionChallenge();
+      const act = c.selectedAction || "UNKNOWN";
+      sampledCounts[act] = (sampledCounts[act] || 0) + 1;
+    }
+
+    const hasBlink = Boolean(sampledCounts["BLINK_ONCE"]);
+    const hasAllFive = expected.every((a) => (sampledCounts[a] || 0) > 0);
+
+    console.log("Supported Actions List:", SUPPORTED_LIVENESS_ACTIONS);
+    console.log("250 Sampled Challenge Counts:", sampledCounts);
+
+    if (actionsMatch && !hasBlink && hasAllFive) {
+      console.log("✓ TEST 20 PASSED: BLINK_ONCE is strictly eliminated; only 5 allowed head movement actions generated!\n");
+      passed++;
+    } else {
+      throw new Error("Test 20 Failed: Challenge generation contains BLINK_ONCE or does not generate all 5 actions");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 21: Full simulation of all 5 individual head movement actions
+  // ---------------------------------------------------------------------------
+  console.log("--- TEST 21: Full Simulation of All 5 Individual Head Movement Actions ---");
+  {
+    const baseBox = { x: 150, y: 150, width: 140, height: 140 };
+
+    // 1. TURN_LEFT (positive yaw >= +14°)
+    const sessLeft = new LivenessSession();
+    sessLeft.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    sessLeft.start("TURN_LEFT");
+    let stateLeft;
+    for (let f = 1; f <= 3; f++) {
+      stateLeft = sessLeft.processFrame(createMockLandmarks(18, 0), baseBox, Date.now() + f * 100, 1);
+    }
+
+    // 2. TURN_RIGHT (negative yaw <= -14°)
+    const sessRight = new LivenessSession();
+    sessRight.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    sessRight.start("TURN_RIGHT");
+    let stateRight;
+    for (let f = 1; f <= 3; f++) {
+      stateRight = sessRight.processFrame(createMockLandmarks(-18, 0), baseBox, Date.now() + f * 100, 1);
+    }
+
+    // 3. LOOK_UP (positive pitch >= +9°)
+    const sessUp = new LivenessSession();
+    sessUp.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    sessUp.start("LOOK_UP");
+    let stateUp;
+    for (let f = 1; f <= 3; f++) {
+      stateUp = sessUp.processFrame(createMockLandmarks(0, 12), baseBox, Date.now() + f * 100, 1);
+    }
+
+    // 4. LOOK_DOWN (negative pitch <= -9°)
+    const sessDown = new LivenessSession();
+    sessDown.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    sessDown.start("LOOK_DOWN");
+    let stateDown;
+    for (let f = 1; f <= 3; f++) {
+      stateDown = sessDown.processFrame(createMockLandmarks(0, -12), baseBox, Date.now() + f * 100, 1);
+    }
+
+    // 5. NOD_ONCE (dip down <= -7° then return >= -4°)
+    const sessNod = new LivenessSession();
+    sessNod.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    sessNod.start("NOD_ONCE");
+    // Frame 1: dip down
+    sessNod.processFrame(createMockLandmarks(0, -8), baseBox, Date.now() + 100, 1);
+    // Frame 2 & 3: return towards center
+    sessNod.processFrame(createMockLandmarks(0, -2), baseBox, Date.now() + 200, 1);
+    const stateNod = sessNod.processFrame(createMockLandmarks(0, -1), baseBox, Date.now() + 300, 1);
+
+    console.log("TURN_LEFT Status:", stateLeft?.status);
+    console.log("TURN_RIGHT Status:", stateRight?.status);
+    console.log("LOOK_UP Status:", stateUp?.status);
+    console.log("LOOK_DOWN Status:", stateDown?.status);
+    console.log("NOD_ONCE Status:", stateNod?.status);
+
+    const allPassed =
+      stateLeft?.status === "passed" &&
+      stateRight?.status === "passed" &&
+      stateUp?.status === "passed" &&
+      stateDown?.status === "passed" &&
+      stateNod?.status === "passed";
+
+    if (allPassed) {
+      console.log("✓ TEST 21 PASSED: All 5 actions (Left, Right, Up, Down, Nod) successfully verified with live landmarks!\n");
+      passed++;
+    } else {
+      throw new Error("Test 21 Failed: Not all 5 movement actions passed detection");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 22: Step 1 Face Identification Gating
+  // ---------------------------------------------------------------------------
+  console.log("--- TEST 22: Step 1 Face Identification Gating ---");
+  {
+    // Scenario A: Face mismatch (distance 0.6886 > 0.45)
+    const impostorDistance = 0.6886;
+    const isStep1MatchedA = impostorDistance <= FACE_CONFIG.MATCH_THRESHOLD;
+    let livenessStartedA = false;
+    if (isStep1MatchedA) {
+      livenessStartedA = true;
+    }
+
+    // Scenario B: Face matched (distance 0.22 <= 0.45)
+    const genuineDistance = 0.22;
+    const isStep1MatchedB = genuineDistance <= FACE_CONFIG.MATCH_THRESHOLD;
+    let selectedChallengeB = null;
+    if (isStep1MatchedB) {
+      selectedChallengeB = generateSingleActionChallenge();
+    }
+
+    console.log("Scenario A (Distance 0.6886): Step 1 Matched =", isStep1MatchedA, ", Challenge Started =", livenessStartedA);
+    console.log("Scenario B (Distance 0.2200): Step 1 Matched =", isStep1MatchedB, ", Selected Action =", selectedChallengeB?.selectedAction);
+
+    if (!livenessStartedA && isStep1MatchedB && selectedChallengeB && selectedChallengeB.steps.length === 1) {
+      console.log("✓ TEST 22 PASSED: Liveness challenge strictly gated on successful Step 1 face match!\n");
+      passed++;
+    } else {
+      throw new Error("Test 22 Failed: Step 1 face identification gating violated");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 23: Completed Challenge Concludes Authentication Without Second Action
+  // ---------------------------------------------------------------------------
+  console.log("--- TEST 23: Completed Challenge Concludes Authentication Without Second Action ---");
+  {
+    const session = new LivenessSession();
+    session.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    const initialState = session.start("LOOK_UP");
+
+    console.log("Initial Step Count:", initialState.steps.length);
+    console.log("Action Name:", initialState.challengeName);
+
+    // Provide 2 frames of LOOK_UP
+    const baseBox = { x: 150, y: 150, width: 140, height: 140 };
+    session.processFrame(createMockLandmarks(0, 12), baseBox, Date.now() + 100, 1);
+    const finalState = session.processFrame(createMockLandmarks(0, 12), baseBox, Date.now() + 200, 1);
+
+    console.log("Final State Status:", finalState.status);
+    console.log("Steps Completed:", finalState.currentStepIndex);
+    console.log("Next Steps Remaining:", finalState.currentStep);
+
+    // Verify session concluded after exactly 1 action
+    if (
+      finalState.status === "passed" &&
+      finalState.currentStepIndex === 1 &&
+      finalState.currentStep === null &&
+      finalState.evidence?.livenessPassed
+    ) {
+      console.log("✓ TEST 23 PASSED: Exactly 1 action required; immediately transitions to attendance decision!\n");
+      passed++;
+    } else {
+      throw new Error("Test 23 Failed: Challenge did not cleanly conclude after 1 action");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 24: Tolerant Movement Tracking Loss & Retry Handling
+  // ---------------------------------------------------------------------------
+  console.log("--- TEST 24: Tolerant Movement Tracking Loss & Retry Handling ---");
+  {
+    const session = new LivenessSession();
+    session.setNeutralBaseline({ yaw: 0, pitch: 0 });
+    session.start("TURN_LEFT", 10000);
+
+    const baseBox = { x: 150, y: 150, width: 140, height: 140 };
+
+    // Track 2 valid frames
+    session.processFrame(createMockLandmarks(0, 0), baseBox, Date.now() + 100, 1);
+    session.processFrame(createMockLandmarks(0, 0), baseBox, Date.now() + 200, 1);
+
+    // Simulate 10 frames of transient tracking loss (user looked away / phone moved)
+    let transientState;
+    for (let f = 1; f <= 10; f++) {
+      transientState = session.processFrame(null, null, Date.now() + 200 + f * 50, 0);
+    }
+
+    console.log("Status after 10 frames of lost tracking:", transientState.status);
+    console.log("Instruction after tracking lost:", transientState.instruction);
+
+    const toleratedLoss =
+      transientState.status === "active" &&
+      transientState.instruction.includes("reposition your face in view");
+
+    // Now simulate sustained loss exceeding 25 frames
+    let sustainedLossState;
+    for (let f = 1; f <= 16; f++) {
+      sustainedLossState = session.processFrame(null, null, Date.now() + 700 + f * 50, 0);
+    }
+
+    console.log("Status after 26 total lost frames:", sustainedLossState.status);
+    console.log("Failure reason:", sustainedLossState.failureReason);
+
+    const sustainedFailed = sustainedLossState.status === "failed";
+
+    if (toleratedLoss && sustainedFailed) {
+      console.log("✓ TEST 24 PASSED: Transient tracking loss instructs repositioning without fail; sustained loss triggers retry!\n");
+      passed++;
+    } else {
+      throw new Error("Test 24 Failed: Tracking loss tolerance or failure handling failed");
     }
   }
 

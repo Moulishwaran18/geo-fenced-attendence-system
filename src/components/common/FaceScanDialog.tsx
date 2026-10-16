@@ -1666,7 +1666,7 @@ export function FaceScanDialog({
     >
       <DialogContent
         hideCloseButton={true}
-        className="w-[calc(100vw-16px)] sm:w-full max-w-xl max-h-[92vh] max-h-[calc(100dvh-20px)] overflow-y-auto overflow-x-hidden p-3 sm:p-5 box-border min-w-0"
+        className="fixed inset-x-0 mx-auto translate-x-0 top-1/2 -translate-y-1/2 [transform:translateY(-50%)] w-[calc(100vw-16px)] sm:w-full max-w-xl max-h-[92vh] max-h-[calc(100dvh-20px)] overflow-y-auto overflow-x-hidden p-3 sm:p-5 box-border min-w-0"
         onPointerDownOutside={(e) => {
           // Prevent backdrop clicks from closing during attendance verification
           e.preventDefault();
@@ -1686,20 +1686,36 @@ export function FaceScanDialog({
             <div className="min-w-0 flex-1">
               <DialogTitle className="flex items-center gap-1.5 sm:gap-2 text-sm sm:text-base font-bold text-foreground min-w-0">
                 <ScanFace className="size-4 sm:size-5 text-primary shrink-0" />
-                <span className="truncate">Liveness &amp; Face Recognition</span>
+                <span className="truncate">Face Authentication</span>
               </DialogTitle>
-              <DialogDescription className="text-[10px] sm:text-xs text-muted-foreground truncate">
-                Temporal Liveness · MiniFASNet-V2 Anti-Spoof · ArcFace Biometrics
-              </DialogDescription>
+              <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[10px] font-semibold px-1.5 py-0",
+                    phase === "liveness-challenge"
+                      ? "border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                      : phase === "recognizing" || phase === "matched"
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                        : "border-primary/40 bg-primary/10 text-primary",
+                  )}
+                >
+                  {phase === "liveness-challenge"
+                    ? "Step 2 of 2 — Head Movement"
+                    : phase === "recognizing" || phase === "matched"
+                      ? "Verification Complete"
+                      : "Step 1 of 2 — Face Match"}
+                </Badge>
+              </div>
             </div>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => handleExplicitClose("User clicked Cancel")}
+              onClick={() => handleExplicitClose("User clicked Close")}
               className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1"
             >
               <X className="size-4" />
-              <span>Cancel</span>
+              <span>Close</span>
             </Button>
           </div>
         </DialogHeader>
@@ -1719,12 +1735,16 @@ export function FaceScanDialog({
 
           {/* Model Loading State */}
           {phase === "loading-models" && (
-            <div className="absolute inset-0 grid place-items-center bg-muted/90 p-4 min-w-0">
-              <div className="w-full max-w-[200px] space-y-2.5 text-center min-w-0">
-                <Loader2 className="mx-auto size-7 sm:size-8 animate-spin text-primary" />
-                <p className="text-xs sm:text-sm font-medium">Loading ArcFace &amp; Anti-Spoof AI Models</p>
-                <Progress value={modelProgress} className="h-1.5" />
-                <p className="text-xs text-muted-foreground">{modelProgress}%</p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 p-4 sm:p-6 text-center z-20 min-w-0">
+              <div className="w-full max-w-xs space-y-3 text-center min-w-0 px-2">
+                <Loader2 className="mx-auto size-8 animate-spin text-primary shrink-0" />
+                <p className="text-sm font-semibold text-foreground break-words leading-snug">
+                  Loading face recognition models…
+                </p>
+                <Progress value={modelProgress} className="h-2 w-full max-w-full" />
+                <p className="text-xs text-muted-foreground font-mono">
+                  {modelProgress > 0 ? `${modelProgress}%` : "Initializing neural networks…"}
+                </p>
               </div>
             </div>
           )}
@@ -1779,9 +1799,6 @@ export function FaceScanDialog({
                 <div className="text-center pt-0.5 space-y-1 min-w-0">
                   <div className="text-xs sm:text-sm font-bold text-emerald-400 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 leading-tight px-1 min-w-0">
                     <div className="flex items-center justify-center shrink-0">
-                      {livenessState.category === "blink-once" && (
-                        <Eye className="size-4 sm:size-5 animate-pulse text-emerald-400" />
-                      )}
                       {livenessState.poseState?.targetDirection === "left" && (
                         <ArrowLeft className="size-4 sm:size-5 animate-pulse text-emerald-400" />
                       )}
@@ -1794,7 +1811,7 @@ export function FaceScanDialog({
                       {livenessState.poseState?.targetDirection === "down" && (
                         <ArrowDown className="size-4 sm:size-5 animate-pulse text-emerald-400" />
                       )}
-                      {livenessState.poseState?.targetDirection === "center" && livenessState.category !== "blink-once" && (
+                      {livenessState.poseState?.targetDirection === "center" && (
                         <Crosshair className="size-4 sm:size-5 animate-spin text-emerald-400" />
                       )}
                     </div>
@@ -1820,8 +1837,8 @@ export function FaceScanDialog({
                       </span>
                       <span>·</span>
                       <span>
-                        Hold: <span className={cn("font-semibold", (livenessState.poseState?.consecutiveFramesSatisfied ?? 0) >= 3 ? "text-emerald-300" : "text-amber-300")}>
-                          {livenessState.poseState?.consecutiveFramesSatisfied ?? 0}/{livenessState.poseState?.requiredFrames ?? 3}
+                        Hold: <span className={cn("font-semibold", (livenessState.poseState?.consecutiveFramesSatisfied ?? 0) >= 2 ? "text-emerald-300" : "text-amber-300")}>
+                          {livenessState.poseState?.consecutiveFramesSatisfied ?? 0}/{livenessState.poseState?.requiredFrames ?? 2}
                         </span>
                       </span>
                     </div>
@@ -1871,16 +1888,6 @@ export function FaceScanDialog({
                 <XCircle className="size-4 shrink-0" />
                 <span className="min-w-0 break-words">{errorMessage || "Face not recognized. Please position your face inside the frame and try again."}</span>
               </p>
-              <div className="pt-0.5">
-                <a
-                  href="/admin/face-enrollment"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 rounded bg-white/20 px-2 py-0.5 text-[10px] sm:text-[11px] font-semibold text-white hover:bg-white/30 underline"
-                >
-                  Enroll Your Face in Database →
-                </a>
-              </div>
             </div>
           )}
 
@@ -1935,7 +1942,7 @@ export function FaceScanDialog({
                 }}
               >
                 <ShieldCheck className="size-4 sm:size-5 shrink-0" />
-                <span className="min-w-0 break-words">START ATTENDANCE AUTHENTICATION</span>
+                <span className="min-w-0 break-words">Start Face Check</span>
               </Button>
             </>
           )}
@@ -1998,7 +2005,7 @@ export function FaceScanDialog({
                 }}
               >
                 <RefreshCw className="size-4 sm:size-5 shrink-0" />
-                <span className="min-w-0 break-words">RETRY AUTHENTICATION</span>
+                <span className="min-w-0 break-words">Try Again</span>
               </Button>
               <Button
                 size="lg"
@@ -2035,7 +2042,7 @@ export function FaceScanDialog({
         </div>
 
         {/* ================================================== */}
-        {/* DEVELOPMENT RECOGNITION & TELEMETRY PANEL           */}
+        {/* ADVANCED DIAGNOSTICS & TELEMETRY PANEL             */}
         {/* ================================================== */}
         <div className="rounded-xl border border-border bg-card overflow-hidden text-xs min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 bg-muted/50 px-2.5 sm:px-3.5 py-2 font-semibold text-muted-foreground min-w-0">
@@ -2045,7 +2052,7 @@ export function FaceScanDialog({
               onClick={() => setShowDiag((d) => !d)}
             >
               <Cpu className="size-3.5 text-primary shrink-0" />
-              <span className="truncate">Biometric &amp; Liveness Diagnostic Telemetry</span>
+              <span className="truncate">Advanced Diagnostics</span>
               {showDiag ? <ChevronUp className="size-4 ml-1 shrink-0" /> : <ChevronDown className="size-4 ml-1 shrink-0" />}
             </button>
             <Button
