@@ -894,50 +894,56 @@ export default async function handler(req: any, res?: any) {
             });
             if (rpcRes?.error) {
               const errMsg = (rpcRes.error.message || "").toLowerCase();
-              if (
-                errMsg.includes("connection failure") ||
-                errMsg.includes("timeout") ||
-                errMsg.includes("unavailable") ||
-                errMsg.includes("temporarily")
-              ) {
+              const errCode = rpcRes.error.code || "";
+              if (errCode === "PGRST202" || errMsg.includes("in the schema cache")) {
+                // Live database schema function missing — fall through to atomic row update
+              } else {
                 return sendJsonResponse(res, 503, {
                   success: false,
-                  error: "Database or biometric service temporarily unavailable. Safe rollback enforced.",
+                  error: "Biometric authorization service temporarily unavailable. Face templates remain unchanged.",
                   code: "RPC_UNAVAILABLE",
                   isLocked: true,
                 });
               }
-            } else if (rpcRes?.data === true) {
-              // Successfully consumed via atomic RPC
-              await supabase.from("security_events").insert({
-                time: nowIso,
-                staff: staffCode,
-                event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
-                device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}`,
-                location: "CampusAttend Biometric System",
-                result: "Allowed",
-                severity: "Low",
-              });
+            } else if (rpcRes?.data) {
+              if (typeof rpcRes.data === "object" && rpcRes.data.success === false) {
+                const status = rpcRes.data.code === "INVALID_OR_CONSUMED_TOKEN" ? 403 : 500;
+                return sendJsonResponse(res, status, {
+                  success: false,
+                  code: rpcRes.data.code || "TRANSACTION_ROLLBACK",
+                  error: rpcRes.data.error || "Database transaction failed during atomic approval token consumption.",
+                  isLocked: true,
+                });
+              }
+              if (rpcRes.data === true || (typeof rpcRes.data === "object" && rpcRes.data.success === true)) {
+                // Successfully consumed via atomic RPC
+                await supabase.from("security_events").insert({
+                  time: nowIso,
+                  staff: staffCode,
+                  event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
+                  device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}`,
+                  location: "CampusAttend Biometric System",
+                  result: "Allowed",
+                  severity: "Low",
+                });
 
-              return sendJsonResponse(res, 200, {
-                success: true,
-                message: "Face registration updated and permanently locked. Single-use authorization consumed.",
-                isLocked: true,
-                count: templateCount,
-                enrolledCount: templateCount,
-                deviceId,
-              });
+                return sendJsonResponse(res, 200, {
+                  success: true,
+                  message: "Face registration updated and permanently locked. Single-use authorization consumed.",
+                  isLocked: true,
+                  count: templateCount,
+                  enrolledCount: templateCount,
+                  deviceId,
+                });
+              }
             }
           } catch (rpcEx: any) {
-            const msg = (rpcEx?.message || "").toLowerCase();
-            if (msg.includes("connection") || msg.includes("timeout") || msg.includes("unavailable")) {
-              return sendJsonResponse(res, 503, {
-                success: false,
-                error: "Database or biometric service temporarily unavailable. Safe rollback enforced.",
-                code: "RPC_UNAVAILABLE",
-                isLocked: true,
-              });
-            }
+            return sendJsonResponse(res, 503, {
+              success: false,
+              error: "Biometric authorization service temporarily unavailable. Face templates remain unchanged.",
+              code: "RPC_UNAVAILABLE",
+              isLocked: true,
+            });
           }
         }
 
