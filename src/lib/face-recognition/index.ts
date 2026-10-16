@@ -152,6 +152,7 @@ export {
   isArcFaceLoaded,
   alignFaceToTensor,
   alignFaceDetailed,
+  alignMirroredFaceDetailed,
   runArcFaceDoubleInference,
   computeFloat32Checksum,
   generateArcFaceEmbedding,

@@ -315,6 +315,158 @@ export function alignFaceDetailed(
 }
 
 /**
+ * Warp and align input image horizontally mirrored to 112x112 planar float tensor [1, 3, 112, 112].
+ * Accurately mirrors image pixels and remaps 5-point landmark anchors with anatomically swapped eyes and mouth corners.
+ * This guarantees that ArcFace's convolutional feature extractors receive ocular and oral landmarks in canonical positions
+ * (left eye anchor on viewer's left, right eye anchor on viewer's right) even when matching mirrored front-camera selfies.
+ */
+export function alignMirroredFaceDetailed(
+  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageData | Uint8Array,
+  width: number,
+  height: number,
+  landmarks: { positions: { x: number; y: number }[] },
+): {
+  planar: Float32Array;
+  dataUrl: string;
+  tensorChecksum: string;
+  pts5: number[][];
+} {
+  let imgData: Uint8ClampedArray | Uint8Array;
+
+  if (typeof document !== "undefined") {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Could not create 2d canvas context for mirrored face alignment");
+    ctx.translate(width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(source as CanvasImageSource, 0, 0, width, height);
+    imgData = ctx.getImageData(0, 0, width, height).data;
+  } else {
+    let srcData: Uint8ClampedArray | Uint8Array;
+    if (source instanceof Uint8Array || (typeof ImageData !== "undefined" && source instanceof ImageData)) {
+      srcData = (source as any).data || source;
+    } else {
+      throw new Error("Canvas context required for HTML element source mirroring");
+    }
+    const mirBuf = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const sIdx = (y * width + x) * 4;
+        const dIdx = (y * width + (width - 1 - x)) * 4;
+        mirBuf[dIdx] = srcData[sIdx]!;
+        mirBuf[dIdx + 1] = srcData[sIdx + 1]!;
+        mirBuf[dIdx + 2] = srcData[sIdx + 2]!;
+        mirBuf[dIdx + 3] = srcData[sIdx + 3]!;
+      }
+    }
+    imgData = mirBuf;
+  }
+
+  // Extract source 5 landmarks: [0: leftEye, 1: rightEye, 2: nose, 3: leftMouth, 4: rightMouth]
+  const srcPoints = extract5Landmarks(landmarks);
+
+  // In the horizontally mirrored frame:
+  // - Landmark previously on viewer's right (point 1, right eye) is reflected to viewer's left: (width - 1 - rightEye.x, rightEye.y)
+  // - Landmark previously on viewer's left (point 0, left eye) is reflected to viewer's right: (width - 1 - leftEye.x, leftEye.y)
+  // - Nose tip (point 2): (width - 1 - nose.x, nose.y)
+  // - Right mouth (point 4) is reflected to viewer's left: (width - 1 - rightMouth.x, rightMouth.y)
+  // - Left mouth (point 3) is reflected to viewer's right: (width - 1 - leftMouth.x, leftMouth.y)
+  const mirroredPoints = [
+    [width - 1 - srcPoints[1]![0]!, srcPoints[1]![1]!], // New left eye anchor
+    [width - 1 - srcPoints[0]![0]!, srcPoints[0]![1]!], // New right eye anchor
+    [width - 1 - srcPoints[2]![0]!, srcPoints[2]![1]!], // Nose anchor
+    [width - 1 - srcPoints[4]![0]!, srcPoints[4]![1]!], // New left mouth anchor
+    [width - 1 - srcPoints[3]![0]!, srcPoints[3]![1]!], // New right mouth anchor
+  ];
+
+  const { invM } = estimateSimilarityTransform(mirroredPoints, ARCFACE_REFERENCE_POINTS);
+
+  const outW = ARCFACE_CONFIG.INPUT_SIZE;
+  const outH = ARCFACE_CONFIG.INPUT_SIZE;
+  const floatPlanar = new Float32Array(3 * outW * outH); // [3, 112, 112]
+
+  const previewCanvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
+  if (previewCanvas) {
+    previewCanvas.width = outW;
+    previewCanvas.height = outH;
+  }
+  const pCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
+  const outImgData = pCtx ? pCtx.createImageData(outW, outH) : null;
+
+  for (let dy = 0; dy < outH; dy++) {
+    for (let dx = 0; dx < outW; dx++) {
+      const sx = invM[0]![0]! * dx + invM[0]![1]! * dy + invM[0]![2]!;
+      const sy = invM[1]![0]! * dx + invM[1]![1]! * dy + invM[1]![2]!;
+
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(x0 + 1, width - 1);
+      const y1 = Math.min(y0 + 1, height - 1);
+
+      const wx = sx - x0;
+      const wy = sy - y0;
+
+      let r = 0,
+        g = 0,
+        b = 0;
+      if (x0 >= 0 && x0 < width && y0 >= 0 && y0 < height) {
+        const idx00 = (y0 * width + x0) * 4;
+        const idx10 = (y0 * width + x1) * 4;
+        const idx01 = (y1 * width + x0) * 4;
+        const idx11 = (y1 * width + x1) * 4;
+
+        r =
+          (1 - wx) * (1 - wy) * imgData[idx00]! +
+          wx * (1 - wy) * imgData[idx10]! +
+          (1 - wx) * wy * imgData[idx01]! +
+          wx * wy * imgData[idx11]!;
+        g =
+          (1 - wx) * (1 - wy) * imgData[idx00 + 1]! +
+          wx * (1 - wy) * imgData[idx10 + 1]! +
+          (1 - wx) * wy * imgData[idx01 + 1]! +
+          wx * wy * imgData[idx11 + 1]!;
+        b =
+          (1 - wx) * (1 - wy) * imgData[idx00 + 2]! +
+          wx * (1 - wy) * imgData[idx10 + 2]! +
+          (1 - wx) * wy * imgData[idx01 + 2]! +
+          wx * wy * imgData[idx11 + 2]!;
+      }
+
+      // Normalization: (RGB - 127.5) / 128.0
+      const pixelIdx = dy * outW + dx;
+      floatPlanar[0 * outW * outH + pixelIdx] = (r - 127.5) / 128.0;
+      floatPlanar[1 * outW * outH + pixelIdx] = (g - 127.5) / 128.0;
+      floatPlanar[2 * outW * outH + pixelIdx] = (b - 127.5) / 128.0;
+
+      if (outImgData) {
+        const outIdx = pixelIdx * 4;
+        outImgData.data[outIdx] = Math.round(r);
+        outImgData.data[outIdx + 1] = Math.round(g);
+        outImgData.data[outIdx + 2] = Math.round(b);
+        outImgData.data[outIdx + 3] = 255;
+      }
+    }
+  }
+
+  let dataUrl = "";
+  if (pCtx && outImgData && previewCanvas) {
+    pCtx.putImageData(outImgData, 0, 0);
+    dataUrl = previewCanvas.toDataURL("image/jpeg", 0.95);
+  }
+
+  const tensorChecksum = computeFloat32Checksum(floatPlanar);
+
+  return {
+    planar: floatPlanar,
+    dataUrl,
+    tensorChecksum,
+    pts5: mirroredPoints,
+  };
+}
+
+/**
  * Warp and align input image to 112x112 planar float tensor [1, 3, 112, 112].
  */
 export function alignFaceToTensor(

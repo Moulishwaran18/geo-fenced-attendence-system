@@ -37,6 +37,14 @@ export interface NativeEnrollResult {
   message?: string | undefined;
 }
 
+export interface TemplateDistanceMetric {
+  index: number;
+  label: string;
+  version: number;
+  distance: number;
+  norm?: number;
+}
+
 export interface NativeVerifyResult {
   matched: boolean;
   staffId?: string | undefined;
@@ -45,6 +53,13 @@ export interface NativeVerifyResult {
   threshold?: number | undefined;
   biometricAttestation?: string | undefined;
   requiresEnrollment?: boolean | undefined;
+  activeTemplateCount?: number | undefined;
+  validDecryptions?: number | undefined;
+  bestIndex?: number | undefined;
+  bestLabel?: string | undefined;
+  bestVersion?: number | undefined;
+  distanceMetric?: string | undefined;
+  templateDistances?: TemplateDistanceMetric[] | undefined;
   error?: string | undefined;
   message?: string | undefined;
 }
@@ -933,6 +948,13 @@ export async function verifyNativeFace(
       threshold: typeof parsed.threshold === "number" ? parsed.threshold : 0.45,
       biometricAttestation: parsed.biometricAttestation,
       requiresEnrollment: Boolean(parsed.requiresEnrollment),
+      activeTemplateCount: typeof parsed.activeTemplateCount === "number" ? parsed.activeTemplateCount : undefined,
+      validDecryptions: typeof parsed.validDecryptions === "number" ? parsed.validDecryptions : undefined,
+      bestIndex: typeof parsed.bestIndex === "number" ? parsed.bestIndex : undefined,
+      bestLabel: parsed.bestLabel,
+      bestVersion: typeof parsed.bestVersion === "number" ? parsed.bestVersion : undefined,
+      distanceMetric: parsed.distanceMetric,
+      templateDistances: Array.isArray(parsed.templateDistances) ? parsed.templateDistances : undefined,
       error: parsed.error,
       message: parsed.message,
     };
@@ -970,6 +992,13 @@ export interface NativeMatchResult {
   error?: string;
   message?: string;
   requiresEnrollment?: boolean;
+  activeTemplateCount?: number;
+  validDecryptions?: number;
+  bestIndex?: number;
+  bestLabel?: string;
+  bestVersion?: number;
+  distanceMetric?: string;
+  templateDistances?: TemplateDistanceMetric[];
 }
 
 /**
@@ -1001,6 +1030,13 @@ export async function matchNativeFace(
               ? 1.0 - parsed.distance
               : undefined,
         threshold: typeof parsed.threshold === "number" ? parsed.threshold : 0.45,
+        activeTemplateCount: typeof parsed.activeTemplateCount === "number" ? parsed.activeTemplateCount : undefined,
+        validDecryptions: typeof parsed.validDecryptions === "number" ? parsed.validDecryptions : undefined,
+        bestIndex: typeof parsed.bestIndex === "number" ? parsed.bestIndex : undefined,
+        bestLabel: parsed.bestLabel,
+        bestVersion: typeof parsed.bestVersion === "number" ? parsed.bestVersion : undefined,
+        distanceMetric: parsed.distanceMetric,
+        templateDistances: Array.isArray(parsed.templateDistances) ? parsed.templateDistances : undefined,
         error: parsed.error,
         message: parsed.message,
         requiresEnrollment: Boolean(parsed.requiresEnrollment),

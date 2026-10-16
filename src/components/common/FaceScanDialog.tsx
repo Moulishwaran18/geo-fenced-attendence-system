@@ -45,6 +45,7 @@ import {
   loadModels,
   initArcFaceSession,
   alignFaceDetailed,
+  alignMirroredFaceDetailed,
   runArcFaceDoubleInference,
   computeFloat32Checksum,
   detectFacesWithLandmarks,
@@ -539,6 +540,10 @@ export function FaceScanDialog({
         // 3. Local ArcFace 512-D inference (Canonical orientation)
         let doubleRes = await runArcFaceDoubleInference(aligned.planar);
         let liveEmbedding = doubleRes.embeddingA;
+        let bestAligned = aligned;
+        let bestDoubleRes = doubleRes;
+        let bestEmbedding = liveEmbedding;
+        let matchOrientation = "canonical";
 
         // 4. Target staff member: prioritize expectedStaffCode, then authenticated session
         const activeStaff = getActiveStaff();
@@ -557,43 +562,71 @@ export function FaceScanDialog({
         }
 
         // 5. Compare with active registered template locally on device (Step 1)
-        let matchRes = await matchNativeFace(targetStaff, liveEmbedding);
+        const matchCanonical = await matchNativeFace(targetStaff, liveEmbedding);
+        let matchRes = matchCanonical;
 
-        // If canonical orientation is rejected, check horizontally flipped embedding
+        // If canonical orientation is rejected, check horizontally mirrored embedding with proper landmark anchors
         // (Handles selfies saved mirrored by Android front cameras during enrollment)
         if (!matchRes.matched && (!matchRes.error || matchRes.error === "FACE_NOT_RECOGNIZED")) {
           try {
-            const flippedPlanar = new Float32Array(aligned.planar.length);
-            const C = 3, H = 112, W = 112;
-            for (let c = 0; c < C; c++) {
-              for (let y = 0; y < H; y++) {
-                for (let x = 0; x < W; x++) {
-                  flippedPlanar[c * H * W + y * W + (W - 1 - x)] = aligned.planar[c * H * W + y * W + x]!;
-                }
-              }
-            }
-            const flippedRes = await runArcFaceDoubleInference(flippedPlanar);
-            const matchFlipped = await matchNativeFace(targetStaff, flippedRes.embeddingA);
+            const mirroredAligned = alignMirroredFaceDetailed(
+              snapCanvas,
+              video.videoWidth,
+              video.videoHeight,
+              matchFace.landmarks,
+            );
+            const mirroredRes = await runArcFaceDoubleInference(mirroredAligned.planar);
+            const matchMirrored = await matchNativeFace(targetStaff, mirroredRes.embeddingA);
+
+            console.log("[FaceScan] Dual-pose comparison:", {
+              canonicalDist: matchCanonical.distance,
+              mirroredDist: matchMirrored.distance,
+              canonicalMatched: matchCanonical.matched,
+              mirroredMatched: matchMirrored.matched,
+              candidateCount: matchCanonical.activeTemplateCount ?? matchMirrored.activeTemplateCount,
+            });
+
             if (
-              matchFlipped.matched ||
-              (matchFlipped.distance !== undefined &&
+              matchMirrored.matched ||
+              (matchMirrored.distance !== undefined &&
                 matchRes.distance !== undefined &&
-                matchFlipped.distance < matchRes.distance)
+                matchMirrored.distance < matchRes.distance)
             ) {
-              matchRes = matchFlipped;
-              if (matchFlipped.matched) {
-                liveEmbedding = flippedRes.embeddingA;
-                doubleRes = flippedRes;
-              }
+              matchRes = matchMirrored;
+              bestAligned = mirroredAligned;
+              bestDoubleRes = mirroredRes;
+              bestEmbedding = mirroredRes.embeddingA;
+              matchOrientation = "mirrored";
             }
           } catch (flipErr) {
-            console.warn("[FaceScan] Flipped ArcFace inference skipped:", flipErr);
+            console.warn("[FaceScan] Mirrored ArcFace inference skipped:", flipErr);
           }
         }
+
+        const p1Dists: Record<string, number> = {};
+        if (matchRes.templateDistances) {
+          matchRes.templateDistances.forEach((t) => {
+            p1Dists[`Slot-${t.index + 1}`] = t.distance;
+          });
+        }
+
+        setDiag((prev) => ({
+          ...prev,
+          distance: matchRes.distance ?? prev.distance,
+          threshold: matchRes.threshold ?? prev.threshold,
+          p001Distances: Object.keys(p1Dists).length > 0 ? p1Dists : prev.p001Distances,
+          finalResult: matchRes.matched ? "MATCHED" : "REJECTED",
+          rootCause: matchRes.matched ? "VERIFIED" : (matchRes.error || "DISTANCE_EXCEEDED"),
+        }));
 
         if (!matchRes.matched) {
           isMatchingFaceRef.current = false;
           setPhase("unrecognized");
+
+          const templateSummary = matchRes.templateDistances?.length
+            ? ` [Templates: ${matchRes.templateDistances.map((t) => `T${t.index}:${t.distance.toFixed(3)}`).join(", ")}]`
+            : "";
+
           if (matchRes.requiresEnrollment || matchRes.error === "NO_LOCAL_TEMPLATE") {
             const enrollMsg =
               matchRes.message ||
@@ -618,15 +651,14 @@ export function FaceScanDialog({
             recordStage("STEP_1_MATCH", "FAILED", "UNTRUSTED_ORIGIN", origMsg);
           } else {
             const notRecognizedMsg =
-              matchRes.message ||
-              `Face not recognized for ${targetStaff}. Please position your face inside the frame and try again.`;
+              `${matchRes.message || `Face not recognized for ${targetStaff}.`}${templateSummary}`;
             setErrorMessage(notRecognizedMsg);
             setLiveGuidance(notRecognizedMsg);
             recordStage(
               "STEP_1_MATCH",
               "REJECTED",
               "DISTANCE_EXCEEDED",
-              `Distance ${matchRes.distance?.toFixed(3) ?? "?"} exceeds threshold ${matchRes.threshold ?? 0.45}`,
+              `Distance ${matchRes.distance?.toFixed(4) ?? "?"} exceeds threshold ${matchRes.threshold ?? 0.45}${templateSummary}`,
             );
           }
           return;
@@ -637,7 +669,7 @@ export function FaceScanDialog({
           "STEP_1_MATCH",
           "PASSED",
           "MATCHED",
-          `Matched ${targetStaff} (dist: ${matchRes.distance?.toFixed(3) ?? 0.25})`,
+          `Matched ${targetStaff} (${matchOrientation}, dist: ${matchRes.distance?.toFixed(4) ?? 0.25}, threshold: ${matchRes.threshold ?? 0.45})`,
         );
 
         // Store matched details for Step 4 attestation
@@ -645,9 +677,9 @@ export function FaceScanDialog({
         matchedStaffRef.current = {
           staffId: matchRes.staffId || targetStaff,
           name: activeStaff?.name || targetStaff,
-          liveEmbedding,
-          doubleRes,
-          aligned,
+          liveEmbedding: bestEmbedding,
+          doubleRes: bestDoubleRes,
+          aligned: bestAligned,
           faceBox: {
             x: Math.round(resolvedBox.x),
             y: Math.round(resolvedBox.y),

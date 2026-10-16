@@ -1608,16 +1608,35 @@ class AndroidBiometricBridge(
             }
 
             val liveFloats = FloatArray(512)
+            var hasNonFinite = false
             for (i in 0 until 512) {
-                liveFloats[i] = jsonArr.getDouble(i).toFloat()
+                val v = jsonArr.getDouble(i).toFloat()
+                if (!v.isFinite()) {
+                    hasNonFinite = true
+                    break
+                }
+                liveFloats[i] = v
+            }
+
+            if (hasNonFinite) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "MALFORMED_EMBEDDING")
+                    put("message", "Live embedding contains non-finite (NaN or Infinity) values.")
+                }.toString()
             }
 
             var sumSq = 0.0
             for (f in liveFloats) sumSq += f * f
             val norm = sqrt(sumSq).toFloat()
-            if (norm > 0) {
-                for (i in liveFloats.indices) liveFloats[i] /= norm
+            if (!norm.isFinite() || norm <= 0f) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "INVALID_NORM")
+                    put("message", "Live embedding vector norm must be finite and greater than zero.")
+                }.toString()
             }
+            for (i in liveFloats.indices) liveFloats[i] /= norm
 
             runBlocking(Dispatchers.IO) {
                 var templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
@@ -1637,25 +1656,44 @@ class AndroidBiometricBridge(
                     }.toString()
                 }
 
-                var bestDistance = Float.MAX_VALUE
-                var validDecryptions = 0
+                // Filter by latest active template version
+                val maxVersion = templates.maxOfOrNull { it.templateVersion } ?: 1
+                val activeTemplates = templates.filter { it.templateVersion == maxVersion }
+                val candidateTemplates = if (activeTemplates.isNotEmpty()) activeTemplates else templates
 
-                for (tmpl in templates) {
+                var bestDistance = Float.MAX_VALUE
+                var bestIndex = -1
+                var bestLabel = ""
+                var bestVersion = maxVersion
+                var validDecryptions = 0
+                val templateDistancesArray = JSONArray()
+
+                for ((index, tmpl) in candidateTemplates.withIndex()) {
                     val decDeviceId = if (tmpl.deviceId.isNotBlank()) tmpl.deviceId else currentDeviceId
                     val decryptedFloats = keystoreManager.decryptEmbedding(
                         cleanId,
                         decDeviceId,
                         tmpl.encryptedTemplate,
                         tmpl.iv
-                    ) ?: continue
-
-                    // Strictly L2-normalize decrypted template embedding
-                    var decSumSq = 0.0
-                    for (f in decryptedFloats) decSumSq += f * f
-                    val decNorm = sqrt(decSumSq).toFloat()
-                    if (decNorm > 0f) {
-                        for (i in decryptedFloats.indices) decryptedFloats[i] /= decNorm
+                    )
+                    if (decryptedFloats == null || decryptedFloats.size != 512) {
+                        continue
                     }
+
+                    var decSumSq = 0.0
+                    var decHasNonFinite = false
+                    for (f in decryptedFloats) {
+                        if (!f.isFinite()) {
+                            decHasNonFinite = true
+                            break
+                        }
+                        decSumSq += f * f
+                    }
+                    if (decHasNonFinite) continue
+
+                    val decNorm = sqrt(decSumSq).toFloat()
+                    if (!decNorm.isFinite() || decNorm <= 0f) continue
+                    for (i in decryptedFloats.indices) decryptedFloats[i] /= decNorm
 
                     validDecryptions++
                     var dot = 0.0f
@@ -1663,8 +1701,21 @@ class AndroidBiometricBridge(
                         dot += liveFloats[i] * decryptedFloats[i]
                     }
                     val dist = kotlin.math.max(0.0f, 1.0f - dot)
+
+                    val itemObj = JSONObject().apply {
+                        put("index", index)
+                        put("label", tmpl.referenceLabel)
+                        put("version", tmpl.templateVersion)
+                        put("distance", dist.toDouble())
+                        put("norm", decNorm.toDouble())
+                    }
+                    templateDistancesArray.put(itemObj)
+
                     if (dist < bestDistance) {
                         bestDistance = dist
+                        bestIndex = index
+                        bestLabel = tmpl.referenceLabel
+                        bestVersion = tmpl.templateVersion
                     }
                 }
 
@@ -1678,29 +1729,32 @@ class AndroidBiometricBridge(
 
                 val threshold = BiometricConfig.FACE_MATCH_THRESHOLD
                 val matched = bestDistance <= threshold
+                val formattedDist = String.format(java.util.Locale.US, "%.4f", bestDistance)
 
-                if (matched) {
-                    JSONObject().apply {
-                        put("matched", true)
-                        put("staffId", cleanId)
-                        put("deviceId", currentDeviceId)
-                        put("distance", bestDistance.toDouble())
-                        put("similarity", (1.0f - bestDistance).toDouble())
-                        put("threshold", threshold.toDouble())
+                Log.i("AndroidBiometricBridge", "Biometric comparison for $cleanId: bestDist=$formattedDist (T$bestIndex, label=$bestLabel, v$bestVersion) across $validDecryptions valid templates, matched=$matched")
+
+                JSONObject().apply {
+                    put("matched", matched)
+                    put("staffId", cleanId)
+                    put("deviceId", currentDeviceId)
+                    put("activeTemplateCount", candidateTemplates.size)
+                    put("validDecryptions", validDecryptions)
+                    put("embeddingDimension", 512)
+                    put("distanceMetric", "cosine_distance")
+                    put("distance", bestDistance.toDouble())
+                    put("similarity", (1.0f - bestDistance).toDouble())
+                    put("threshold", threshold.toDouble())
+                    put("bestIndex", bestIndex)
+                    put("bestLabel", bestLabel)
+                    put("bestVersion", bestVersion)
+                    put("templateDistances", templateDistancesArray)
+                    if (matched) {
                         put("message", "Face recognized.")
-                    }.toString()
-                } else {
-                    JSONObject().apply {
-                        put("matched", false)
-                        put("staffId", cleanId)
-                        put("deviceId", currentDeviceId)
-                        put("distance", bestDistance.toDouble())
-                        put("similarity", (1.0f - bestDistance).toDouble())
-                        put("threshold", threshold.toDouble())
+                    } else {
                         put("error", "FACE_NOT_RECOGNIZED")
-                        put("message", "Face not recognized. Distance (${String.format(java.util.Locale.US, "%.4f", bestDistance)}) exceeds threshold (${threshold}).")
-                    }.toString()
-                }
+                        put("message", "Face not recognized. Distance ($formattedDist) exceeds threshold ($threshold).")
+                    }
+                }.toString()
             }
         } catch (t: Throwable) {
             Log.e("AndroidBiometricBridge", "matchLocalFace error", t)
@@ -1778,16 +1832,35 @@ class AndroidBiometricBridge(
             }
 
             val liveFloats = FloatArray(512)
+            var hasNonFinite = false
             for (i in 0 until 512) {
-                liveFloats[i] = jsonArr.getDouble(i).toFloat()
+                val v = jsonArr.getDouble(i).toFloat()
+                if (!v.isFinite()) {
+                    hasNonFinite = true
+                    break
+                }
+                liveFloats[i] = v
+            }
+
+            if (hasNonFinite) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "MALFORMED_EMBEDDING")
+                    put("message", "Live embedding contains non-finite (NaN or Infinity) values.")
+                }.toString()
             }
 
             var sumSq = 0.0
             for (f in liveFloats) sumSq += f * f
             val norm = sqrt(sumSq).toFloat()
-            if (norm > 0) {
-                for (i in liveFloats.indices) liveFloats[i] /= norm
+            if (!norm.isFinite() || norm <= 0f) {
+                return JSONObject().apply {
+                    put("matched", false)
+                    put("error", "INVALID_NORM")
+                    put("message", "Live embedding vector norm must be finite and greater than zero.")
+                }.toString()
             }
+            for (i in liveFloats.indices) liveFloats[i] /= norm
 
             // Extract and validate liveness & anti-spoof evidence
             var livenessCompleted = false
@@ -1884,25 +1957,44 @@ class AndroidBiometricBridge(
                     }.toString()
                 }
 
-                var bestDistance = Float.MAX_VALUE
-                var validDecryptions = 0
+                // Filter by latest active template version
+                val maxVersion = templates.maxOfOrNull { it.templateVersion } ?: 1
+                val activeTemplates = templates.filter { it.templateVersion == maxVersion }
+                val candidateTemplates = if (activeTemplates.isNotEmpty()) activeTemplates else templates
 
-                for (tmpl in templates) {
+                var bestDistance = Float.MAX_VALUE
+                var bestIndex = -1
+                var bestLabel = ""
+                var bestVersion = maxVersion
+                var validDecryptions = 0
+                val templateDistancesArray = JSONArray()
+
+                for ((index, tmpl) in candidateTemplates.withIndex()) {
                     val decDeviceId = if (tmpl.deviceId.isNotBlank()) tmpl.deviceId else currentDeviceId
                     val decryptedFloats = keystoreManager.decryptEmbedding(
                         cleanId,
                         decDeviceId,
                         tmpl.encryptedTemplate,
                         tmpl.iv
-                    ) ?: continue
-
-                    // Strictly L2-normalize decrypted template embedding
-                    var decSumSq = 0.0
-                    for (f in decryptedFloats) decSumSq += f * f
-                    val decNorm = sqrt(decSumSq).toFloat()
-                    if (decNorm > 0f) {
-                        for (i in decryptedFloats.indices) decryptedFloats[i] /= decNorm
+                    )
+                    if (decryptedFloats == null || decryptedFloats.size != 512) {
+                        continue
                     }
+
+                    var decSumSq = 0.0
+                    var decHasNonFinite = false
+                    for (f in decryptedFloats) {
+                        if (!f.isFinite()) {
+                            decHasNonFinite = true
+                            break
+                        }
+                        decSumSq += f * f
+                    }
+                    if (decHasNonFinite) continue
+
+                    val decNorm = sqrt(decSumSq).toFloat()
+                    if (!decNorm.isFinite() || decNorm <= 0f) continue
+                    for (i in decryptedFloats.indices) decryptedFloats[i] /= decNorm
 
                     validDecryptions++
                     var dot = 0.0f
@@ -1910,8 +2002,21 @@ class AndroidBiometricBridge(
                         dot += liveFloats[i] * decryptedFloats[i]
                     }
                     val dist = kotlin.math.max(0.0f, 1.0f - dot)
+
+                    val itemObj = JSONObject().apply {
+                        put("index", index)
+                        put("label", tmpl.referenceLabel)
+                        put("version", tmpl.templateVersion)
+                        put("distance", dist.toDouble())
+                        put("norm", decNorm.toDouble())
+                    }
+                    templateDistancesArray.put(itemObj)
+
                     if (dist < bestDistance) {
                         bestDistance = dist
+                        bestIndex = index
+                        bestLabel = tmpl.referenceLabel
+                        bestVersion = tmpl.templateVersion
                     }
                 }
 
@@ -1925,6 +2030,9 @@ class AndroidBiometricBridge(
 
                 val threshold = BiometricConfig.FACE_MATCH_THRESHOLD
                 val matched = bestDistance <= threshold
+                val formattedDist = String.format(java.util.Locale.US, "%.4f", bestDistance)
+
+                Log.i("AndroidBiometricBridge", "verifyLocalFace for $cleanId: bestDist=$formattedDist (T$bestIndex, label=$bestLabel, v$bestVersion) across $validDecryptions valid templates, matched=$matched")
 
                 if (matched) {
                     val attestationToken = keystoreManager.createAttestationToken(
@@ -1941,8 +2049,16 @@ class AndroidBiometricBridge(
                         put("matched", true)
                         put("staffId", cleanId)
                         put("deviceId", currentDeviceId)
+                        put("activeTemplateCount", candidateTemplates.size)
+                        put("validDecryptions", validDecryptions)
+                        put("embeddingDimension", 512)
+                        put("distanceMetric", "cosine_distance")
                         put("distance", bestDistance.toDouble())
                         put("threshold", threshold.toDouble())
+                        put("bestIndex", bestIndex)
+                        put("bestLabel", bestLabel)
+                        put("bestVersion", bestVersion)
+                        put("templateDistances", templateDistancesArray)
                         put("livenessPassed", livenessCompleted)
                         put("antiSpoofScore", antiSpoofScore.toDouble())
                         put("biometricAttestation", attestationToken)
@@ -1953,10 +2069,18 @@ class AndroidBiometricBridge(
                         put("matched", false)
                         put("staffId", cleanId)
                         put("deviceId", currentDeviceId)
+                        put("activeTemplateCount", candidateTemplates.size)
+                        put("validDecryptions", validDecryptions)
+                        put("embeddingDimension", 512)
+                        put("distanceMetric", "cosine_distance")
                         put("distance", bestDistance.toDouble())
                         put("threshold", threshold.toDouble())
+                        put("bestIndex", bestIndex)
+                        put("bestLabel", bestLabel)
+                        put("bestVersion", bestVersion)
+                        put("templateDistances", templateDistancesArray)
                         put("error", "FACE_MISMATCH")
-                        put("message", "Unknown Face. Best distance (${String.format(java.util.Locale.US, "%.4f", bestDistance)}) exceeds threshold (${threshold}).")
+                        put("message", "Unknown Face. Best distance ($formattedDist) exceeds threshold ($threshold).")
                     }.toString()
                 }
             }
