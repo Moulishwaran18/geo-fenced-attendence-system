@@ -220,14 +220,14 @@ export async function getStaffFaceStatus(): Promise<StaffFaceStatusResponse> {
       enrollmentStatus: data.enrollmentStatus || (data.isLocked ? "approved" : data.status),
       sampleCount: data.sampleCount ?? data.embeddingCount,
       canSaveReplacement: Boolean(data.canSaveReplacement && data.oneTimeToken),
-      canPrepareReplacement: Boolean(data.canPrepareReplacement || data.hasStage1Permission),
-      hasStage1Permission: Boolean(data.hasStage1Permission || data.canPrepareReplacement),
+      canPrepareReplacement: Boolean(data.canSaveReplacement && data.oneTimeToken),
+      hasStage1Permission: false,
       hasPendingPermissionRequest: Boolean(data.hasPendingPermissionRequest),
-      hasPendingImageApproval: Boolean(data.hasPendingImageApproval),
-      prepToken: data.prepToken || null,
-      permissionRequestId: data.permissionRequestId || null,
+      hasPendingImageApproval: false,
+      prepToken: null,
+      permissionRequestId: null,
       approvedDigest: data.approvedDigest || null,
-      stage: data.stage || (data.hasPendingImageApproval ? 2 : 1),
+      stage: 1,
       activeRequest: data.pendingRequest || data.approvedRequest || data.latestRequest || null,
       latestRequest: data.latestRequest || null,
     };
@@ -551,7 +551,7 @@ export async function requestStaffFaceChange(
 }
 
 /**
- * Stage 1: Request permission to prepare replacement face images (Institutional reason only, ZERO images).
+ * Request administrator approval to re-enroll face biometrics.
  */
 export async function requestStaffFacePermission(
   reason: string,
@@ -559,14 +559,13 @@ export async function requestStaffFacePermission(
 ): Promise<{ success: boolean; message?: string; requestId?: string; request?: any; error?: string }> {
   return requestStaffFaceChange(reason, {
     deviceId,
-    requestType: "permission_request",
+    requestType: "replacement",
     sampleCount: 1,
   });
 }
 
 /**
- * Stage 2: Submit the exact staged replacement images for administrator approval.
- * Bound to staff identity, device ID, Stage 1 permission ID, sample count, and cryptographic digest.
+ * Backward-compatible helper for submitting replacement face images for approval.
  */
 export async function requestStaffFaceImageApproval(params: {
   reason?: string | undefined;
@@ -575,10 +574,10 @@ export async function requestStaffFaceImageApproval(params: {
   linkedRequestId?: string | undefined;
   digest: string;
 }): Promise<{ success: boolean; message?: string; requestId?: string; request?: any; error?: string }> {
-  return requestStaffFaceChange(params.reason || "Replacement face images submitted for administrator approval", {
+  return requestStaffFaceChange(params.reason || "Face re-enrollment request submitted for administrator approval", {
     deviceId: params.deviceId,
     sampleCount: params.sampleCount,
-    requestType: "image_approval",
+    requestType: "replacement",
     linkedRequestId: params.linkedRequestId,
     digest: params.digest,
   });

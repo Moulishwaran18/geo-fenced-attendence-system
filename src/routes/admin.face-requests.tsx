@@ -213,22 +213,14 @@ function AdminFaceRequestsPage() {
                         <Badge
                           variant="outline"
                           className={
-                            req.requestType === "permission_request" || req.stage === 1
-                              ? "border-sky-500/40 text-sky-700 dark:text-sky-300 bg-sky-500/10"
-                              : req.requestType === "image_approval" || req.stage === 2
-                              ? "border-purple-500/40 text-purple-700 dark:text-purple-300 bg-purple-500/10"
-                              : req.requestType === "initial"
+                            req.requestType === "initial"
                               ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300 bg-emerald-500/10"
                               : "border-indigo-500/40 text-indigo-700 dark:text-indigo-300 bg-indigo-500/10"
                           }
                         >
-                          {req.requestType === "permission_request" || req.stage === 1
-                            ? "Stage 1: Re-enrollment Permission"
-                            : req.requestType === "image_approval" || req.stage === 2
-                            ? "Stage 2: New Face Images Approval"
-                            : req.requestType === "initial"
+                          {req.requestType === "initial"
                             ? "Initial Registration"
-                            : "Face Replacement"}
+                            : "Face Re-enrollment"}
                         </Badge>
                         <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
                           Pending Decision
@@ -237,7 +229,7 @@ function AdminFaceRequestsPage() {
 
                       <div className="space-y-1 text-xs text-muted-foreground">
                         <p>
-                          Request ID: <span className="font-mono font-medium text-foreground">{req.id}</span> · {req.department} · {req.requestType === "permission_request" ? "Permission Request (No photos)" : `${req.sampleCount || 1} sample(s) staged`} · Device:{" "}
+                          Request ID: <span className="font-mono font-medium text-foreground">{req.id}</span> · {req.department} · Device:{" "}
                           <span className="font-mono font-medium text-foreground">
                             {req.maskedDeviceId || req.deviceId || "Registered Device"}
                           </span>{" "}
@@ -247,20 +239,6 @@ function AdminFaceRequestsPage() {
                             timeStyle: "short",
                           })}
                         </p>
-                        {req.linkedRequestId && (
-                          <p>
-                            Linked Permission Req:{" "}
-                            <span className="font-mono font-medium text-foreground">{req.linkedRequestId}</span>
-                          </p>
-                        )}
-                        {req.maskedDigest && (
-                          <p>
-                            Cryptographic Digest:{" "}
-                            <Badge variant="outline" className="font-mono text-[10px] px-1 py-0 border-purple-500/30 text-purple-700 dark:text-purple-300">
-                              {req.maskedDigest}
-                            </Badge>
-                          </p>
-                        )}
                       </div>
 
                       <div className="mt-2.5 rounded-lg border border-border bg-muted/40 p-3 text-xs">
@@ -281,9 +259,7 @@ function AdminFaceRequestsPage() {
                         }}
                       >
                         <UserCheck className="mr-1.5 size-4" />
-                        {req.requestType === "permission_request" || req.stage === 1
-                          ? "Approve Permission"
-                          : "Authorize Replacement"}
+                        Approve Request
                       </Button>
                       <Button
                         size="sm"
@@ -322,24 +298,18 @@ function AdminFaceRequestsPage() {
                       <Badge
                         variant="outline"
                         className={
-                          req.requestType === "permission_request" || req.stage === 1
-                            ? "border-sky-500/40 text-sky-700 dark:text-sky-300"
-                            : req.requestType === "image_approval" || req.stage === 2
-                            ? "border-purple-500/40 text-purple-700 dark:text-purple-300"
-                            : "border-border text-muted-foreground"
+                          req.requestType === "initial"
+                            ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                            : "border-indigo-500/40 text-indigo-700 dark:text-indigo-300"
                         }
                       >
-                        {req.requestType === "permission_request" || req.stage === 1
-                          ? "Stage 1 Permission"
-                          : req.requestType === "image_approval" || req.stage === 2
-                          ? "Stage 2 Images"
-                          : req.requestType === "initial"
+                        {req.requestType === "initial"
                           ? "Initial"
-                          : "Replacement"}
+                          : "Face Re-enrollment"}
                       </Badge>
                       {req.status === "approved" ? (
                         <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                          {req.requestType === "permission_request" ? "Permission Granted" : "Approved (24-Hour Active)"}
+                          Approved (24-Hour Active)
                         </Badge>
                       ) : req.status === "expired" ? (
                         <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
@@ -401,47 +371,29 @@ function AdminFaceRequestsPage() {
               {dialogAction === "approve" ? (
                 <>
                   <UserCheck className="size-5 text-emerald-600" />
-                  {activeReq?.requestType === "permission_request" || activeReq?.stage === 1
-                    ? "Approve Re-enrollment Permission (Stage 1)"
-                    : activeReq?.requestType === "image_approval" || activeReq?.stage === 2
-                    ? "Authorize Replacement Face Images (Stage 2)"
-                    : activeReq?.requestType === "initial"
+                  {activeReq?.requestType === "initial"
                     ? "Approve Initial Face Registration"
-                    : "Approve Face Change"}
+                    : "Approve Face Re-enrollment"}
                 </>
               ) : (
                 <>
                   <UserX className="size-5 text-destructive" />
-                  Reject {activeReq?.requestType === "permission_request" || activeReq?.stage === 1 ? "Re-enrollment Permission" : "Face Registration Change"}
+                  Reject {activeReq?.requestType === "initial" ? "Face Registration" : "Face Re-enrollment"}
                 </>
               )}
             </DialogTitle>
             <DialogDescription>
               {dialogAction === "approve" ? (
-                activeReq?.requestType === "permission_request" || activeReq?.stage === 1 ? (
-                  <>
-                    Approving this request grants <strong>Stage 1 Permission</strong> for <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}) to prepare replacement face images on their registered device (<strong>{activeReq?.maskedDeviceId || activeReq?.deviceId}</strong>).
-                    <br />
-                    <span className="text-amber-600 dark:text-amber-400 font-medium mt-1 inline-block">
-                      Important: This does NOT replace or activate any face templates. Existing active templates remain active and locked until the newly captured replacement images are submitted and approved in Stage 2.
-                    </span>
-                  </>
-                ) : activeReq?.requestType === "image_approval" || activeReq?.stage === 2 ? (
-                  <>
-                    Approving this request authorizes replacing the active facial recognition profile for <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}) with the exact proposed template set (Digest: <strong>{activeReq?.maskedDigest || "Verified Digest"}</strong>, {activeReq?.sampleCount || 1} sample(s)).
-                    <br />
-                    A single-use final commit authorization will be issued. Upon native verification and encrypted persistence, the new profile will be permanently locked.
-                  </>
-                ) : (
-                  <>
-                    Approving this request will mint a <strong>single-use authorization token</strong> bound to device{" "}
-                    <strong>{activeReq?.maskedDeviceId || activeReq?.deviceId}</strong> for{" "}
-                    <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}).
-                  </>
-                )
+                <>
+                  Approving this request authorizes <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}) to capture and save replacement face images on their registered device (<strong>{activeReq?.maskedDeviceId || activeReq?.deviceId}</strong>).
+                  <br />
+                  <span className="text-muted-foreground mt-1 inline-block">
+                    A single-use 24-hour authorization will be issued. Existing active templates remain in use until the staff member completes and saves the new registration.
+                  </span>
+                </>
               ) : (
                 <>
-                  Rejecting this request will decline the request for <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}). The staff member&apos;s existing face registration remains completely unchanged.
+                  Rejecting this request will decline face re-enrollment for <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}). The staff member&apos;s existing face registration remains completely unchanged.
                 </>
               )}
             </DialogDescription>
@@ -467,9 +419,7 @@ function AdminFaceRequestsPage() {
                 id="adminNote"
                 placeholder={
                   dialogAction === "approve"
-                    ? activeReq?.requestType === "permission_request" || activeReq?.stage === 1
-                      ? "e.g. Identity verified. Authorized to capture replacement reference photos."
-                      : "e.g. Staged face samples verified. Authorized for final profile replacement."
+                    ? "e.g. Identity verified. Authorized to replace face registration."
                     : "e.g. Current reference photos are sufficiently clear."
                 }
                 value={adminNote}

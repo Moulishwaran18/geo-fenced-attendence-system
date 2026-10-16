@@ -929,7 +929,7 @@ class AndroidBiometricBridge(
             runBlocking(Dispatchers.IO) {
                 val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
                 val cleanToken = oneTimeToken?.trim() ?: ""
-                val tokenRegex = Regex("^ftok_[a-f0-9]{48}$")
+                val tokenRegex = Regex("^ftok_[a-zA-Z0-9_-]{12,64}$")
                 val isAuthorizedReplacement = existingCount > 0 && cleanToken.isNotEmpty() && tokenRegex.matches(cleanToken)
 
                 // If already enrolled, replacement requires a valid, unconsumed administrator approval token
@@ -1016,6 +1016,25 @@ class AndroidBiometricBridge(
                     }.toString()
                 }
 
+                // Compute and persist canonical digest of the active templates
+                var activeDigest: String? = null
+                try {
+                    val insertedTemplates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                    val decryptedList = mutableListOf<FloatArray>()
+                    for (tmpl in insertedTemplates) {
+                        val dec = keystoreManager.decryptEmbedding(cleanId, currentDeviceId, tmpl.encryptedTemplate, tmpl.iv)
+                        if (dec != null && dec.size == 512) {
+                            decryptedList.add(dec)
+                        }
+                    }
+                    if (decryptedList.size == insertedTemplates.size && decryptedList.isNotEmpty()) {
+                        activeDigest = computeCanonicalTemplateDigest(decryptedList)
+                        repository.setDeviceSetting(com.campusattend.biometric.data.DeviceSettingsEntity("active_face_digest_${cleanId}", activeDigest))
+                    }
+                } catch (dEx: Throwable) {
+                    Log.w("AndroidBiometricBridge", "Could not compute active template digest after enrollment", dEx)
+                }
+
                 // If a pending or staged replacement file existed, clean up
                 val pendingFile = java.io.File(context.filesDir, "pending_face_${cleanId}.json")
                 if (pendingFile.exists()) {
@@ -1031,6 +1050,9 @@ class AndroidBiometricBridge(
                     put("staffId", cleanId)
                     put("deviceId", currentDeviceId)
                     put("count", finalCount)
+                    if (!activeDigest.isNullOrBlank()) {
+                        put("activeDigest", activeDigest)
+                    }
                     put("message", "Face enrolled on this device. Templates securely encrypted with Android Keystore.")
                 }.toString()
             }

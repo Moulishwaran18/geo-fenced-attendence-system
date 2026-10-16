@@ -658,42 +658,72 @@ function StaffFaceEnrollmentPage() {
 
       // REPLACEMENT ENROLLMENT (Staff already enrolled & locked)
       if (isEnrolled) {
-        // CASE 1: STAGE 2 APPROVED (Fresh single-use ftok_ token issued for exact digest) -> COMMIT REPLACEMENT
+        // SINGLE APPROVAL: Staff authorized by administrator to replace face templates
         if (serverStatus?.canSaveReplacement && oneTimeToken) {
-          const approvedDigest = serverStatus?.approvedDigest;
+          // STEP 1: Compute canonical cryptographic digest of the new verified embeddings
+          const digest = await computeCanonicalTemplateDigest(embeddings);
 
-          // STEP 1: COMMIT REPLACEMENT LOCALLY (Only after verifying staged digest matches approved digest)
-          const commitRes = await commitNativeReplacement(staffId, oneTimeToken, approvedDigest || undefined);
-          if (!commitRes.success) {
-            toast.error(commitRes.message || "Failed to commit replacement templates. Digest mismatch or corrupted staged file.");
+          // STEP 2: STAGE REPLACEMENT TEMPLATES LOCALLY (Existing active templates remain untouched)
+          const stageRes = await stageNativeReplacement(
+            staffId,
+            embeddings,
+            labels,
+            oneTimeToken,
+            serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
+            digest
+          );
+
+          if (!stageRes.success) {
+            toast.error(stageRes.message || "Failed to encrypt and stage replacement templates in Android Keystore.");
             return;
           }
 
-          // STEP 2: VERIFY LOCAL PERSISTENCE IN ANDROID KEYSTORE
-          const verifyCheck = await verifyNativePersistence(staffId);
+          // STEP 3: ATOMICALLY COMMIT REPLACEMENT LOCALLY (With read-back verification & safe rollback)
+          const commitRes = await commitNativeReplacement(staffId, oneTimeToken, digest);
+          if (!commitRes.success) {
+            toast.error(commitRes.message || "Failed to commit replacement templates. Old templates preserved.");
+            return;
+          }
+
+          // STEP 4: VERIFY LOCAL PERSISTENCE IN ANDROID KEYSTORE
+          const verifyCheck = await verifyNativePersistence(staffId, digest);
           if (!verifyCheck.verified || verifyCheck.count === 0) {
             toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
             return;
           }
 
-          // STEP 3: SERVER AUTHORIZATION & ATOMIC CONSUMPTION
+          // STEP 5: SERVER AUTHORIZATION & ATOMIC CONSUMPTION
           const serverEnrollRes = await submitStaffFaceEnrollment(
             {
               deviceId: nativeDeviceId || undefined,
               templateCount: verifyCheck.count,
               oneTimeToken,
               requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
-              digest: approvedDigest || undefined,
+              digest,
             },
             oneTimeToken
           );
 
           if (!serverEnrollRes.success) {
+            // Reconcile if token was already consumed in prior network drop
+            if (serverEnrollRes.error?.includes("already consumed") || serverEnrollRes.error?.includes("INVALID_OR_CONSUMED_TOKEN")) {
+              const srvCheck = await getStaffFaceStatus();
+              if (srvCheck.latestRequestStatus === "completed" || srvCheck.status === "approved") {
+                toast.success("Face registration successfully replaced and locked!", {
+                  description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore. Single-use authorization consumed.`,
+                });
+                stopCamera();
+                setSamples([]);
+                setIsReplacementMode(false);
+                await checkStatus();
+                return;
+              }
+            }
             toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server. Existing templates remain intact.");
             return;
           }
 
-          // STEP 4: CONFIRM SUCCESS & RE-LOCK PROFILE
+          // STEP 6: CONFIRM SUCCESS & RE-LOCK PROFILE
           toast.success("Face registration successfully replaced and locked!", {
             description: `${verifyCheck.count} face template(s) securely encrypted with AES-256-GCM in Android Keystore. Single-use authorization consumed.`,
           });
@@ -705,70 +735,15 @@ function StaffFaceEnrollmentPage() {
           return;
         }
 
-        // CASE 2: STAGE 1 PREPARATION APPROVED -> STAGE TEMPLATES LOCALLY & SUBMIT STAGE 2 REQUEST
-        if (
-          (serverStatus?.hasStage1Permission || serverStatus?.canPrepareReplacement) &&
-          !serverStatus?.canSaveReplacement &&
-          !serverStatus?.hasPendingImageApproval
-        ) {
-          if (isPendingApproval || serverStatus?.hasPendingRequest || serverStatus?.hasPendingImageApproval) {
-            toast.warning("A face image approval request is already pending administrator review.");
-            return;
-          }
-
-          // Step 1: Compute canonical cryptographic digest of the newly verified embeddings
-          const digest = await computeCanonicalTemplateDigest(embeddings);
-
-          // Step 2: Encrypt and stage replacement templates locally in Android app-private storage
-          // Existing active templates remain 100% untouched!
-          const stageRes = await stageNativeReplacement(
-            staffId,
-            embeddings,
-            labels,
-            serverStatus?.prepToken || "preptok_staged",
-            serverStatus?.permissionRequestId || undefined,
-            digest
-          );
-
-          if (!stageRes.success) {
-            toast.error(stageRes.message || "Failed to encrypt and stage replacement templates in Android Keystore.");
-            return;
-          }
-
-          // Step 3: Submit Stage 2 Image Approval Request to administrator
-          const res = await requestStaffFaceImageApproval({
-            deviceId: nativeDeviceId || undefined,
-            sampleCount: validSamples.length,
-            linkedRequestId: serverStatus?.permissionRequestId || undefined,
-            digest,
-            reason: requestReason.trim() || undefined,
-          });
-
-          if (!res.success) {
-            toast.error(res.error || "Failed to submit replacement face images to administrator.");
-            return;
-          }
-
-          toast.success("Replacement face images submitted for administrator approval!", {
-            description: `Request ID: ${res.requestId || res.request?.id || "Pending"}. Staged digest: ${digest.slice(0, 16)}… Existing face templates remain active until final approval.`,
-          });
-
-          stopCamera();
-          setSamples([]);
-          setIsReplacementMode(false);
-          await checkStatus();
-          return;
-        }
-
-        // CASE 3: NO APPROVAL TOKEN -> Prompt for Stage 1 Permission Request
-        if (isPendingApproval || serverStatus?.hasPendingRequest || serverStatus?.hasPendingPermissionRequest) {
-          toast.warning("A face request is already pending administrator approval. Please wait for an administrator to review your request.");
+        // NO APPROVAL TOKEN -> Prompt for Re-enrollment Request
+        if (isPendingApproval || serverStatus?.hasPendingRequest) {
+          toast.warning("A face re-enrollment request is already pending administrator approval. Please wait for an administrator to review your request.");
           return;
         }
 
         setRequestSubmitError(null);
         setRequestModalOpen(true);
-        toast.info("Please submit a re-enrollment permission request to the administrator first.");
+        toast.info("Please submit a re-enrollment request to the administrator first.");
         return;
       }
 
@@ -923,7 +898,7 @@ function StaffFaceEnrollmentPage() {
     [serverStatus?.oneTimeToken, staffId, nativeDeviceId, checkStatus]
   );
 
-  // Commit authorized replacement templates into Room DB upon Stage 2 approval
+  // Commit authorized replacement templates into Room DB upon administrator approval
   const handleFinalCommit = async () => {
     console.log("[BiometricCommit] 'Commit Replacement Registration' clicked for staff:", staffId);
 
@@ -1124,7 +1099,7 @@ function StaffFaceEnrollmentPage() {
     }
   };
 
-  // Submit Stage 1 permission request to administrator (server metadata only, ZERO biometrics)
+  // Submit face re-enrollment request to administrator (server metadata only, ZERO biometrics)
   const handleSubmitChangeRequest = async () => {
     const trimmed = requestReason.trim();
     if (!trimmed) {
@@ -1159,11 +1134,11 @@ function StaffFaceEnrollmentPage() {
     setRequestSubmitError(null);
 
     try {
-      // Stage 1 Permission Request: Requests institutional permission without capturing images
+      // Re-enrollment Request: Requests administrator approval to replace face templates
       const res = await requestStaffFacePermission(trimmed, nativeDeviceId || undefined);
 
       if (res.success) {
-        toast.success("Face re-enrollment permission request submitted to administrator!", {
+        toast.success("Face re-enrollment request submitted to administrator!", {
           description: `Request ID: ${res.requestId || res.request?.id || "Pending"}. Awaiting administrator review.`,
         });
         setRequestModalOpen(false);
@@ -1254,46 +1229,27 @@ function StaffFaceEnrollmentPage() {
     ""
   ).trim();
 
-  const hasStage2Approval = Boolean(
+  // Single-approval face replacement authorization: Requires active enrolled profile, approved request, and single-use ftok_ token
+  const isApprovedForReplacement = Boolean(
     isEnrolled &&
     !isCompleted &&
     (serverStatus?.canSaveReplacement === true || serverStatus?.approvedRequest?.status === "approved" || serverStatus?.activeRequest?.status === "approved") &&
     Boolean(availableToken.startsWith("ftok_"))
   );
-  const hasPendingPermission = Boolean(
-    serverStatus?.hasPendingPermissionRequest ||
-    (serverStatus?.hasPendingRequest &&
-      (serverStatus?.latestRequest?.requestType === "permission_request" ||
-       serverStatus?.pendingRequest?.requestType === "permission_request"))
-  );
-  const hasPendingImage = Boolean(
-    serverStatus?.hasPendingImageApproval ||
-    (serverStatus?.hasPendingRequest &&
-      (serverStatus?.latestRequest?.requestType === "image_approval" ||
-       serverStatus?.pendingRequest?.requestType === "image_approval"))
-  );
-
-  const hasStage1Permission = Boolean(
-    !isCompleted &&
-    latestReqStatus !== "completed" &&
-    !hasPendingImage &&
-    !hasStage2Approval &&
-    (serverStatus?.hasStage1Permission || serverStatus?.canPrepareReplacement)
-  );
-
-  // Strict replacement authorization: Requires active enrolled profile, Stage 2 server approval, and single-use token
-  const isApprovedForReplacement = hasStage2Approval;
 
   const isPendingApproval =
-    hasPendingPermission ||
-    hasPendingImage ||
     latestReqStatus === "pending" ||
     serverStatus?.hasPendingRequest === true ||
+    serverStatus?.hasPendingPermissionRequest === true ||
     serverStatus?.status === "pending_approval" ||
     serverStatus?.enrollmentStatus === "pending_approval";
   const isRejected = latestReqStatus === "rejected" || serverStatus?.status === "rejected" || serverStatus?.enrollmentStatus === "rejected";
   const isExpiredRequest = latestReqStatus === "expired" || serverStatus?.status === "expired";
-  const isApproved = hasStage2Approval;
+  const isApproved = isApprovedForReplacement || (
+    !isEnrolled &&
+    serverStatus?.status === "approved" &&
+    Boolean(availableToken.startsWith("ftok_"))
+  );
 
   // 1. Polling for administrator decision while approval is pending
   useEffect(() => {
@@ -1663,26 +1619,26 @@ function StaffFaceEnrollmentPage() {
             </div>
 
             {/* SEPARATE CARD: Face-Change Request Lifecycle Status */}
-            {hasPendingPermission ? (
+            {isPendingApproval ? (
               <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-5 shadow-sm">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex items-start gap-3.5">
                     <Clock className="size-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-foreground">Pending Re-enrollment Permission (Stage 1)</h4>
+                        <h4 className="text-sm font-semibold text-foreground">Face Re-enrollment Request Pending Administrator Approval</h4>
                         <Badge variant="outline" className="border-sky-500/40 text-sky-700 dark:text-sky-300">
-                          Awaiting Permission Review
+                          Awaiting Review
                         </Badge>
                         <Badge variant="outline" className="font-mono text-xs">
                           Req ID: {serverStatus?.latestRequest?.id || serverStatus?.pendingRequest?.id || "Pending"}
                         </Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                        Reason: <em>"{serverStatus?.latestRequest?.reason || serverStatus?.pendingRequest?.reason || "Face biometric re-enrollment permission request"}"</em>
+                        Reason: <em>"{serverStatus?.latestRequest?.reason || serverStatus?.pendingRequest?.reason || "Face biometric re-enrollment request"}"</em>
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                        Your request to change your face registration has been submitted to administration. Camera and upload controls will unlock after an administrator approves your permission request. Existing active face templates remain in use.
+                        Your request to change your face registration has been submitted to administration. Camera and upload controls will unlock after an administrator approves your request. Existing active face templates remain in use.
                       </p>
                     </div>
                   </div>
@@ -1691,76 +1647,32 @@ function StaffFaceEnrollmentPage() {
                   </Button>
                 </div>
               </div>
-            ) : hasPendingImage ? (
-              <div className="rounded-2xl border border-purple-500/30 bg-purple-500/10 p-5 shadow-sm">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="flex items-start gap-3.5">
-                    <Clock className="size-5 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-foreground">New Face Images Awaiting Administrator Approval (Stage 2)</h4>
-                        <Badge variant="outline" className="border-purple-500/40 text-purple-700 dark:text-purple-300">
-                          Pending Image Approval
-                        </Badge>
-                        <Badge variant="outline" className="font-mono text-xs">
-                          Req ID: {serverStatus?.latestRequest?.id || serverStatus?.pendingRequest?.id || "Pending"}
-                        </Badge>
-                      </div>
-                      <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-                        {(serverStatus?.latestRequest?.linkedRequestId || serverStatus?.pendingRequest?.linkedRequestId) && (
-                          <p>
-                            Linked Permission Req:{" "}
-                            <span className="font-mono font-medium text-foreground">
-                              {serverStatus?.latestRequest?.linkedRequestId || serverStatus?.pendingRequest?.linkedRequestId}
-                            </span>
-                          </p>
-                        )}
-                        {(serverStatus?.latestRequest?.digest || serverStatus?.pendingRequest?.digest) && (
-                          <p>
-                            Staged Cryptographic Digest:{" "}
-                            <span className="font-mono font-medium text-foreground">
-                              {serverStatus?.latestRequest?.digest || serverStatus?.pendingRequest?.digest}
-                            </span>
-                          </p>
-                        )}
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                        Your proposed replacement templates are safely encrypted and staged on this device. Existing active templates remain in use for attendance until the administrator approves these specific images.
-                      </p>
-                    </div>
-                  </div>
-                  <Button variant="ghost" size="sm" onClick={handleCancelRequest} className="text-muted-foreground hover:text-destructive shrink-0">
-                    Withdraw Request
-                  </Button>
-                </div>
-              </div>
-            ) : hasStage2Approval ? (
+            ) : isApprovedForReplacement ? (
               <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5 shadow-sm">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex items-start gap-3.5">
                     <KeyRound className="size-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-foreground">Replacement Face Images Authorized (Stage 2 Approved)</h4>
+                        <h4 className="text-sm font-semibold text-foreground">Face Re-enrollment Authorized by Administrator</h4>
                         <Badge variant="default" className="bg-emerald-600 text-white hover:bg-emerald-600">
-                          Final Commit Ready
+                          Approved - Ready to Capture & Save
                         </Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                        Administrator approval granted for your replacement face images (Digest:{" "}
-                        <span className="font-mono font-semibold text-foreground">{serverStatus?.approvedDigest || "Verified"}</span>).
-                        Click <strong>Commit Replacement Registration</strong> to verify the cryptographic digest and finalize activation in Android Keystore.
+                        Administrator approval has been granted. Click below or open camera to capture or select 1 to 5 new face photos, then click <strong>Save Face Registration</strong> to atomically replace your biometric profile.
                       </p>
                     </div>
                   </div>
                   <Button
-                    id="btn-commit-replacement"
-                    onClick={handleFinalCommit}
-                    disabled={isSaving}
+                    onClick={() => {
+                      setIsReplacementMode(true);
+                      setSamples([]);
+                    }}
                     className="shrink-0 bg-emerald-600 text-white hover:bg-emerald-700 font-medium"
                   >
-                    {isSaving ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Lock className="mr-1.5 size-4" />}
-                    Commit Replacement Registration
+                    <Camera className="mr-1.5 size-4" />
+                    Open Camera / Add Photos
                   </Button>
                 </div>
               </div>
@@ -1808,35 +1720,6 @@ function StaffFaceEnrollmentPage() {
                   </div>
                 </div>
               </div>
-            ) : hasStage1Permission ? (
-              <div className="rounded-2xl border border-primary/30 bg-primary/10 p-5 shadow-sm">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="flex items-start gap-3.5">
-                    <ScanFace className="size-5 text-primary shrink-0 mt-0.5" />
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-foreground">Re-enrollment Permission Approved (Stage 1)</h4>
-                        <Badge variant="default" className="bg-primary text-primary-foreground">
-                          Ready to Prepare Images
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                        Administrator permission granted. Click <strong>Prepare Replacement Face Images</strong> to open the live camera or upload photo files. Existing active templates remain untouched until new images are submitted, approved, and committed in Stage 2.
-                      </p>
-                    </div>
-                  </div>
-                  <Button
-                    onClick={() => {
-                      setIsReplacementMode(true);
-                      setSamples([]);
-                    }}
-                    className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90"
-                  >
-                    <Camera className="mr-1.5 size-4" />
-                    Prepare Replacement Face Images
-                  </Button>
-                </div>
-              </div>
             ) : latestReqStatus === "rejected" || isRejected ? (
               <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-5 shadow-sm">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1853,7 +1736,7 @@ function StaffFaceEnrollmentPage() {
                         {serverStatus?.latestRequest?.adminNotes || serverStatus?.rejectedRequest?.adminNotes || "The administrator declined the previous face change request."}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground font-medium">
-                        You may submit a new face change request with updated justification.
+                        You may submit a new face change request with updated details.
                       </p>
                     </div>
                   </div>
@@ -1862,7 +1745,7 @@ function StaffFaceEnrollmentPage() {
                       variant="default"
                       className="bg-primary text-primary-foreground hover:bg-primary/90"
                       onClick={() => {
-                        if (hasStage1Permission) {
+                        if (isApprovedForReplacement) {
                           setIsReplacementMode(true);
                           setSamples([]);
                         } else {
@@ -1909,7 +1792,7 @@ function StaffFaceEnrollmentPage() {
                       variant="default"
                       className="bg-primary text-primary-foreground hover:bg-primary/90"
                       onClick={() => {
-                        if (hasStage1Permission) {
+                        if (isApprovedForReplacement) {
                           setIsReplacementMode(true);
                           setSamples([]);
                         } else {
@@ -1948,7 +1831,7 @@ function StaffFaceEnrollmentPage() {
                       variant="default"
                       className="bg-primary text-primary-foreground hover:bg-primary/90"
                       onClick={() => {
-                        if (hasStage1Permission) {
+                        if (isApprovedForReplacement) {
                           setIsReplacementMode(true);
                           setSamples([]);
                         } else {
@@ -2292,10 +2175,10 @@ function StaffFaceEnrollmentPage() {
                     {isReplacementMode && isEnrolled ? (
                       <>
                         <p>
-                          Submitting will stage encrypted templates locally and request <strong>Administrator Image Approval (Stage 2)</strong>.
+                          Saving will securely replace your existing face templates in <strong>Android Keystore</strong> and lock your new profile.
                         </p>
                         <p className="text-[11px] text-muted-foreground/80">
-                          Your existing face registration remains <strong>active and unchanged</strong> until administrator approval.
+                          Your single-use administrator approval will be consumed upon saving.
                         </p>
                       </>
                     ) : (
@@ -2320,14 +2203,12 @@ function StaffFaceEnrollmentPage() {
                     {isSaving ? (
                       <>
                         <Loader2 className="mr-2 size-4 animate-spin" />
-                        {isReplacementMode ? "Staging & Requesting Approval…" : "Encrypting & Saving Face…"}
+                        {isReplacementMode ? "Replacing Face Registration…" : "Encrypting & Saving Face…"}
                       </>
                     ) : (
                       <>
                         <Lock className="mr-2 size-4" />
-                        {isReplacementMode && isEnrolled
-                          ? `Submit Replacement for Admin Approval (${validCount} Photo${validCount === 1 ? "" : "s"})`
-                          : `Save Face Registration (${validCount} Photo${validCount === 1 ? "" : "s"})`}
+                        Save Face Registration ({validCount} Photo{validCount === 1 ? "" : "s"})
                       </>
                     )}
                   </Button>
@@ -2352,12 +2233,12 @@ function StaffFaceEnrollmentPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ScanFace className="size-5 text-primary" />
-              Request Re-enrollment Permission (Stage 1)
+              Request Face Re-enrollment
             </DialogTitle>
             <DialogDescription>
               To maintain campus security, face biometric profiles are permanently locked on the device.
               Please provide the institutional justification for re-enrolling your face. Once approved by an administrator,
-              you will receive authorization to capture and stage new reference photos.
+              you will be authorized to capture new reference photos and save your registration directly.
             </DialogDescription>
           </DialogHeader>
 

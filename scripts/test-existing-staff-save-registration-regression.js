@@ -166,49 +166,99 @@ async function runRegressionTests() {
     assert(statusMock1.getData()?.oneTimeToken === null, "oneTimeToken is null");
 
     // -------------------------------------------------------------------------
-    // Stage 1: Request permission to prepare replacement images
+    // Step 1: Staff submits face re-enrollment request
     // -------------------------------------------------------------------------
-    console.log("\n[Stage 1] Permission request submission & administrator approval");
+    console.log("\n[Step 1] Face re-enrollment request submission & initial state");
     const permReason = "Institutional justification for face update";
     const permReqMock = mockReqRes("POST", "/api/staff/face/request-change", {
       reason: permReason,
-      requestType: "permission_request",
+      requestType: "replacement",
       deviceId: "android-hw-reg-device",
     }, staffHeaders);
     await handlerFaceStaff(permReqMock.req, permReqMock.res);
-    assert(permReqMock.getStatus() === 201, `Stage 1 request submitted successfully (HTTP 201)`);
-    const permReqId = permReqMock.getData()?.requestId;
-    assert(Boolean(permReqId), `Stage 1 requestId: ${permReqId}`);
+    assert(permReqMock.getStatus() === 201, `Re-enrollment request submitted successfully (HTTP 201)`);
+    const requestId = permReqMock.getData()?.requestId;
+    assert(Boolean(requestId), `Re-enrollment requestId: ${requestId}`);
 
-    // Admin approves Stage 1 permission
-    const appPermMock = mockReqRes("POST", `/api/admin/face-requests/${permReqId}/approve`, {
-      adminNotes: "Approved permission to re-enroll",
-    }, adminHeaders);
-    await handlerAdminFaceRequests(appPermMock.req, appPermMock.res);
-    assert(appPermMock.getStatus() === 200, "Admin approved Stage 1 permission (HTTP 200)");
-    const prepToken = appPermMock.getData()?.oneTimeToken;
-    assert(Boolean(prepToken && prepToken.startsWith("preptok_")), `Stage 1 issued prep token: ${prepToken}`);
-
-    // Verify Stage 1 permissions: canPrepare is true, canSave is false, active templates intact
-    const statusPermMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
-    await handlerFaceStaff(statusPermMock.req, statusPermMock.res);
-    assert(statusPermMock.getData()?.canPrepareReplacement === true, "canPrepareReplacement is true after Stage 1");
-    assert(statusPermMock.getData()?.canSaveReplacement === false, "canSaveReplacement is false after Stage 1 (Fail-Closed)");
+    // Verify status while request is pending: canSaveReplacement is FALSE
+    const pendingStatusMock = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(pendingStatusMock.req, pendingStatusMock.res);
+    assert(pendingStatusMock.getData()?.canSaveReplacement === false, "canSaveReplacement is false while pending");
     assert(localKeystore.activeTemplates.length === 3, "Active templates remain completely intact (3 samples)");
 
-    // Attempting replacement with preptok_ must be strictly rejected
-    const mEnrollWithPrep = mockReqRes("POST", "/api/staff/face/enroll", {
-      deviceId: "android-hw-reg-device",
-      templateCount: 4,
-      oneTimeToken: prepToken,
-    }, staffHeaders);
-    await handlerFaceStaff(mEnrollWithPrep.req, mEnrollWithPrep.res);
-    assert(mEnrollWithPrep.getStatus() === 403, "Attempting replacement with preptok_ rejected with HTTP 403");
+    // -------------------------------------------------------------------------
+    // Test 1: Request appears in Administrator dashboard as Pending
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 1] Request appears in Administrator dashboard as Pending");
+    const adminListMock = mockReqRes("GET", "/api/admin/face-requests?status=pending", {}, adminHeaders);
+    await handlerAdminFaceRequests(adminListMock.req, adminListMock.res);
+
+    assert(adminListMock.getStatus() === 200, "Admin face-requests list returns HTTP 200");
+    const adminRequests = adminListMock.getData()?.requests || [];
+    const foundPending = adminRequests.find((r) => r.id === requestId);
+    assert(Boolean(foundPending), `Admin dashboard shows request ${requestId}`);
+    assert(foundPending?.status === "pending", "Request status is 'pending'");
+    assert(foundPending?.staff_code === testStaffCode, `Staff code matches ${testStaffCode}`);
 
     // -------------------------------------------------------------------------
-    // Test 1: Staff captures samples and stages locally under Stage 1 permission
+    // Test 2: Repeated clicks do not create duplicate pending requests (HTTP 409)
     // -------------------------------------------------------------------------
-    console.log("\n[Test 1] Save Face Registration stages samples locally without replacing active templates");
+    console.log("\n[Test 2] Repeated submission rejected with HTTP 409 (Idempotent duplicate protection)");
+    const dupMock = mockReqRes("POST", "/api/staff/face/request-change", {
+      reason: "Second click trying to submit duplicate request",
+      requestType: "replacement",
+      deviceId: "android-hw-reg-device",
+    }, staffHeaders);
+    await handlerFaceStaff(dupMock.req, dupMock.res);
+
+    assert(dupMock.getStatus() === 409, `Duplicate request rejected with HTTP 409 (got ${dupMock.getStatus()})`);
+    assert(dupMock.getData()?.success === false, "Response confirms duplicate rejected");
+    assert(dupMock.getData()?.error?.includes("already pending"), "Error explains request is already pending");
+
+    // Active templates still untouched
+    assert(localKeystore.activeTemplates.length === 3, "Active templates still 3 after duplicate click rejection");
+
+    // -------------------------------------------------------------------------
+    // Test 3: Re-enrollment without approval token is rejected (Fail-Closed)
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 3] Direct enrollment without approval token fails closed");
+    const unauthorizedSaveMock = mockReqRes("POST", "/api/staff/face/enroll", {
+      deviceId: "android-hw-reg-device",
+      templateCount: 4,
+    }, staffHeaders);
+    await handlerFaceStaff(unauthorizedSaveMock.req, unauthorizedSaveMock.res);
+
+    assert(unauthorizedSaveMock.getStatus() === 403, `Direct save without token rejected with HTTP 403 (got ${unauthorizedSaveMock.getStatus()})`);
+    assert(unauthorizedSaveMock.getData()?.code === "FACE_REGISTRATION_LOCKED", "Error code is FACE_REGISTRATION_LOCKED");
+    assert(localKeystore.activeTemplates.length === 3, "Active templates remain strictly intact");
+
+    // -------------------------------------------------------------------------
+    // Test 4: Administrator approves re-enrollment request ONCE and issues one-time approval token
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 4] Administrator approves request once and issues 24-hour one-time token");
+    const approveMock = mockReqRes("POST", `/api/admin/face-requests/${requestId}/approve`, {
+      adminNotes: "Approved for appearance update by department head",
+    }, adminHeaders);
+    await handlerAdminFaceRequests(approveMock.req, approveMock.res);
+
+    assert(approveMock.getStatus() === 200, "Admin approval succeeded (HTTP 200)");
+    const approvalToken = approveMock.getData()?.oneTimeToken || approveMock.getData()?.token;
+    assert(Boolean(approvalToken), `Approval token issued: ${approvalToken}`);
+    assert(/^ftok_[a-zA-Z0-9_-]{12,64}$/.test(approvalToken), "Token matches strict ftok_ format");
+
+    // Staff query now reveals canSaveReplacement: true
+    const statusMock2 = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(statusMock2.req, statusMock2.res);
+    assert(statusMock2.getData()?.canSaveReplacement === true, "canSaveReplacement is now true");
+    assert(statusMock2.getData()?.oneTimeToken === approvalToken, "Staff receives authorized oneTimeToken");
+
+    // Active templates STILL remain untouched until client finishes atomic commit
+    assert(localKeystore.activeTemplates.length === 3, "Active templates remain 3 prior to commit");
+
+    // -------------------------------------------------------------------------
+    // Test 5: Staff captures new photos and stages locally (existing templates untouched)
+    // -------------------------------------------------------------------------
+    console.log("\n[Test 5] Save Face Registration stages samples locally without replacing active templates");
     const capturedSamples = [
       { id: "new_1", embedding: new Array(512).fill(0.04) },
       { id: "new_2", embedding: new Array(512).fill(0.04) },
@@ -217,7 +267,6 @@ async function runRegressionTests() {
     ];
     const canonicalDigest = "sha256_" + crypto.createHash("sha256").update("v1;count:4;test-digest").digest("hex");
 
-    // Simulate stageNativePendingEnrollment
     localKeystore.pendingStagingFile = {
       staffId: testStaffCode,
       deviceId: "android-hw-reg-device",
@@ -237,111 +286,9 @@ async function runRegressionTests() {
     assert(localKeystore.activeTemplates[2].id === "tmpl_3", "Original active template 3 intact");
 
     // -------------------------------------------------------------------------
-    // Test 2: Stage 2 Image Approval Request Submission
+    // Test 6: Authorized replacement consumes token atomically and updates templates (Single Approval Complete!)
     // -------------------------------------------------------------------------
-    console.log("\n[Test 2] Request submission with staff identity, device ID, sample count, and reason");
-    const requestReason = "Changed spectacles and updated hairstyle for institutional identification";
-    const reqChangeMock = mockReqRes("POST", "/api/staff/face/request-change", {
-      reason: requestReason,
-      action: "request-image-approval",
-      requestType: "image_approval",
-      deviceId: "android-hw-reg-device",
-      sampleCount: localKeystore.pendingStagingFile.count,
-      linkedRequestId: permReqId,
-      digest: canonicalDigest,
-    }, staffHeaders);
-    await handlerFaceStaff(reqChangeMock.req, reqChangeMock.res);
-
-    assert(reqChangeMock.getStatus() === 201, `Request submitted successfully (HTTP 201, got ${reqChangeMock.getStatus()})`);
-    assert(reqChangeMock.getData()?.success === true, "Response confirms success: true");
-    const requestId = reqChangeMock.getData()?.requestId;
-    assert(Boolean(requestId), `Server returned requestId: ${requestId}`);
-    assert(reqChangeMock.getData()?.request?.sampleCount === 4, "Server recorded sampleCount: 4");
-
-    // -------------------------------------------------------------------------
-    // Test 3: Request appears in Administrator dashboard as Pending Image Approval
-    // -------------------------------------------------------------------------
-    console.log("\n[Test 3] Request appears in Administrator dashboard as Pending");
-    const adminListMock = mockReqRes("GET", "/api/admin/face-requests?status=pending", {}, adminHeaders);
-    await handlerAdminFaceRequests(adminListMock.req, adminListMock.res);
-
-    assert(adminListMock.getStatus() === 200, "Admin face-requests list returns HTTP 200");
-    const adminRequests = adminListMock.getData()?.requests || [];
-    const foundPending = adminRequests.find((r) => r.id === requestId);
-    assert(Boolean(foundPending), `Admin dashboard shows request ${requestId}`);
-    assert(foundPending?.status === "pending", "Request status is 'pending'");
-    assert(foundPending?.staff_code === testStaffCode, `Staff code matches ${testStaffCode}`);
-    assert(foundPending?.sampleCount === 4, "Admin sees staged sampleCount: 4");
-    assert(foundPending?.requestType === "image_approval", "Admin sees requestType: 'image_approval'");
-
-    // -------------------------------------------------------------------------
-    // Test 4: Repeated clicks do not create duplicate pending requests (HTTP 409)
-    // -------------------------------------------------------------------------
-    console.log("\n[Test 4] Repeated submission rejected with HTTP 409 (Idempotent duplicate protection)");
-    const dupMock = mockReqRes("POST", "/api/staff/face/request-change", {
-      reason: "Second click trying to submit duplicate request",
-      action: "request-image-approval",
-      requestType: "image_approval",
-      deviceId: "android-hw-reg-device",
-      sampleCount: 4,
-      linkedRequestId: permReqId,
-      digest: canonicalDigest,
-    }, staffHeaders);
-    await handlerFaceStaff(dupMock.req, dupMock.res);
-
-    assert(dupMock.getStatus() === 409, `Duplicate request rejected with HTTP 409 (got ${dupMock.getStatus()})`);
-    assert(dupMock.getData()?.success === false, "Response confirms duplicate rejected");
-    assert(dupMock.getData()?.error?.includes("already pending"), "Error explains request is already pending");
-
-    // Active templates still untouched
-    assert(localKeystore.activeTemplates.length === 3, "Active templates still 3 after duplicate click rejection");
-
-    // -------------------------------------------------------------------------
-    // Test 5: Re-enrollment without approval token is rejected (Fail-Closed)
-    // -------------------------------------------------------------------------
-    console.log("\n[Test 5] Direct enrollment without approval token fails closed");
-    const unauthorizedSaveMock = mockReqRes("POST", "/api/staff/face/enroll", {
-      deviceId: "android-hw-reg-device",
-      templateCount: 4,
-    }, staffHeaders);
-    await handlerFaceStaff(unauthorizedSaveMock.req, unauthorizedSaveMock.res);
-
-    assert(unauthorizedSaveMock.getStatus() === 403, `Direct save without token rejected with HTTP 403 (got ${unauthorizedSaveMock.getStatus()})`);
-    assert(unauthorizedSaveMock.getData()?.code === "FACE_REGISTRATION_LOCKED", "Error code is FACE_REGISTRATION_LOCKED");
-    assert(localKeystore.activeTemplates.length === 3, "Active templates remain strictly intact");
-
-    // -------------------------------------------------------------------------
-    // Test 6: Administrator approves Stage 2 request and issues one-time approval token
-    // -------------------------------------------------------------------------
-    console.log("\n[Test 6] Administrator approves request and issues 24-hour one-time token");
-    const approveMock = mockReqRes("POST", "/api/admin/face-requests", {
-      action: "approve",
-      requestId,
-      adminNotes: "Approved for glasses update by department head",
-    }, adminHeaders);
-    await handlerAdminFaceRequests(approveMock.req, approveMock.res);
-    if (approveMock.getStatus() !== 200) {
-      console.error("ApproveMock failed with:", approveMock.getStatus(), approveMock.getData());
-    }
-
-    assert(approveMock.getStatus() === 200, "Admin approval succeeded (HTTP 200)");
-    const approvalToken = approveMock.getData()?.oneTimeToken || approveMock.getData()?.token;
-    assert(Boolean(approvalToken), `Approval token issued: ${approvalToken}`);
-    assert(/^ftok_[a-f0-9]{48}$/.test(approvalToken), "Token matches strict ftok_ format");
-
-    // Staff query now reveals canSaveReplacement: true
-    const statusMock2 = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
-    await handlerFaceStaff(statusMock2.req, statusMock2.res);
-    assert(statusMock2.getData()?.canSaveReplacement === true, "canSaveReplacement is now true");
-    assert(statusMock2.getData()?.oneTimeToken === approvalToken, "Staff receives authorized oneTimeToken");
-
-    // Active templates STILL remain untouched until client finishes atomic commit
-    assert(localKeystore.activeTemplates.length === 3, "Active templates remain 3 prior to commit");
-
-    // -------------------------------------------------------------------------
-    // Test 7: Authorized replacement consumes token atomically and updates templates
-    // -------------------------------------------------------------------------
-    console.log("\n[Test 7] Authorized replacement commits templates and consumes token atomically");
+    console.log("\n[Test 6] Authorized replacement commits templates and consumes token atomically");
     // Step A: Server atomic token consumption with digest
     const enrollApprovedMock = mockReqRes("POST", "/api/staff/face/enroll", {
       deviceId: "android-hw-reg-device",

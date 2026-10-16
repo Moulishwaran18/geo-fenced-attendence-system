@@ -384,7 +384,7 @@ export default async function handler(req: any, res?: any) {
           ? "initial"
           : "replacement";
 
-        const stage = requestType === "image_approval" ? 2 : 1;
+        const stage = 1;
         const rawDigest = digestMatch ? digestMatch[1] : "";
         const maskedDigest = rawDigest
           ? rawDigest.length > 20
@@ -524,35 +524,21 @@ export default async function handler(req: any, res?: any) {
       const expiresAtDate = new Date(approvedAtDate.getTime() + 24 * 60 * 60 * 1000);
       const expiresAtIso = expiresAtDate.toISOString();
 
-      let oneTimeToken: string;
-      let devicePayload: string;
-      let adminNoteText: string;
-      let auditEvent: string;
+      // SINGLE-APPROVAL WORKFLOW: Administrator approves once.
+      // Issues an authoritative 24-hour single-use ftok_ token authorizing the staff member
+      // to capture and save replacement face images on their registered device.
+      const oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
+      const boundDigest = digestMatch ? digestMatch[1] : "";
+      const boundDigestPart = boundDigest ? `|digest:${boundDigest}` : "";
+      const reqType = typeMatch
+        ? typeMatch[1]
+        : targetReq.event?.includes("FACE_ENROLLMENT_REQUEST")
+        ? "initial"
+        : "replacement";
 
-      if (isPermissionRequest) {
-        // STAGE 1 APPROVAL: Grants permission to prepare replacement images only.
-        // NEVER replaces or activates templates.
-        oneTimeToken = `preptok_${crypto.randomBytes(24).toString("hex")}`;
-        devicePayload = `token:${oneTimeToken}|status:prep_approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:1|type:permission_request`;
-        adminNoteText = `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Permission granted by ${adminIdentity})`.slice(0, 240);
-        auditEvent = `FACE_PERMISSION_GRANTED: Permission to prepare replacement images granted for ${targetReq.staff} by ${adminIdentity}`;
-      } else if (isImageApproval) {
-        // STAGE 2 APPROVAL: Authorizes replacing active templates with the exact staged template digest.
-        oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
-        const boundDigest = digestMatch ? digestMatch[1] : "";
-        const boundLinked = linkedMatch ? linkedMatch[1] : "";
-        // Keep within 250 chars: token (53) + status (16) + expires_at (35) + device_id (32 max) + count (8) + type (20) + digest (79) = 243 chars max
-        devicePayload = `token:${oneTimeToken}|status:approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:image_approval|digest:${boundDigest}`;
-        adminNoteText = `AdminNote: ${boundLinked ? "linked:" + boundLinked + " " : ""}${adminNotes ? adminNotes + " " : ""}(Approved by ${adminIdentity})`.slice(0, 240);
-        auditEvent = `FACE_IMAGE_APPROVAL_GRANTED: Approved replacement images for ${targetReq.staff} by ${adminIdentity} with digest ${boundDigest}`;
-      } else {
-        // Legacy replacement / initial registration fallback
-        oneTimeToken = `ftok_${crypto.randomBytes(24).toString("hex")}`;
-        const reqType = typeMatch ? typeMatch[1] : (targetReq.event?.includes("FACE_ENROLLMENT_REQUEST") ? "initial" : "replacement");
-        devicePayload = `token:${oneTimeToken}|status:approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}`;
-        adminNoteText = `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Approved by ${adminIdentity})`.slice(0, 240);
-        auditEvent = `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff} by ${adminIdentity}`;
-      }
+      const devicePayload = `token:${oneTimeToken}|status:approved|expires_at:${expiresAtIso}|device_id:${targetDev}|count:${sampleCnt}|type:${reqType}${boundDigestPart}`;
+      const adminNoteText = `AdminNote: ${adminNotes ? adminNotes + " " : ""}(Approved by ${adminIdentity})`.slice(0, 240);
+      const auditEvent = `FACE_APPROVAL_GRANTED: Approved 24-hour one-time token issued for ${targetReq.staff} by ${adminIdentity}`;
 
       const { error: updErr } = await supabase
         .from("security_events")
@@ -585,13 +571,11 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 200, {
         success: true,
-        message: isPermissionRequest
-          ? `Permission to prepare replacement face images granted for ${targetReq.staff}. Staff may now capture reference photos.`
-          : `Replacement face images for ${targetReq.staff} approved successfully. Single-use commit authorization issued.`,
+        message: `Face re-enrollment request for ${targetReq.staff} approved successfully. Staff may now capture and save replacement face images.`,
         requestId,
         staff_code: targetReq.staff,
         oneTimeToken,
-        stage: isPermissionRequest ? 1 : 2,
+        stage: 1,
         approvedAt: approvedAtIso,
         expiresAt: expiresAtIso,
       });

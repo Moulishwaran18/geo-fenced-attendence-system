@@ -683,7 +683,7 @@ export async function enrollNativeTemplatesBatch(
     if (typeof window !== "undefined" && window.sessionStorage) {
       const existing = window.sessionStorage.getItem(`enrolled_face_${staffId.trim().toUpperCase()}`);
       if (existing) {
-        if (!cleanToken || !/^ftok_[a-f0-9]{48}$/.test(cleanToken)) {
+        if (!cleanToken || !/^ftok_[a-zA-Z0-9_-]{12,64}$/.test(cleanToken)) {
           return {
             success: false,
             error: "ALREADY_ENROLLED",

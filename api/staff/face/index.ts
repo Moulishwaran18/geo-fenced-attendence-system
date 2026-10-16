@@ -566,13 +566,12 @@ export default async function handler(req: any, res?: any) {
       let canEdit = false;
       let oneTimeToken: string | null = null;
 
-      const isStage2Approved = Boolean(
+      // SINGLE-APPROVAL AUTHORIZATION:
+      // When an approval exists with a valid, unconsumed one-time token, the staff member is authorized to replace images.
+      const isReplacementAuthorized = Boolean(
         approvedRequest &&
         approvedRequest.oneTimeToken &&
-        (approvedRequest.requestType === "image_approval" ||
-         approvedRequest.requestType === "replacement" ||
-         approvedRequest.requestType === "initial") &&
-        approvedRequest.requestType !== "permission_request"
+        !expiredRequest
       );
 
       if (isEnrolled) {
@@ -585,7 +584,7 @@ export default async function handler(req: any, res?: any) {
           ? "rejected"
           : "approved";
 
-        if (isStage2Approved && approvedRequest?.oneTimeToken) {
+        if (isReplacementAuthorized && approvedRequest?.oneTimeToken) {
           status = "approved";
           canEdit = true;
           oneTimeToken = approvedRequest.oneTimeToken;
@@ -629,7 +628,6 @@ export default async function handler(req: any, res?: any) {
       const sanitizedSamples: any[] = [];
 
       const isCompletedRequest = latestRequest?.status === "completed";
-      const effectiveStage1Permission = Boolean(hasStage1Permission && !hasPendingImageApproval && !isStage2Approved && !isCompletedRequest);
 
       return sendJsonResponse(res, 200, {
         success: true,
@@ -643,15 +641,15 @@ export default async function handler(req: any, res?: any) {
         enrollmentStatus,
         isLocked,
         canEdit,
-        canSaveReplacement: Boolean(canEdit && oneTimeToken && isStage2Approved),
-        canPrepareReplacement: effectiveStage1Permission,
-        hasStage1Permission: effectiveStage1Permission,
+        canSaveReplacement: Boolean(canEdit && oneTimeToken),
+        canPrepareReplacement: Boolean(canEdit && oneTimeToken),
+        hasStage1Permission: false,
         hasPendingPermissionRequest: Boolean(hasPendingPermissionRequest),
-        hasPendingImageApproval: Boolean(hasPendingImageApproval),
-        prepToken: effectiveStage1Permission ? (prepToken || null) : null,
-        permissionRequestId: effectiveStage1Permission ? (permissionRequestId || null) : null,
+        hasPendingImageApproval: false,
+        prepToken: null,
+        permissionRequestId: null,
         approvedDigest: approvedDigest || (approvedRequest?.approvedDigest ?? null),
-        stage: isCompletedRequest ? 2 : (hasPendingImageApproval ? 2 : (isStage2Approved ? 2 : (effectiveStage1Permission ? 2 : 1))),
+        stage: 1,
         embeddingCount,
         sampleCount: embeddingCount,
         samples: sanitizedSamples,
@@ -665,7 +663,7 @@ export default async function handler(req: any, res?: any) {
               requestType: approvedRequest.requestType,
               expires_at: approvedRequest.expires_at,
               remaining_seconds: approvedRequest.remaining_seconds,
-              oneTimeToken: isStage2Approved ? approvedRequest.oneTimeToken : null,
+              oneTimeToken: approvedRequest.oneTimeToken,
               approvedDigest: approvedRequest.approvedDigest || null,
             }
           : null,
@@ -673,7 +671,7 @@ export default async function handler(req: any, res?: any) {
         latestRequest,
         latestRequestStatus: latestRequest?.status || (isEnrolled ? "none" : "not_registered"),
         isExpired: Boolean(expiredRequest && !approvedRequest && !pendingRequest),
-        oneTimeToken: isStage2Approved ? oneTimeToken : null,
+        oneTimeToken: oneTimeToken || null,
       });
     }
 
@@ -692,7 +690,11 @@ export default async function handler(req: any, res?: any) {
         body?.embedding !== undefined ||
         body?.descriptor !== undefined ||
         body?.photoData !== undefined ||
-        body?.photo_data !== undefined
+        body?.photo_data !== undefined ||
+        body?.rawEmbeddingVectors !== undefined ||
+        body?.embeddings !== undefined ||
+        body?.vectors !== undefined ||
+        body?.photos !== undefined
       ) {
         return sendJsonResponse(res, 400, {
           success: false,
@@ -751,6 +753,7 @@ export default async function handler(req: any, res?: any) {
 
       let approvedRow: any = null;
       let boundDigest = "";
+      const candidateDigest = (body?.digest || req.headers?.["x-digest"] || "").toString().trim();
 
       // Validate candidate token (mandatory for replacement, or for approved initial enrollment)
       if (candidateToken) {
@@ -834,7 +837,6 @@ export default async function handler(req: any, res?: any) {
         // Verify cryptographic template digest binding (Stage 2)
         const digestMatch = (approvedRow.device || "").match(/digest:([^|]+)/);
         boundDigest = digestMatch && digestMatch[1] ? digestMatch[1].trim() : "";
-        const candidateDigest = (body?.digest || req.headers?.["x-digest"] || "").toString().trim();
         if (boundDigest && candidateDigest && boundDigest !== candidateDigest) {
           return sendJsonResponse(res, 403, {
             success: false,
@@ -947,9 +949,13 @@ export default async function handler(req: any, res?: any) {
         if (!cleanDevice.includes("status:consumed")) {
           cleanDevice += "|status:consumed";
         }
+        const effectiveDigest = boundDigest || candidateDigest;
         cleanDevice += `|consumed_at:${nowIso}`;
+        if (effectiveDigest && !cleanDevice.includes("digest:")) {
+          cleanDevice += `|digest:${effectiveDigest}`;
+        }
         if (cleanDevice.length > 250) {
-          const boundDigestPart = boundDigest ? `|digest:${boundDigest}` : "";
+          const boundDigestPart = effectiveDigest ? `|digest:${effectiveDigest}` : "";
           cleanDevice = `token:${candidateToken}|status:consumed|device_id:${(deviceId || "device").slice(0, 32)}|consumed_at:${nowIso}|count:${templateCount}${boundDigestPart}`;
         }
 
@@ -988,7 +994,7 @@ export default async function handler(req: any, res?: any) {
           time: nowIso,
           staff: staffCode,
           event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
-          device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}${boundDigest ? `|digest:${boundDigest}` : ""}`,
+          device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}${effectiveDigest ? `|digest:${effectiveDigest}` : ""}`,
           location: "CampusAttend Biometric System",
           result: "Allowed",
           severity: "Low",
@@ -1112,17 +1118,11 @@ export default async function handler(req: any, res?: any) {
         }
       }
 
-      const isImageApproval =
-        body?.action === "request-image-approval" ||
-        body?.requestType === "image_approval" ||
-        Boolean(body?.digest);
-
+      const isInitial = !hasEnrollment;
       const rawReason = (body?.reason || "").toString().trim();
-      const defaultReason = isImageApproval
-        ? "Replacement face images submitted for administrator approval"
-        : hasEnrollment
-        ? "Face biometric re-enrollment permission request"
-        : "Initial face biometric registration";
+      const defaultReason = isInitial
+        ? "Initial face biometric registration"
+        : "Face biometric re-enrollment request";
       const reasonCandidate = rawReason || defaultReason;
 
       if (reasonCandidate.length < 5 || reasonCandidate.length > 250) {
@@ -1143,13 +1143,6 @@ export default async function handler(req: any, res?: any) {
       const digest = (body?.digest || req.headers?.["x-digest"] || "").toString().trim();
       const linkedRequestId = (body?.linkedRequestId || body?.permissionRequestId || "").toString().trim();
 
-      if (isImageApproval && !digest) {
-        return sendJsonResponse(res, 400, {
-          success: false,
-          error: "Cryptographic digest of staged face templates is required for replacement image approval.",
-        });
-      }
-
       // Check if a pending request already exists for this staff member
       const { data: existingPending } = await supabase
         .from("security_events")
@@ -1168,23 +1161,11 @@ export default async function handler(req: any, res?: any) {
       }
 
       const nowIso = new Date().toISOString();
-      let reqType: string;
-      let eventPrefix: string;
-      let devicePayload: string;
-
-      if (isImageApproval) {
-        reqType = "image_approval";
-        eventPrefix = "FACE_IMAGE_APPROVAL_REQUEST";
-        devicePayload = `status:pending|device_id:${deviceId}|count:${sampleCount}|type:image_approval|linked_req:${linkedRequestId}|digest:${digest}`;
-      } else if (hasEnrollment) {
-        reqType = "permission_request";
-        eventPrefix = "FACE_PERMISSION_REQUEST";
-        devicePayload = `status:pending|device_id:${deviceId}|count:1|type:permission_request`;
-      } else {
-        reqType = "initial";
-        eventPrefix = "FACE_ENROLLMENT_REQUEST";
-        devicePayload = `status:pending|device_id:${deviceId}|count:${sampleCount}|type:initial`;
-      }
+      const reqType = isInitial ? "initial" : "replacement";
+      const eventPrefix = isInitial ? "FACE_ENROLLMENT_REQUEST" : "FACE_CHANGE_REQUEST";
+      const digestPart = digest ? `|digest:${digest}` : "";
+      const linkedPart = linkedRequestId ? `|linked_req:${linkedRequestId}` : "";
+      const devicePayload = `status:pending|device_id:${deviceId}|count:${sampleCount}|type:${reqType}${linkedPart}${digestPart}`;
 
       const { data: createdReq, error: reqInsErr } = await supabase
         .from("security_events")
@@ -1210,18 +1191,16 @@ export default async function handler(req: any, res?: any) {
 
       return sendJsonResponse(res, 201, {
         success: true,
-        message: isImageApproval
-          ? "Replacement face images submitted successfully. Awaiting administrator approval."
-          : hasEnrollment
-          ? "Face re-enrollment permission request submitted successfully. Awaiting administrator approval."
-          : "Face enrollment request submitted successfully. Awaiting administrator approval.",
+        message: isInitial
+          ? "Face enrollment request submitted successfully. Awaiting administrator approval."
+          : "Face re-enrollment request submitted successfully. Awaiting administrator approval.",
         requestId: createdReq.id,
         request: {
           id: createdReq.id,
           status: "pending",
           reason: reasonCandidate,
           deviceId,
-          sampleCount: isImageApproval ? sampleCount : 1,
+          sampleCount,
           requestType: reqType,
           linkedRequestId: linkedRequestId || undefined,
           digest: digest || undefined,

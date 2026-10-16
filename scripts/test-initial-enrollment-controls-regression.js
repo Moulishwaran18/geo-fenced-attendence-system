@@ -265,72 +265,62 @@ async function runControlsRegressionTests() {
     assert(canPrepareReplacementBefore === false, "canPrepareReplacement is FALSE before Stage 1 approval");
 
     // -------------------------------------------------------------------------
-    // REQUIREMENT 5: Existing Staff - Camera/upload available after Stage 1 approval
+    // REQUIREMENT 5: Existing Staff - Single administrator approval unlocks controls & saving
     // -------------------------------------------------------------------------
-    console.log("\n[Requirement 5] Existing Staff: Stage 1 permission approval unlocks controls");
-    // Submit Stage 1 Permission Request
-    const stage1Req = mockReqRes("POST", "/api/staff/face/request-change", {
+    console.log("\n[Requirement 5] Existing Staff: Single administrator approval authorizes replacement");
+    // Submit Face Re-enrollment Request
+    const changeReq = mockReqRes("POST", "/api/staff/face/request-change", {
       reason: "Appearance changed significantly after surgery",
       deviceId,
-      requestType: "permission_request",
+      requestType: "replacement",
     }, staffHeaders);
-    await handlerFaceStaff(stage1Req.req, stage1Req.res);
-    assert(stage1Req.getStatus() === 201, "Stage 1 Permission Request created (HTTP 201)");
-    const permReqId = stage1Req.getData()?.requestId;
-    assert(Boolean(permReqId), `Server issued permission request ID: ${permReqId}`);
+    await handlerFaceStaff(changeReq.req, changeReq.res);
+    assert(changeReq.getStatus() === 201, "Face Re-enrollment Request created (HTTP 201)");
+    const changeReqId = changeReq.getData()?.requestId;
+    assert(Boolean(changeReqId), `Server issued re-enrollment request ID: ${changeReqId}`);
 
-    // Admin approves Stage 1 permission request
-    const adminApproveStage1 = mockReqRes("POST", "/api/admin/face-requests", {
+    // Admin approves re-enrollment request ONCE
+    const adminApprove = mockReqRes("POST", "/api/admin/face-requests", {
       action: "approve",
-      requestId: permReqId,
+      requestId: changeReqId,
       adminNotes: "Approved appearance change justification",
     }, adminHeaders);
-    await handlerAdminFaceRequests(adminApproveStage1.req, adminApproveStage1.res);
-    assert(adminApproveStage1.getStatus() === 200, "Admin approved Stage 1 permission request (HTTP 200)");
+    await handlerAdminFaceRequests(adminApprove.req, adminApprove.res);
+    assert(adminApprove.getStatus() === 200, "Admin approved re-enrollment request once (HTTP 200)");
 
-    // Query staff status: canPrepareReplacement must now be true!
-    const stage1StatusReq = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
-    await handlerFaceStaff(stage1StatusReq.req, stage1StatusReq.res);
-    const stage1Status = stage1StatusReq.getData();
-    assert(stage1Status.canPrepareReplacement === true, "canPrepareReplacement is now TRUE after Stage 1 approval");
-    assert(stage1Status.canSaveReplacement === false, "canSaveReplacement is STILL FALSE (First approval never activates)");
-    assert(Boolean(stage1Status.prepToken?.startsWith("preptok_")), `Server issued prepToken: ${stage1Status.prepToken?.slice(0, 16)}…`);
+    // Query staff status: canSaveReplacement must now be true with single-use ftok_ token!
+    const approvedStatusReq = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
+    await handlerFaceStaff(approvedStatusReq.req, approvedStatusReq.res);
+    const approvedStatus = approvedStatusReq.getData();
+    assert(approvedStatus.canSaveReplacement === true, "canSaveReplacement is TRUE after single administrator approval");
+    assert(Boolean(approvedStatus.oneTimeToken?.startsWith("ftok_")), `Server issued single-use ftok_ token: ${approvedStatus.oneTimeToken?.slice(0, 16)}…`);
+    assert(approvedStatus.canEdit === true, "canEdit is TRUE to allow photo capture and replacement");
 
-    // In UI, staff opens preparation mode (`isReplacementMode = true`).
-    // In preparation mode: camera and upload buttons are available!
+    // Camera and upload controls are fully available when approved
     const isReplacementMode = true;
-    const controlsAvailable = stage1Status.canPrepareReplacement && isReplacementMode;
-    assert(controlsAvailable === true, "Camera and upload controls are fully available in preparation mode after Stage 1 approval");
+    const controlsAvailable = approvedStatus.canSaveReplacement && isReplacementMode;
+    assert(controlsAvailable === true, "Camera and upload controls are fully available after administrator approval");
 
     // -------------------------------------------------------------------------
-    // REQUIREMENT 6: Stage 2 Approval - Old templates unchanged while pending
+    // REQUIREMENT 6: Single-Approval Save: No Stage 2 required, old templates intact until saved
     // -------------------------------------------------------------------------
-    console.log("\n[Requirement 6] Stage 2: Old templates remain active while pending");
-    const testDigest = "sha256_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    // Submit Stage 2 image approval request
-    const stage2Req = mockReqRes("POST", "/api/staff/face/request-change", {
-      action: "request-image-approval",
-      requestType: "image_approval",
-      reason: "Replacement images captured and verified",
+    console.log("\n[Requirement 6] Single-Approval Save: No Stage 2 token or second approval required");
+    assert(approvedStatus.hasStage1Permission === false, "No Stage 1 permission state requirement");
+    assert(approvedStatus.hasPendingImageApproval === false, "No Stage 2 image approval requirement");
+    assert(approvedStatus.embeddingCount === 4, "Original active templates intact before commit (count: 4)");
+
+    // Staff saves replacement directly with ftok_ token (Single approval completed!)
+    const replacementSaveReq = mockReqRes("POST", "/api/staff/face/enroll", {
       deviceId,
-      sampleCount: 4,
-      linkedRequestId: permReqId,
-      digest: testDigest,
-    }, {
-      ...staffHeaders,
-      "x-digest": testDigest,
-    });
-    await handlerFaceStaff(stage2Req.req, stage2Req.res);
-    assert(stage2Req.getStatus() === 201, "Stage 2 Image Approval Request submitted (HTTP 201)");
-    const stage2ReqId = stage2Req.getData()?.requestId;
-
-    // Check staff status while Stage 2 is pending
-    const stage2PendingStatusReq = mockReqRes("GET", "/api/staff/face/status", {}, staffHeaders);
-    await handlerFaceStaff(stage2PendingStatusReq.req, stage2PendingStatusReq.res);
-    const stage2PendingStatus = stage2PendingStatusReq.getData();
-    assert(stage2PendingStatus.hasPendingImageApproval === true, "hasPendingImageApproval is true");
-    assert(stage2PendingStatus.canSaveReplacement === false, "canSaveReplacement is false while pending");
-    assert(stage2PendingStatus.embeddingCount === 4, "Original active templates intact (count: 4)");
+      templateCount: 5,
+      oneTimeToken: approvedStatus.oneTimeToken,
+      requestId: changeReqId,
+      digest: "sha256_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, staffHeaders);
+    await handlerFaceStaff(replacementSaveReq.req, replacementSaveReq.res);
+    assert(replacementSaveReq.getStatus() === 200, "Approved staff member saves replacement directly with single approval (HTTP 200)");
+    assert(replacementSaveReq.getData()?.isLocked === true, "Replacement profile locked upon saving");
+    assert(replacementSaveReq.getData()?.enrolledCount === 5, "Updated template count committed (count: 5)");
 
     // -------------------------------------------------------------------------
     // REQUIREMENT 7: Error Resilience (JS errors, camera denied, models missing)
