@@ -68,7 +68,7 @@ export function getActionInstruction(action: LivenessAction): string {
     case "TURN_RIGHT":
       return "Face matched. Please turn your head slightly to the right.";
     case "NOD_ONCE":
-      return "Face matched. Please perform one small head nod.";
+      return "Face matched. Please nod once.";
   }
 }
 

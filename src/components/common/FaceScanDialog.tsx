@@ -1665,7 +1665,8 @@ export function FaceScanDialog({
       }}
     >
       <DialogContent
-        className="w-[calc(100vw-1rem)] sm:w-full max-w-xl max-h-[94vh] overflow-y-auto overflow-x-hidden p-3 sm:p-5"
+        hideCloseButton={true}
+        className="w-[calc(100vw-16px)] sm:w-full max-w-xl max-h-[92vh] max-h-[calc(100dvh-20px)] overflow-y-auto overflow-x-hidden p-3 sm:p-5 box-border min-w-0"
         onPointerDownOutside={(e) => {
           // Prevent backdrop clicks from closing during attendance verification
           e.preventDefault();
@@ -1680,14 +1681,14 @@ export function FaceScanDialog({
           }
         }}
       >
-        <DialogHeader className="pb-2 border-b border-border overflow-hidden">
-          <div className="flex items-center justify-between gap-2 overflow-hidden">
-            <div className="min-w-0">
-              <DialogTitle className="flex items-center gap-2 text-sm sm:text-base truncate">
+        <DialogHeader className="pb-2 border-b border-border overflow-hidden min-w-0">
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="flex items-center gap-1.5 sm:gap-2 text-sm sm:text-base font-bold text-foreground min-w-0">
                 <ScanFace className="size-4 sm:size-5 text-primary shrink-0" />
                 <span className="truncate">Liveness &amp; Face Recognition</span>
               </DialogTitle>
-              <DialogDescription className="text-[11px] sm:text-xs truncate">
+              <DialogDescription className="text-[10px] sm:text-xs text-muted-foreground truncate">
                 Temporal Liveness · MiniFASNet-V2 Anti-Spoof · ArcFace Biometrics
               </DialogDescription>
             </div>
@@ -1695,32 +1696,33 @@ export function FaceScanDialog({
               variant="ghost"
               size="sm"
               onClick={() => handleExplicitClose("User clicked Cancel")}
-              className="h-8 px-2 text-muted-foreground hover:text-foreground shrink-0"
+              className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1"
             >
-              <X className="size-4 mr-1" /> Cancel
+              <X className="size-4" />
+              <span>Cancel</span>
             </Button>
           </div>
         </DialogHeader>
 
         {/* Video Camera Container */}
-        <div className="relative aspect-[4/3] sm:aspect-video w-full overflow-hidden rounded-xl bg-black border border-border shadow-inner">
+        <div className="relative aspect-[4/3] sm:aspect-video w-full max-w-full overflow-hidden rounded-xl bg-black border border-border shadow-inner min-w-0">
           <video
             ref={videoRef}
             playsInline
             muted
-            className="size-full object-cover -scale-x-100"
+            className="size-full object-cover -scale-x-100 block"
           />
           <canvas
             ref={canvasRef}
-            className="pointer-events-none absolute inset-0 size-full object-cover -scale-x-100"
+            className="pointer-events-none absolute inset-0 size-full object-cover -scale-x-100 block"
           />
 
           {/* Model Loading State */}
           {phase === "loading-models" && (
-            <div className="absolute inset-0 grid place-items-center bg-muted/90 p-6">
-              <div className="w-full max-w-[200px] space-y-3 text-center">
-                <Loader2 className="mx-auto size-8 animate-spin text-primary" />
-                <p className="text-sm font-medium">Loading ArcFace &amp; Anti-Spoof AI Models</p>
+            <div className="absolute inset-0 grid place-items-center bg-muted/90 p-4 min-w-0">
+              <div className="w-full max-w-[200px] space-y-2.5 text-center min-w-0">
+                <Loader2 className="mx-auto size-7 sm:size-8 animate-spin text-primary" />
+                <p className="text-xs sm:text-sm font-medium">Loading ArcFace &amp; Anti-Spoof AI Models</p>
                 <Progress value={modelProgress} className="h-1.5" />
                 <p className="text-xs text-muted-foreground">{modelProgress}%</p>
               </div>
@@ -1729,35 +1731,35 @@ export function FaceScanDialog({
 
           {/* Camera Starting State */}
           {phase === "starting" && (
-            <div className="absolute inset-0 grid place-items-center bg-muted/80 text-sm text-muted-foreground">
+            <div className="absolute inset-0 grid place-items-center bg-muted/80 text-xs sm:text-sm text-muted-foreground p-3 text-center min-w-0">
               <span className="flex items-center gap-2">
-                <Loader2 className="size-4 animate-spin" aria-hidden /> Starting camera feed…
+                <Loader2 className="size-4 animate-spin shrink-0" aria-hidden /> Starting camera feed…
               </span>
             </div>
           )}
 
           {/* Recognizing State */}
           {phase === "recognizing" && (
-            <div className="absolute inset-0 grid place-items-center bg-black/60 backdrop-blur-[2px] text-white">
-              <div className="text-center space-y-2">
-                <Loader2 className="size-8 animate-spin mx-auto text-primary" />
-                <p className="text-xs font-semibold">112×112 ArcFace Inference &amp; Biometric Verification…</p>
+            <div className="absolute inset-0 grid place-items-center bg-black/60 backdrop-blur-[2px] text-white p-3 text-center min-w-0">
+              <div className="text-center space-y-2 min-w-0">
+                <Loader2 className="size-7 sm:size-8 animate-spin mx-auto text-primary" />
+                <p className="text-xs sm:text-sm font-semibold">112×112 ArcFace Inference &amp; Biometric Verification…</p>
               </div>
             </div>
           )}
 
           {/* Active Liveness Challenge HUD */}
           {phase === "liveness-challenge" && livenessState && (
-            <div className="absolute top-2 inset-x-2 flex flex-col items-center gap-1.5 pointer-events-none z-10">
-              <div className="w-full max-w-sm bg-black/85 backdrop-blur-md border border-primary/50 rounded-lg p-2.5 shadow-lg text-white space-y-2 pointer-events-auto">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-primary flex items-center gap-1.5">
-                    <Sparkles className="size-3.5 text-primary animate-pulse" />
-                    Liveness Verification Challenge
+            <div className="absolute top-1.5 inset-x-1.5 sm:top-2 sm:inset-x-2 flex flex-col items-center gap-1.5 pointer-events-none z-10 min-w-0">
+              <div className="w-full max-w-[calc(100%-8px)] sm:max-w-sm bg-black/90 backdrop-blur-md border border-primary/50 rounded-lg p-2 sm:p-2.5 shadow-lg text-white space-y-1.5 sm:space-y-2 pointer-events-auto min-w-0 box-border">
+                <div className="flex items-center justify-between text-[11px] sm:text-xs min-w-0 gap-1.5">
+                  <span className="font-semibold text-primary flex items-center gap-1.5 truncate">
+                    <Sparkles className="size-3.5 text-primary animate-pulse shrink-0" />
+                    <span className="truncate">Liveness Verification Challenge</span>
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[10px] bg-emerald-500/10 font-bold flex items-center gap-1">
-                      <Timer className="size-3 text-emerald-300" />
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[9px] sm:text-[10px] bg-emerald-500/10 font-bold flex items-center gap-1 px-1.5 py-0">
+                      <Timer className="size-3 text-emerald-300 shrink-0" />
                       {livenessState.timeRemainingSec ?? 10}s
                     </Badge>
                   </div>
@@ -1774,31 +1776,35 @@ export function FaceScanDialog({
                   className="h-1.5 bg-white/20"
                 />
 
-                <div className="text-center pt-0.5 space-y-1">
-                  <div className="text-sm font-bold text-emerald-400 flex items-center justify-center gap-2">
-                    {livenessState.category === "blink-once" && (
-                      <Eye className="size-5 animate-pulse text-emerald-400" />
-                    )}
-                    {livenessState.poseState?.targetDirection === "left" && (
-                      <ArrowLeft className="size-5 animate-pulse text-emerald-400" />
-                    )}
-                    {livenessState.poseState?.targetDirection === "right" && (
-                      <ArrowRight className="size-5 animate-pulse text-emerald-400" />
-                    )}
-                    {livenessState.poseState?.targetDirection === "up" && (
-                      <ArrowUp className="size-5 animate-pulse text-emerald-400" />
-                    )}
-                    {livenessState.poseState?.targetDirection === "down" && (
-                      <ArrowDown className="size-5 animate-pulse text-emerald-400" />
-                    )}
-                    {livenessState.poseState?.targetDirection === "center" && livenessState.category !== "blink-once" && (
-                      <Crosshair className="size-5 animate-spin text-emerald-400" />
-                    )}
-                    <span>{livenessState.instruction}</span>
+                <div className="text-center pt-0.5 space-y-1 min-w-0">
+                  <div className="text-xs sm:text-sm font-bold text-emerald-400 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 leading-tight px-1 min-w-0">
+                    <div className="flex items-center justify-center shrink-0">
+                      {livenessState.category === "blink-once" && (
+                        <Eye className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                      )}
+                      {livenessState.poseState?.targetDirection === "left" && (
+                        <ArrowLeft className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                      )}
+                      {livenessState.poseState?.targetDirection === "right" && (
+                        <ArrowRight className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                      )}
+                      {livenessState.poseState?.targetDirection === "up" && (
+                        <ArrowUp className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                      )}
+                      {livenessState.poseState?.targetDirection === "down" && (
+                        <ArrowDown className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                      )}
+                      {livenessState.poseState?.targetDirection === "center" && livenessState.category !== "blink-once" && (
+                        <Crosshair className="size-4 sm:size-5 animate-spin text-emerald-400" />
+                      )}
+                    </div>
+                    <span className="min-w-0 break-words whitespace-normal text-center font-bold text-emerald-300 leading-snug">
+                      {livenessState.instruction}
+                    </span>
                   </div>
 
                   {livenessState.poseState && (
-                    <div className="flex items-center justify-center gap-2.5 text-[10px] text-muted-foreground font-mono">
+                    <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[9px] sm:text-[10px] text-zinc-300 font-mono">
                       <span>
                         ΔYaw: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.yaw ?? 0) >= 14 ? "text-emerald-300" : "text-white")}>
                           {(livenessState.poseState?.deltaAngles.yaw ?? 0) > 0 ? "+" : ""}
@@ -1827,11 +1833,12 @@ export function FaceScanDialog({
 
           {/* Spoof Detected Banner */}
           {phase === "spoof-detected" && (
-            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2.5 text-center backdrop-blur-sm space-y-1 z-10">
-              <p className="flex items-center justify-center gap-1.5 text-xs font-bold text-white">
-                <ShieldAlert className="size-4 text-amber-200" /> {errorMessage || "Presentation attack or spoofing detected. Verification rejected."}
+            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-2.5 sm:px-3 py-2 text-center backdrop-blur-sm space-y-0.5 z-10 min-w-0">
+              <p className="flex items-center justify-center gap-1.5 text-xs font-bold text-white break-words">
+                <ShieldAlert className="size-4 text-amber-200 shrink-0" />
+                <span className="min-w-0 break-words">{errorMessage || "Presentation attack or spoofing detected. Verification rejected."}</span>
               </p>
-              <p className="text-[11px] text-white/80">
+              <p className="text-[10px] sm:text-[11px] text-white/80 break-words">
                 Static photographs, screen replays, and unverified movements are prohibited.
               </p>
             </div>
@@ -1839,35 +1846,37 @@ export function FaceScanDialog({
 
           {/* Camera Error */}
           {phase === "error" && (
-            <div className="absolute inset-0 grid place-items-center gap-2 p-6 text-center bg-muted/95">
-              <div>
+            <div className="absolute inset-0 grid place-items-center gap-2 p-4 text-center bg-muted/95 min-w-0">
+              <div className="min-w-0 max-w-xs">
                 <CameraOff className="mx-auto size-8 text-destructive" aria-hidden />
-                <p className="mt-2 text-sm text-destructive font-medium">{errorMessage}</p>
+                <p className="mt-2 text-xs sm:text-sm text-destructive font-medium break-words">{errorMessage}</p>
               </div>
             </div>
           )}
 
           {/* Matched State Banner */}
           {phase === "matched" && matchName && (
-            <div className="absolute inset-x-0 bottom-0 bg-success/95 text-white px-3 py-2 text-center backdrop-blur-sm">
-              <p className="flex items-center justify-center gap-1.5 text-xs font-bold">
-                <ShieldCheck className="size-4" /> Recognized: {matchCode} ({matchName})
+            <div className="absolute inset-x-0 bottom-0 bg-success/95 text-white px-2.5 sm:px-3 py-2 text-center backdrop-blur-sm min-w-0">
+              <p className="flex items-center justify-center gap-1.5 text-xs font-bold break-words">
+                <ShieldCheck className="size-4 shrink-0" />
+                <span className="min-w-0 truncate">Recognized: {matchCode} ({matchName})</span>
               </p>
             </div>
           )}
 
           {/* Unrecognized / Unknown State Banner */}
           {phase === "unrecognized" && (
-            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2 text-center backdrop-blur-sm space-y-1">
-              <p className="flex items-center justify-center gap-1 text-xs font-bold">
-                <XCircle className="size-4" /> {errorMessage || "Face not recognized. Please position your face inside the frame and try again."}
+            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-2.5 sm:px-3 py-2 text-center backdrop-blur-sm space-y-1 min-w-0">
+              <p className="flex items-center justify-center gap-1 text-xs font-bold break-words">
+                <XCircle className="size-4 shrink-0" />
+                <span className="min-w-0 break-words">{errorMessage || "Face not recognized. Please position your face inside the frame and try again."}</span>
               </p>
               <div className="pt-0.5">
                 <a
                   href="/admin/face-enrollment"
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 rounded bg-white/20 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-white/30 underline"
+                  className="inline-flex items-center gap-1 rounded bg-white/20 px-2 py-0.5 text-[10px] sm:text-[11px] font-semibold text-white hover:bg-white/30 underline"
                 >
                   Enroll Your Face in Database →
                 </a>
@@ -1877,15 +1886,15 @@ export function FaceScanDialog({
 
           {/* Live Guidance Indicator */}
           {phase === "detecting" && (
-            <div className="absolute top-2 left-2 flex items-center gap-2">
-              <div className="bg-black/75 backdrop-blur-sm px-2.5 py-1 rounded-md text-[11px] font-mono border border-white/10 text-white">
+            <div className="absolute top-2 left-2 right-2 flex flex-wrap items-center gap-1.5 pointer-events-none z-10 min-w-0">
+              <div className="bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-mono border border-white/10 text-white shrink-0">
                 {diag.faceCount === 1 ? (
                   <span className="text-emerald-400 font-bold">● 1 Face ({(diag.faceConfidence * 100).toFixed(0)}%)</span>
                 ) : (
                   <span className="text-amber-400">○ Center face</span>
                 )}
               </div>
-              <div className="bg-black/75 backdrop-blur-sm px-2.5 py-1 rounded-md text-[11px] font-sans border border-white/10 text-white font-medium">
+              <div className="bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-sans border border-white/10 text-white font-medium truncate max-w-[calc(100%-110px)] sm:max-w-none">
                 {liveGuidance}
               </div>
             </div>
@@ -1893,20 +1902,20 @@ export function FaceScanDialog({
         </div>
 
         {/* PRIMARY ACTION BUTTON */}
-        <div className="pt-1 space-y-2">
+        <div className="pt-1 space-y-2 min-w-0">
           {phase === "detecting" && (
             <>
               {faceDetected && (
-                <div className="space-y-1 bg-muted/40 p-2.5 rounded-lg border border-border">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1.5 font-medium text-emerald-500">
-                      <Sparkles className="size-3.5 animate-pulse" />
+                <div className="space-y-1 bg-muted/40 p-2.5 rounded-lg border border-border min-w-0">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground gap-1 min-w-0">
+                    <span className="flex items-center gap-1.5 font-medium text-emerald-500 truncate">
+                      <Sparkles className="size-3.5 animate-pulse shrink-0" />
                       Face detected &amp; centered
                     </span>
-                    <span className="font-mono text-[11px] font-semibold text-foreground">
+                    <span className="font-mono text-[10px] sm:text-[11px] font-semibold text-foreground shrink-0">
                       {stableFaceProgress >= 100
                         ? "Authenticating face..."
-                        : `Auto-authenticating in ${Math.max(0, 0.5 - stableFaceProgress * 0.005).toFixed(1)}s`}
+                        : `Auto in ${Math.max(0, 0.5 - stableFaceProgress * 0.005).toFixed(1)}s`}
                     </span>
                   </div>
                   <Progress value={stableFaceProgress} className="h-1.5 bg-background" />
@@ -1914,7 +1923,7 @@ export function FaceScanDialog({
               )}
               <Button
                 size="lg"
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-6 text-sm shadow-md transition-all flex items-center justify-center gap-2"
+                className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
                 disabled={!faceDetected}
                 onClick={() => {
                   if (lastDetectedFaceRef.current) {
@@ -1925,29 +1934,31 @@ export function FaceScanDialog({
                   }
                 }}
               >
-                <ShieldCheck className="size-5" />
-                START ATTENDANCE AUTHENTICATION
+                <ShieldCheck className="size-4 sm:size-5 shrink-0" />
+                <span className="min-w-0 break-words">START ATTENDANCE AUTHENTICATION</span>
               </Button>
             </>
           )}
 
           {phase === "liveness-challenge" && (
-            <div className="flex gap-2">
-              <Button
-                size="lg"
-                className="flex-1 bg-amber-600 text-white font-bold py-6 text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-wait"
-                disabled
+            <div className="flex flex-col sm:flex-row gap-2 w-full min-w-0">
+              <div
+                className="flex-1 min-w-0 bg-amber-600 text-white font-bold py-3 px-3.5 rounded-lg text-xs sm:text-sm shadow-md flex items-center justify-center gap-2 text-center leading-snug break-words"
+                role="status"
+                aria-live="polite"
               >
-                <Loader2 className="size-5 animate-spin" />
-                {liveGuidance}
-              </Button>
+                <Loader2 className="size-4 sm:size-5 animate-spin shrink-0 text-amber-100" />
+                <span className="min-w-0 break-words whitespace-normal font-semibold">
+                  {liveGuidance}
+                </span>
+              </div>
               <Button
                 size="lg"
                 variant="outline"
-                className="border-border text-foreground hover:bg-destructive/10 hover:text-destructive font-semibold px-5 py-6 text-sm shrink-0"
+                className="w-full sm:w-auto border-border text-foreground hover:bg-destructive/10 hover:text-destructive font-semibold px-4 py-3 h-auto text-xs sm:text-sm shrink-0"
                 onClick={() => handleExplicitClose("User cancelled liveness challenge")}
               >
-                <X className="size-4 mr-1.5" /> Cancel
+                <X className="size-4 mr-1.5 shrink-0" /> Cancel
               </Button>
             </div>
           )}
@@ -1955,19 +1966,19 @@ export function FaceScanDialog({
           {phase === "recognizing" && (
             <Button
               size="lg"
-              className="w-full bg-blue-600 text-white font-bold py-6 text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-wait"
+              className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-blue-600 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 cursor-wait text-center leading-snug"
               disabled
             >
-              <Loader2 className="size-5 animate-spin" />
-              FINALIZING BIOMETRIC VERIFICATION &amp; ATTESTATION…
+              <Loader2 className="size-4 sm:size-5 animate-spin shrink-0" />
+              <span className="min-w-0 break-words">FINALIZING BIOMETRIC VERIFICATION &amp; ATTESTATION…</span>
             </Button>
           )}
 
           {(phase === "spoof-detected" || phase === "error" || phase === "unrecognized") && (
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2 w-full min-w-0">
               <Button
                 size="lg"
-                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-6 text-sm shadow-md transition-all flex items-center justify-center gap-2"
+                className="flex-1 min-w-0 whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
                 onClick={() => {
                   setPhase("detecting");
                   setErrorMessage("");
@@ -1986,16 +1997,16 @@ export function FaceScanDialog({
                   startDetectionLoopRef.current();
                 }}
               >
-                <RefreshCw className="size-5" />
-                RETRY AUTHENTICATION
+                <RefreshCw className="size-4 sm:size-5 shrink-0" />
+                <span className="min-w-0 break-words">RETRY AUTHENTICATION</span>
               </Button>
               <Button
                 size="lg"
                 variant="outline"
-                className="border-border text-foreground hover:bg-muted font-semibold px-5 py-6 text-sm shrink-0"
+                className="w-full sm:w-auto border-border text-foreground hover:bg-muted font-semibold px-5 py-3 h-auto text-xs sm:text-sm shrink-0"
                 onClick={() => handleExplicitClose("User closed after challenge failure")}
               >
-                <X className="size-4 mr-1.5" /> Close
+                <X className="size-4 mr-1.5 shrink-0" /> Close
               </Button>
             </div>
           )}
@@ -2003,22 +2014,22 @@ export function FaceScanDialog({
           {phase === "matched" && (
             <Button
               size="lg"
-              className="w-full bg-emerald-700 text-white font-bold py-6 text-sm shadow-md transition-all flex items-center justify-center gap-2"
+              className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-emerald-700 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
               disabled
             >
-              <CheckCircle2 className="size-5" />
-              BIOMETRICALLY VERIFIED &amp; AUTHORIZED
+              <CheckCircle2 className="size-4 sm:size-5 shrink-0" />
+              <span className="min-w-0 break-words">BIOMETRICALLY VERIFIED &amp; AUTHORIZED</span>
             </Button>
           )}
 
           {(phase === "loading-models" || phase === "starting") && (
             <Button
               size="lg"
-              className="w-full bg-muted text-muted-foreground font-bold py-6 text-sm shadow-md flex items-center justify-center gap-2"
+              className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-muted text-muted-foreground font-bold shadow-md flex items-center justify-center gap-2 text-center leading-snug"
               disabled
             >
-              <Loader2 className="size-5 animate-spin" />
-              INITIALIZING HARDWARE &amp; AI MODELS…
+              <Loader2 className="size-4 sm:size-5 animate-spin shrink-0" />
+              <span className="min-w-0 break-words">INITIALIZING HARDWARE &amp; AI MODELS…</span>
             </Button>
           )}
         </div>
@@ -2026,52 +2037,52 @@ export function FaceScanDialog({
         {/* ================================================== */}
         {/* DEVELOPMENT RECOGNITION & TELEMETRY PANEL           */}
         {/* ================================================== */}
-        <div className="rounded-xl border border-border bg-card overflow-hidden text-xs">
-          <div className="flex w-full items-center justify-between bg-muted/50 px-3.5 py-2 font-semibold text-muted-foreground">
+        <div className="rounded-xl border border-border bg-card overflow-hidden text-xs min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-muted/50 px-2.5 sm:px-3.5 py-2 font-semibold text-muted-foreground min-w-0">
             <button
               type="button"
-              className="flex items-center gap-1.5 text-xs font-mono hover:text-foreground transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 text-xs font-mono hover:text-foreground transition-colors cursor-pointer min-w-0 flex-1 truncate"
               onClick={() => setShowDiag((d) => !d)}
             >
-              <Cpu className="size-3.5 text-primary" />
-              Biometric &amp; Liveness Diagnostic Telemetry
-              {showDiag ? <ChevronUp className="size-4 ml-1 inline" /> : <ChevronDown className="size-4 ml-1 inline" />}
+              <Cpu className="size-3.5 text-primary shrink-0" />
+              <span className="truncate">Biometric &amp; Liveness Diagnostic Telemetry</span>
+              {showDiag ? <ChevronUp className="size-4 ml-1 shrink-0" /> : <ChevronDown className="size-4 ml-1 shrink-0" />}
             </button>
             <Button
               type="button"
               size="sm"
               variant="outline"
               onClick={copyDiagnostics}
-              className="h-7 px-2.5 text-[11px] font-mono gap-1.5 border-primary/40 hover:bg-primary/10 text-foreground"
+              className="h-7 px-2 text-[11px] font-mono gap-1.5 border-primary/40 hover:bg-primary/10 text-foreground shrink-0 ml-auto"
             >
-              <Copy className="size-3 text-primary" />
+              <Copy className="size-3 text-primary shrink-0" />
               Copy Diagnostics
             </Button>
           </div>
 
           {showDiag && (
-            <div className="p-3.5 space-y-3 font-mono text-[11px] bg-background">
+            <div className="p-2.5 sm:p-3.5 space-y-3 font-mono text-[11px] bg-background min-w-0 overflow-hidden">
               {/* Stage History */}
-              <div className="rounded-lg border border-border bg-muted/20 p-2.5 space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-sans font-semibold border-b border-border pb-1">
-                  <span className="text-foreground">State Machine Stage Transition Log:</span>
-                  <Badge variant="outline" className="text-[9px] font-mono">
+              <div className="rounded-lg border border-border bg-muted/20 p-2 sm:p-2.5 space-y-1.5 min-w-0">
+                <div className="flex items-center justify-between text-[11px] font-sans font-semibold border-b border-border pb-1 min-w-0 gap-1">
+                  <span className="text-foreground truncate">State Machine Stage Transition Log:</span>
+                  <Badge variant="outline" className="text-[9px] font-mono shrink-0">
                     {stageHistory.length} events
                   </Badge>
                 </div>
-                <div className="max-h-28 overflow-y-auto space-y-1 text-[10px] font-mono">
+                <div className="max-h-28 overflow-y-auto overflow-x-auto space-y-1 text-[10px] font-mono min-w-0">
                   {stageHistory.length === 0 ? (
                     <div className="text-muted-foreground italic text-center py-1">No stage transitions recorded yet.</div>
                   ) : (
                     stageHistory.map((s, idx) => (
-                      <div key={idx} className="flex items-center justify-between gap-1 text-[9px] border-b border-border/20 pb-0.5">
-                        <span className="text-muted-foreground">{new Date(s.timestamp).toLocaleTimeString()}</span>
-                        <span className="font-bold text-primary">{s.stage}</span>
-                        <span className={cn(s.state === "PASSED" || s.state === "CONFIRMED" || s.state === "ACTIVE" ? "text-success" : s.state === "FAILED" ? "text-destructive" : "text-amber-400")}>
+                      <div key={idx} className="flex flex-wrap items-center justify-between gap-1 text-[9px] border-b border-border/20 pb-0.5 min-w-0">
+                        <span className="text-muted-foreground shrink-0">{new Date(s.timestamp).toLocaleTimeString()}</span>
+                        <span className="font-bold text-primary shrink-0">{s.stage}</span>
+                        <span className={cn(s.state === "PASSED" || s.state === "CONFIRMED" || s.state === "ACTIVE" ? "text-success" : s.state === "FAILED" ? "text-destructive" : "text-amber-400", "shrink-0")}>
                           [{s.state}]
                         </span>
-                        <span className="text-muted-foreground truncate max-w-[200px]">{s.reason}</span>
-                        <span className="text-muted-foreground font-mono">{s.durationMs}ms</span>
+                        <span className="text-muted-foreground truncate max-w-[140px] sm:max-w-[200px]">{s.reason}</span>
+                        <span className="text-muted-foreground font-mono shrink-0">{s.durationMs}ms</span>
                       </div>
                     ))
                   )}
@@ -2466,13 +2477,13 @@ export function FaceScanDialog({
                   </Badge>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[9px] font-mono">
+                <div className="grid grid-cols-5 gap-1 text-[8px] sm:text-[9px] font-mono min-w-0">
                   {["Slot-1", "Slot-2", "Slot-3", "Slot-4", "Slot-5"].map((slot) => {
                     const dist = diag.p001Distances[slot];
                     return (
-                      <div key={slot} className="bg-background/80 p-1.5 rounded border border-border text-center">
-                        <div className="text-muted-foreground font-sans text-[8px]">{slot}</div>
-                        <div className={cn("font-bold text-xs mt-0.5", dist !== undefined && dist <= 0.45 ? "text-success" : "text-destructive")}>
+                      <div key={slot} className="bg-background/80 p-1 sm:p-1.5 rounded border border-border text-center min-w-0 overflow-hidden">
+                        <div className="text-muted-foreground font-sans text-[7px] sm:text-[8px] truncate">{slot}</div>
+                        <div className={cn("font-bold text-[10px] sm:text-xs mt-0.5 truncate", dist !== undefined && dist <= 0.45 ? "text-success" : "text-destructive")}>
                           {dist !== undefined ? dist.toFixed(4) : "—"}
                         </div>
                       </div>
@@ -2523,10 +2534,10 @@ export function FaceScanDialog({
         </div>
 
         {/* Action Controls */}
-        <div className="flex gap-2">
+        <div className="flex gap-2 min-w-0">
           {phase === "matched" || phase === "unrecognized" || phase === "error" ? (
             <Button
-              className="w-full"
+              className="w-full text-xs sm:text-sm py-2.5 h-auto min-h-[2.5rem]"
               variant="outline"
               onClick={() => {
                 setPhase("detecting");
@@ -2537,7 +2548,7 @@ export function FaceScanDialog({
                 startDetectionLoopRef.current();
               }}
             >
-              <RefreshCw className="mr-2 size-4" /> Reset / Ready Next Frame
+              <RefreshCw className="mr-2 size-4 shrink-0" /> Reset / Ready Next Frame
             </Button>
           ) : null}
         </div>
