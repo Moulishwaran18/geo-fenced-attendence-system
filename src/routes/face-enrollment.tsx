@@ -939,21 +939,25 @@ function StaffFaceEnrollmentPage() {
         return;
       }
 
-      // 2. Read-back verification in secure storage
-      const verifyCheck = await verifyNativePersistence(staffId);
+      // 2. Read-back verification in secure storage: verify count AND cryptographic digest
+      const verifyCheck = await verifyNativePersistence(staffId, approvedDigest || undefined);
       if (!verifyCheck.verified || verifyCheck.count === 0) {
-        toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+        toast.error(verifyCheck.message || "Local persistence verification failed. Templates were not confirmed in secure device storage.");
+        return;
+      }
+      if (approvedDigest && verifyCheck.activeDigest && verifyCheck.activeDigest.toLowerCase() !== approvedDigest.toLowerCase()) {
+        toast.error(`Persistence digest mismatch: Active digest (${verifyCheck.activeDigest.slice(0, 16)}…) does not match approved digest (${approvedDigest.slice(0, 16)}…).`);
         return;
       }
 
-      // 3. Complete server authorization and consume single-use token
+      // 3. Complete server authorization and consume single-use token ONLY after verified local persistence
       const serverEnrollRes = await submitStaffFaceEnrollment(
         {
           deviceId: nativeDeviceId || undefined,
           templateCount: verifyCheck.count,
           oneTimeToken,
           requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
-          digest: approvedDigest || undefined,
+          digest: approvedDigest || verifyCheck.activeDigest || undefined,
         },
         oneTimeToken
       );
@@ -1478,6 +1482,23 @@ function StaffFaceEnrollmentPage() {
                       <div className="rounded-lg bg-background/60 p-2.5 border border-border/50">
                         <span className="font-medium text-foreground">Enrolled At:</span>{" "}
                         {nativeStatus?.enrolledAt ? new Date(nativeStatus.enrolledAt).toLocaleString() : "Active"}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-2.5 border border-border/50 sm:col-span-2">
+                        <div className="flex flex-wrap items-center justify-between gap-1">
+                          <span className="font-medium text-foreground">Active Template Digest:</span>
+                          {nativeStatus?.templateVersion && (
+                            <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4">
+                              v{nativeStatus.templateVersion}
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="font-mono text-[11px] break-all text-muted-foreground mt-0.5 block">
+                          {nativeStatus?.activeDigest
+                            ? nativeStatus.activeDigest
+                            : serverStatus?.latestRequest?.digest
+                            ? serverStatus.latestRequest.digest
+                            : "Hardware Keystore Isolated"}
+                        </span>
                       </div>
                     </div>
                   </div>

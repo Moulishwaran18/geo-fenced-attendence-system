@@ -93,6 +93,46 @@ class AndroidBiometricBridge(
     }
 
     /**
+     * Deterministic, canonical SHA-256 digest computation matching web client exactly.
+     */
+    fun computeCanonicalTemplateDigest(embeddings: List<FloatArray>): String {
+        val normalizedStrings = embeddings.map { emb ->
+            emb.joinToString(",") { String.format(java.util.Locale.US, "%.6f", it) }
+        }
+        val canonicalData = "v1;count:${embeddings.size};" + normalizedStrings.joinToString("|")
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val digestBytes = md.digest(canonicalData.toByteArray(Charsets.UTF_8))
+        return "sha256_" + digestBytes.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Retrieve or safely compute active template set digest without exposing biometric data.
+     */
+    suspend fun getActiveTemplateDigest(cleanId: String, currentDeviceId: String): String? {
+        val setting = repository.getDeviceSetting("active_face_digest_${cleanId}")
+        if (setting != null && setting.value.isNotBlank()) {
+            return setting.value
+        }
+        val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+        if (templates.isEmpty()) return null
+        val decryptedList = mutableListOf<FloatArray>()
+        for (tmpl in templates) {
+            val dec = keystoreManager.decryptEmbedding(cleanId, currentDeviceId, tmpl.encryptedTemplate, tmpl.iv)
+            if (dec != null && dec.size == 512) {
+                decryptedList.add(dec)
+            }
+        }
+        if (decryptedList.size == templates.size && decryptedList.isNotEmpty()) {
+            val computed = computeCanonicalTemplateDigest(decryptedList)
+            try {
+                repository.setDeviceSetting(com.campusattend.biometric.data.DeviceSettingsEntity("active_face_digest_${cleanId}", computed))
+            } catch (_: Throwable) {}
+            return computed
+        }
+        return null
+    }
+
+    /**
      * Inspect enrollment state for a specific staff member on this device.
      */
     @JavascriptInterface
@@ -120,6 +160,8 @@ class AndroidBiometricBridge(
                 val count = repository.getEncryptedTemplateCount(cleanId, deviceId)
                 val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, deviceId)
                 val latestTime = templates.maxOfOrNull { it.createdAt } ?: 0L
+                val maxVersion = templates.maxOfOrNull { it.templateVersion } ?: 1
+                val activeDigest = getActiveTemplateDigest(cleanId, deviceId) ?: ""
 
                 val pendingFile = java.io.File(context.filesDir, "pending_face_${cleanId}.json")
                 val hasPending = pendingFile.exists()
@@ -128,6 +170,18 @@ class AndroidBiometricBridge(
                     try {
                         val pJson = JSONObject(pendingFile.readText(Charsets.UTF_8))
                         pendingCount = pJson.optJSONArray("templates")?.length() ?: 0
+                    } catch (_: Throwable) {}
+                }
+
+                val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
+                val hasStaged = stagedFile.exists()
+                var stagedCount = 0
+                var stagedDigest = ""
+                if (hasStaged) {
+                    try {
+                        val sJson = JSONObject(stagedFile.readText(Charsets.UTF_8))
+                        stagedCount = sJson.optJSONArray("templates")?.length() ?: 0
+                        stagedDigest = sJson.optString("digest", "")
                     } catch (_: Throwable) {}
                 }
 
@@ -140,8 +194,13 @@ class AndroidBiometricBridge(
                     put("hardwareKeystore", true)
                     put("canEnroll", count == 0)
                     put("enrolledAt", latestTime)
+                    put("activeDigest", activeDigest)
+                    put("templateVersion", maxVersion)
                     put("hasPendingEnrollment", hasPending)
                     put("pendingCount", pendingCount)
+                    put("hasStagedReplacement", hasStaged)
+                    put("stagedCount", stagedCount)
+                    put("stagedDigest", stagedDigest)
                 }.toString()
             }
         } catch (t: Throwable) {
@@ -314,27 +373,37 @@ class AndroidBiometricBridge(
 
             val currentDeviceId = keystoreManager.getDeviceId()
             val pendingFile = java.io.File(context.filesDir, "pending_face_${cleanId}.json")
+            val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
 
-            if (!pendingFile.exists()) {
-                return JSONObject().apply {
-                    put("hasPending", false)
-                    put("count", 0)
-                    put("staffId", cleanId)
-                    put("deviceId", currentDeviceId)
-                }.toString()
+            var hasPending = false
+            var count = 0
+            var stagedAt = 0L
+            var digest = ""
+
+            if (stagedFile.exists()) {
+                try {
+                    val sJson = JSONObject(stagedFile.readText(Charsets.UTF_8))
+                    count = sJson.optJSONArray("templates")?.length() ?: 0
+                    stagedAt = sJson.optLong("stagedAt", 0L)
+                    digest = sJson.optString("digest", "")
+                    hasPending = count > 0
+                } catch (_: Throwable) {}
+            } else if (pendingFile.exists()) {
+                try {
+                    val pJson = JSONObject(pendingFile.readText(Charsets.UTF_8))
+                    count = pJson.optJSONArray("templates")?.length() ?: 0
+                    stagedAt = pJson.optLong("stagedAt", 0L)
+                    hasPending = count > 0
+                } catch (_: Throwable) {}
             }
 
-            val content = pendingFile.readText(Charsets.UTF_8)
-            val json = JSONObject(content)
-            val count = json.optJSONArray("templates")?.length() ?: 0
-            val stagedAt = json.optLong("stagedAt", 0L)
-
             JSONObject().apply {
-                put("hasPending", count > 0)
+                put("hasPending", hasPending)
                 put("count", count)
                 put("staffId", cleanId)
                 put("deviceId", currentDeviceId)
                 put("stagedAt", stagedAt)
+                put("digest", digest)
             }.toString()
         } catch (t: Throwable) {
             Log.e("AndroidBiometricBridge", "getPendingEnrollmentStatus error", t)
@@ -543,9 +612,13 @@ class AndroidBiometricBridge(
 
     /**
      * Verify persistence and cryptographic integrity of templates stored in Room DB.
+     * Optionally validates against expected cryptographic template digest.
      */
     @JavascriptInterface
-    fun verifyPersistence(staffId: String?): String {
+    fun verifyPersistence(staffId: String?): String = verifyPersistence(staffId, null)
+
+    @JavascriptInterface
+    fun verifyPersistence(staffId: String?, expectedDigest: String?): String {
         return try {
             if (!isCallingOriginTrusted()) {
                 return JSONObject().apply {
@@ -580,6 +653,7 @@ class AndroidBiometricBridge(
                 }
 
                 var validDecryptions = 0
+                val decryptedList = mutableListOf<FloatArray>()
                 for (tmpl in templates) {
                     if (tmpl.encryptedTemplate.isEmpty() || tmpl.iv.isEmpty() || tmpl.iv.size != 12) {
                         return@runBlocking JSONObject().apply {
@@ -604,18 +678,46 @@ class AndroidBiometricBridge(
                             put("message", "Hardware Keystore AEAD verification failed.")
                         }.toString()
                     }
+                    decryptedList.add(dec)
                     validDecryptions++
                 }
 
                 val latestTime = templates.maxOfOrNull { it.createdAt } ?: 0L
+                val maxVersion = templates.maxOfOrNull { it.templateVersion } ?: 1
+                val computedDigest = computeCanonicalTemplateDigest(decryptedList)
+
+                val cleanExpected = expectedDigest?.trim() ?: ""
+                val matchesExpected = cleanExpected.isEmpty() || computedDigest.equals(cleanExpected, ignoreCase = true)
+
+                if (!matchesExpected) {
+                    return@runBlocking JSONObject().apply {
+                        put("verified", false)
+                        put("count", validDecryptions)
+                        put("staffId", cleanId)
+                        put("deviceId", currentDeviceId)
+                        put("activeDigest", computedDigest)
+                        put("expectedDigest", cleanExpected)
+                        put("matchesExpectedDigest", false)
+                        put("error", "DIGEST_MISMATCH")
+                        put("message", "Persisted template digest ($computedDigest) does not match expected digest ($cleanExpected).")
+                    }.toString()
+                }
+
+                try {
+                    repository.setDeviceSetting(com.campusattend.biometric.data.DeviceSettingsEntity("active_face_digest_${cleanId}", computedDigest))
+                } catch (_: Throwable) {}
 
                 JSONObject().apply {
                     put("verified", validDecryptions == templates.size && validDecryptions > 0)
                     put("count", validDecryptions)
                     put("staffId", cleanId)
                     put("deviceId", currentDeviceId)
+                    put("hardwareKeystore", true)
                     put("enrolledAt", latestTime)
-                    put("message", "$validDecryptions template(s) verified in secure Android Keystore storage.")
+                    put("templateVersion", maxVersion)
+                    put("activeDigest", computedDigest)
+                    put("matchesExpectedDigest", true)
+                    put("message", "All $validDecryptions template(s) verified in secure Android Keystore storage.")
                 }.toString()
             }
         } catch (t: Throwable) {
@@ -625,6 +727,90 @@ class AndroidBiometricBridge(
                 put("count", 0)
                 put("error", "VERIFY_EXCEPTION")
                 put("message", t.message ?: "Persistence verification failed.")
+            }.toString()
+        }
+    }
+
+    /**
+     * Safely inspect biometric metadata without exposing raw photos, embeddings, or keys.
+     */
+    @JavascriptInterface
+    fun getBiometricMetadata(staffId: String?): String = getBiometricMetadata(staffId, null)
+
+    @JavascriptInterface
+    fun getBiometricMetadata(staffId: String?, approvedDigest: String?): String {
+        return try {
+            if (!isCallingOriginTrusted()) {
+                return JSONObject().apply {
+                    put("error", "UNTRUSTED_ORIGIN")
+                }.toString()
+            }
+
+            val cleanId = staffId?.trim()?.uppercase() ?: ""
+            if (cleanId.isEmpty()) {
+                return JSONObject().apply {
+                    put("error", "INVALID_STAFF_ID")
+                }.toString()
+            }
+
+            val currentDeviceId = keystoreManager.getDeviceId()
+
+            runBlocking(Dispatchers.IO) {
+                val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                val activeCount = templates.size
+                val latestTime = templates.maxOfOrNull { it.createdAt } ?: 0L
+                val maxVersion = templates.maxOfOrNull { it.templateVersion } ?: 1
+                val activeDigest = getActiveTemplateDigest(cleanId, currentDeviceId) ?: ""
+
+                val stagedFile = java.io.File(context.filesDir, "staged_replacement_${cleanId}.json")
+                var stagedCount = 0
+                var stagedDigest = ""
+                if (stagedFile.exists()) {
+                    try {
+                        val sJson = JSONObject(stagedFile.readText(Charsets.UTF_8))
+                        stagedCount = sJson.optJSONArray("templates")?.length() ?: 0
+                        stagedDigest = sJson.optString("digest", "")
+                    } catch (_: Throwable) {}
+                }
+
+                val cleanApproved = approvedDigest?.trim() ?: ""
+                val activeMatchesApproved = cleanApproved.isNotEmpty() && activeDigest.isNotEmpty() &&
+                        activeDigest.equals(cleanApproved, ignoreCase = true)
+
+                var persistenceVerified = false
+                if (activeCount > 0) {
+                    var allOk = true
+                    for (tmpl in templates) {
+                        val dec = keystoreManager.decryptEmbedding(cleanId, currentDeviceId, tmpl.encryptedTemplate, tmpl.iv)
+                        if (dec == null || dec.size != 512) {
+                            allOk = false
+                            break
+                        }
+                    }
+                    persistenceVerified = allOk
+                }
+
+                JSONObject().apply {
+                    put("staffId", cleanId)
+                    put("deviceId", currentDeviceId)
+                    put("activeTemplateCount", activeCount)
+                    put("stagedTemplateCount", stagedCount)
+                    put("stagedDigest", stagedDigest)
+                    put("activeDigest", activeDigest)
+                    put("activeVersion", maxVersion)
+                    put("approvedReplacementDigest", cleanApproved)
+                    put("activeMatchesApproved", activeMatchesApproved)
+                    put("replacementCommitted", activeMatchesApproved || (activeCount > 0 && stagedCount == 0))
+                    put("persistenceVerified", persistenceVerified)
+                    put("enrolledAt", latestTime)
+                    put("hardwareKeystore", true)
+                }.toString()
+            }
+        } catch (t: Throwable) {
+            Log.e("AndroidBiometricBridge", "getBiometricMetadata error", t)
+            JSONObject().apply {
+                put("error", "DIAGNOSTIC_EXCEPTION")
+                put("message", t.message ?: "Failed to read biometric metadata.")
             }.toString()
         }
     }
@@ -1118,6 +1304,8 @@ class AndroidBiometricBridge(
             runBlocking(Dispatchers.IO) {
                 val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
                 val backupTemplates = if (existingCount > 0) repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId) else emptyList()
+                val nextVersion = (backupTemplates.maxOfOrNull { it.templateVersion } ?: 1) + 1
+                val targetDigest = if (!expectedDigest.isNullOrBlank()) expectedDigest.trim() else stagedDigest.trim()
 
                 var commitOk = false
                 try {
@@ -1149,7 +1337,7 @@ class AndroidBiometricBridge(
                                     encryptedTemplate = cipherBytes,
                                     iv = ivBytes,
                                     referenceLabel = label,
-                                    templateVersion = 1,
+                                    templateVersion = nextVersion,
                                     createdAt = System.currentTimeMillis()
                                 )
                             )
@@ -1161,8 +1349,35 @@ class AndroidBiometricBridge(
                     commitOk = false
                 }
 
-                val finalCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
-                if (!commitOk || finalCount == 0) {
+                // Persistence read-back verification: decrypt each template and verify digest
+                val insertedTemplates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                var readbackOk = commitOk && insertedTemplates.size == templatesArray.length()
+                val decryptedList = mutableListOf<FloatArray>()
+
+                if (readbackOk) {
+                    for (tmpl in insertedTemplates) {
+                        val dec = keystoreManager.decryptEmbedding(cleanId, currentDeviceId, tmpl.encryptedTemplate, tmpl.iv)
+                        if (dec == null || dec.size != 512) {
+                            readbackOk = false
+                            break
+                        }
+                        decryptedList.add(dec)
+                    }
+                }
+
+                var readbackDigest = ""
+                if (readbackOk && decryptedList.size == insertedTemplates.size) {
+                    readbackDigest = computeCanonicalTemplateDigest(decryptedList)
+                    if (targetDigest.isNotEmpty() && !readbackDigest.equals(targetDigest, ignoreCase = true)) {
+                        readbackOk = false
+                        Log.e("AndroidBiometricBridge", "Read-back digest mismatch: computed $readbackDigest vs expected $targetDigest")
+                    }
+                } else {
+                    readbackOk = false
+                }
+
+                if (!readbackOk) {
+                    // Safe Rollback: restore previous templates and retain staged file for recovery
                     if (backupTemplates.isNotEmpty()) {
                         try {
                             CampusAttendApp.instance.database.withTransaction {
@@ -1173,20 +1388,28 @@ class AndroidBiometricBridge(
                     }
                     return@runBlocking JSONObject().apply {
                         put("success", false)
-                        put("error", "COMMIT_FAILED")
-                        put("message", "Failed to commit replacement templates to Room DB. Previous templates preserved.")
+                        put("error", "PERSISTENCE_READBACK_FAILED")
+                        put("message", "Read-back verification failed for replacement templates. Previous active templates preserved.")
                     }.toString()
                 }
 
-                // Clean up staged file
+                // Persist verified active digest and version in settings
+                try {
+                    repository.setDeviceSetting(com.campusattend.biometric.data.DeviceSettingsEntity("active_face_digest_${cleanId}", readbackDigest))
+                    repository.setDeviceSetting(com.campusattend.biometric.data.DeviceSettingsEntity("active_face_version_${cleanId}", nextVersion.toString()))
+                } catch (_: Throwable) {}
+
+                // Clean up staged file ONLY after verified read-back persistence
                 try { stagedFile.delete() } catch (_: Throwable) {}
 
                 JSONObject().apply {
                     put("success", true)
                     put("staffId", cleanId)
                     put("deviceId", currentDeviceId)
-                    put("count", finalCount)
-                    put("message", "Replacement face templates committed and permanently locked with Android Keystore AES-256-GCM.")
+                    put("count", insertedTemplates.size)
+                    put("activeDigest", readbackDigest)
+                    put("templateVersion", nextVersion)
+                    put("message", "Replacement face templates committed, read-back verified, and permanently locked with Android Keystore AES-256-GCM.")
                 }.toString()
             }
         } catch (t: Throwable) {

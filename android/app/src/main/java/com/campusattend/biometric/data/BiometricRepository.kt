@@ -47,6 +47,9 @@ class BiometricRepository(private val database: AppDatabase) {
     suspend fun getEncryptedTemplatesForStaff(staffId: String): List<EncryptedFaceTemplateEntity> =
         encryptedTemplateDao.getTemplatesForStaff(staffId)
 
+    suspend fun getAllEncryptedTemplates(): List<EncryptedFaceTemplateEntity> =
+        encryptedTemplateDao.getAllTemplates()
+
     suspend fun getEncryptedTemplateCount(staffId: String, deviceId: String): Int =
         encryptedTemplateDao.getTemplateCountForStaffAndDevice(staffId, deviceId)
 

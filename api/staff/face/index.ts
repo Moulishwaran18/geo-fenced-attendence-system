@@ -463,6 +463,28 @@ export default async function handler(req: any, res?: any) {
           : "replacement";
 
         if (isConsumed) {
+          let resolvedDigest = digestMatch ? digestMatch[1] : null;
+          if (!resolvedDigest) {
+            const priorWithDigest = requests.find((r: any) => r.device && r.device.includes("digest:"));
+            if (priorWithDigest) {
+              const dM = priorWithDigest.device.match(/digest:([^|]+)/);
+              if (dM) resolvedDigest = dM[1];
+            }
+          }
+          if (!resolvedDigest) {
+            // Check if there is an approval grant event containing the cryptographic digest
+            const { data: grantRows } = await supabase
+              .from("security_events")
+              .select("event, device")
+              .eq("staff", staffCode)
+              .ilike("event", "%with digest sha256_%")
+              .order("created_at", { ascending: false })
+              .limit(1);
+            if (grantRows && grantRows.length > 0) {
+              const evMatch = grantRows[0].event.match(/digest\s+(sha256_[a-f0-9]+)/i);
+              if (evMatch) resolvedDigest = evMatch[1];
+            }
+          }
           latestRequest = {
             id: latestR.id,
             reason: cleanReason,
@@ -471,7 +493,7 @@ export default async function handler(req: any, res?: any) {
             sampleCount: countMatch ? parseInt(countMatch[1], 10) : 5,
             requestType: reqType,
             linkedRequestId: linkedMatch ? linkedMatch[1] : null,
-            digest: digestMatch ? digestMatch[1] : null,
+            digest: resolvedDigest,
             created_at: latestR.created_at || latestR.time,
             adminNotes: latestR.location?.replace(/^AdminNote:\s*/, "") || "",
           };
@@ -728,6 +750,7 @@ export default async function handler(req: any, res?: any) {
       }
 
       let approvedRow: any = null;
+      let boundDigest = "";
 
       // Validate candidate token (mandatory for replacement, or for approved initial enrollment)
       if (candidateToken) {
@@ -810,7 +833,7 @@ export default async function handler(req: any, res?: any) {
 
         // Verify cryptographic template digest binding (Stage 2)
         const digestMatch = (approvedRow.device || "").match(/digest:([^|]+)/);
-        const boundDigest = digestMatch && digestMatch[1] ? digestMatch[1].trim() : "";
+        boundDigest = digestMatch && digestMatch[1] ? digestMatch[1].trim() : "";
         const candidateDigest = (body?.digest || req.headers?.["x-digest"] || "").toString().trim();
         if (boundDigest && candidateDigest && boundDigest !== candidateDigest) {
           return sendJsonResponse(res, 403, {
@@ -926,7 +949,8 @@ export default async function handler(req: any, res?: any) {
         }
         cleanDevice += `|consumed_at:${nowIso}`;
         if (cleanDevice.length > 250) {
-          cleanDevice = `token:${candidateToken}|status:consumed|device_id:${(deviceId || "device").slice(0, 32)}|consumed_at:${nowIso}|count:${templateCount}`;
+          const boundDigestPart = boundDigest ? `|digest:${boundDigest}` : "";
+          cleanDevice = `token:${candidateToken}|status:consumed|device_id:${(deviceId || "device").slice(0, 32)}|consumed_at:${nowIso}|count:${templateCount}${boundDigestPart}`;
         }
 
         const { data: updatedRows, error: updErr } = await supabase
@@ -964,7 +988,7 @@ export default async function handler(req: any, res?: any) {
           time: nowIso,
           staff: staffCode,
           event: `FACE_CHANGE_CONSUMED: One-time approval consumed for device ${deviceId}`,
-          device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}`,
+          device: `device_id:${deviceId}|count:${templateCount}|token:${candidateToken}|request_id:${approvedRow.id}${boundDigest ? `|digest:${boundDigest}` : ""}`,
           location: "CampusAttend Biometric System",
           result: "Allowed",
           severity: "Low",

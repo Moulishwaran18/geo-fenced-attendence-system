@@ -109,6 +109,9 @@ interface EncryptedFaceTemplateDao {
     @Query("SELECT * FROM encrypted_face_templates WHERE staffId = :staffId ORDER BY createdAt ASC")
     suspend fun getTemplatesForStaff(staffId: String): List<EncryptedFaceTemplateEntity>
 
+    @Query("SELECT * FROM encrypted_face_templates ORDER BY createdAt ASC")
+    suspend fun getAllTemplates(): List<EncryptedFaceTemplateEntity>
+
     @Query("SELECT COUNT(*) FROM encrypted_face_templates WHERE staffId = :staffId AND deviceId = :deviceId")
     suspend fun getTemplateCountForStaffAndDevice(staffId: String, deviceId: String): Int
 

@@ -79,6 +79,7 @@ import {
   getNativeEnrollmentStatus,
   getNativeDeviceId,
 } from "@/lib/native-biometric-bridge";
+import { getActiveStaff } from "@/lib/staff-auth";
 
 /* ------------------------------------------------------------------ */
 /*  Types & Props                                                      */
@@ -507,7 +508,11 @@ export function FaceScanDialog({
         // 6. BIOMETRIC MATCHING (Device-Local Android Keystore or Cloud pgvector)
         let verifyRes: any;
         if (isNativeBiometricAvailable()) {
-          const targetStaff = expectedStaffCode || "PERSON_001";
+          const activeStaff = getActiveStaff();
+          const targetStaff =
+            (expectedStaffCode || "").trim() ||
+            (activeStaff?.staffId || activeStaff?.staff_code || "").trim() ||
+            "PERSON_001";
           const nativeVer = await verifyNativeFace(
             targetStaff,
             arcFaceDescriptor,

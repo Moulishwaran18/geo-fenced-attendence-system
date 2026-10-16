@@ -9,7 +9,9 @@ import com.campusattend.biometric.CampusAttendApp
 import com.campusattend.biometric.antispoof.AntiSpoofService
 import com.campusattend.biometric.config.BiometricConfig
 import com.campusattend.biometric.data.BiometricRepository
+import com.campusattend.biometric.data.FaceEmbeddingEntity
 import com.campusattend.biometric.data.StaffEntity
+import com.campusattend.biometric.security.BiometricKeystoreManager
 import com.campusattend.biometric.detection.FaceDetectionResult
 import com.campusattend.biometric.detection.FaceDetectionService
 import com.campusattend.biometric.detection.FaceLandmarkResult
@@ -53,10 +55,11 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
     private val faceEmbeddingService = FaceEmbeddingService(application)
     private val faceMatchingService = FaceMatchingService()
 
-    // Repository
+    // Repository & Security
     private val repository = BiometricRepository(
         (application as CampusAttendApp).database
     )
+    private val keystoreManager = BiometricKeystoreManager(application)
 
     // Pipeline state
     private val _pipelineState = MutableStateFlow(PipelineState())
@@ -308,7 +311,42 @@ class VerificationViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(Dispatchers.IO) {
             val matchStartTime = System.currentTimeMillis()
 
-            val groupedEmbeddings = repository.getEmbeddingsGroupedByStaff()
+            val groupedEmbeddings = mutableMapOf<String, MutableList<FaceEmbeddingEntity>>()
+
+            // 1. Authoritative primary source: Android Keystore-encrypted templates (active/replacement store)
+            try {
+                val encryptedTemplates = repository.getAllEncryptedTemplates()
+                for (tmpl in encryptedTemplates) {
+                    val dec = keystoreManager.decryptEmbedding(
+                        tmpl.staffId,
+                        tmpl.deviceId,
+                        tmpl.encryptedTemplate,
+                        tmpl.iv
+                    )
+                    if (dec != null && dec.size == 512) {
+                        groupedEmbeddings.getOrPut(tmpl.staffId) { mutableListOf() }.add(
+                            FaceEmbeddingEntity(
+                                id = tmpl.id,
+                                staffId = tmpl.staffId,
+                                embedding = dec,
+                                referenceLabel = tmpl.referenceLabel,
+                                createdAt = tmpl.createdAt
+                            )
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("VerificationViewModel", "Failed to load encrypted templates for matching", t)
+            }
+
+            // 2. Secondary fallback: unencrypted legacy embeddings for staff not yet enrolled with Keystore
+            val legacyGrouped = repository.getEmbeddingsGroupedByStaff()
+            for ((staffId, list) in legacyGrouped) {
+                if (!groupedEmbeddings.containsKey(staffId)) {
+                    groupedEmbeddings[staffId] = list.toMutableList()
+                }
+            }
+
             val staffLookup = mutableMapOf<String, StaffEntity>()
             for (staffId in groupedEmbeddings.keys) {
                 repository.getStaffById(staffId)?.let { staffLookup[staffId] = it }

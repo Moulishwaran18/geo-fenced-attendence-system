@@ -16,8 +16,13 @@ export interface NativeEnrollmentStatus {
   isDeviceBound?: boolean | undefined;
   hardwareKeystore?: boolean | undefined;
   enrolledAt?: number | undefined;
+  activeDigest?: string | undefined;
+  templateVersion?: number | undefined;
   hasPendingEnrollment?: boolean | undefined;
   pendingCount?: number | undefined;
+  hasStagedReplacement?: boolean | undefined;
+  stagedCount?: number | undefined;
+  stagedDigest?: string | undefined;
 }
 
 export interface NativeEnrollResult {
@@ -25,6 +30,8 @@ export interface NativeEnrollResult {
   staffId?: string | undefined;
   deviceId?: string | undefined;
   count?: number | undefined;
+  activeDigest?: string | undefined;
+  templateVersion?: number | undefined;
   error?: string | undefined;
   message?: string | undefined;
 }
@@ -79,6 +86,36 @@ export function getNativeDeviceId(): string | null {
 export async function getNativeEnrollmentStatus(staffId: string): Promise<NativeEnrollmentStatus> {
   const bridge = getBridge();
   if (!bridge || typeof bridge.getEnrollmentStatus !== "function") {
+    // Web fallback simulation mode check
+    if (typeof window !== "undefined") {
+      try {
+        const cleanId = staffId.trim().toUpperCase();
+        const enrolledKey = `enrolled_face_${cleanId}`;
+        const stagedKey = `staged_replacement_${cleanId}`;
+        const enrolledRaw = window.sessionStorage?.getItem(enrolledKey) || window.localStorage?.getItem(enrolledKey);
+        const stagedRaw = window.sessionStorage?.getItem(stagedKey) || window.localStorage?.getItem(stagedKey);
+        const enrolled = enrolledRaw ? JSON.parse(enrolledRaw) : null;
+        const staged = stagedRaw ? JSON.parse(stagedRaw) : null;
+        if (enrolled) {
+          return {
+            isAvailable: true,
+            isEnrolled: true,
+            count: Number(enrolled.count || 5),
+            staffId: cleanId,
+            deviceId: "web-simulation",
+            isDeviceBound: true,
+            hardwareKeystore: false,
+            enrolledAt: enrolled.enrolledAt ? Number(enrolled.enrolledAt) : undefined,
+            activeDigest: enrolled.activeDigest || enrolled.digest || undefined,
+            templateVersion: enrolled.templateVersion || 1,
+            hasStagedReplacement: Boolean(staged && staged.count > 0),
+            stagedCount: staged?.count || 0,
+            stagedDigest: staged?.digest || undefined,
+          };
+        }
+      } catch {}
+    }
+
     return {
       isAvailable: false,
       isEnrolled: false,
@@ -98,8 +135,13 @@ export async function getNativeEnrollmentStatus(staffId: string): Promise<Native
       isDeviceBound: Boolean(parsed.isDeviceBound),
       hardwareKeystore: Boolean(parsed.hardwareKeystore),
       enrolledAt: parsed.enrolledAt ? Number(parsed.enrolledAt) : undefined,
+      activeDigest: parsed.activeDigest || undefined,
+      templateVersion: parsed.templateVersion ? Number(parsed.templateVersion) : undefined,
       hasPendingEnrollment: Boolean(parsed.hasPendingEnrollment),
       pendingCount: Number(parsed.pendingCount || 0),
+      hasStagedReplacement: Boolean(parsed.hasStagedReplacement),
+      stagedCount: Number(parsed.stagedCount || 0),
+      stagedDigest: parsed.stagedDigest || undefined,
     };
   } catch (err) {
     console.warn("[NativeBiometricBridge] getEnrollmentStatus error:", err);
@@ -473,6 +515,8 @@ export async function commitNativeReplacement(
         staffId: parsed.staffId,
         deviceId: parsed.deviceId,
         count: parsed.count,
+        activeDigest: parsed.activeDigest || undefined,
+        templateVersion: parsed.templateVersion ? Number(parsed.templateVersion) : undefined,
         error: parsed.error,
         message: parsed.message,
       };
@@ -521,6 +565,8 @@ export async function commitNativeReplacement(
     const enrolledPayload = JSON.stringify({
       enrolled: true,
       count: parsed.count || 5,
+      activeDigest: expectedDigest || parsed.digest || undefined,
+      templateVersion: 2,
       enrolledAt: Date.now(),
     });
     try { window.sessionStorage?.setItem(`enrolled_face_${staffId.trim().toUpperCase()}`, enrolledPayload); } catch {}
@@ -530,6 +576,8 @@ export async function commitNativeReplacement(
       staffId: staffId.trim().toUpperCase(),
       deviceId,
       count: parsed.count || 5,
+      activeDigest: expectedDigest || parsed.digest || undefined,
+      templateVersion: 2,
       message: "Replacement face templates committed locally.",
     };
   }
@@ -647,26 +695,32 @@ export async function enrollNativeTemplatesBatch(
 
 /**
  * Verify that local encrypted templates are persistently stored and accessible in Android Keystore.
- * Reads back and verifies cryptographic integrity without logging or exposing decrypted biometric vectors.
+ * Reads back and verifies cryptographic integrity and digest match without logging or exposing decrypted biometric vectors.
  */
-export async function verifyNativePersistence(staffId: string): Promise<{
+export async function verifyNativePersistence(staffId: string, expectedDigest?: string): Promise<{
   verified: boolean;
   count: number;
   deviceId?: string | undefined;
   enrolledAt?: number | undefined;
+  activeDigest?: string | undefined;
+  templateVersion?: number | undefined;
+  matchesExpectedDigest?: boolean | undefined;
   error?: string | undefined;
   message?: string | undefined;
 }> {
   const bridge = getBridge();
   if (bridge && typeof bridge.verifyPersistence === "function") {
     try {
-      const raw = bridge.verifyPersistence(staffId);
+      const raw = bridge.verifyPersistence(staffId, expectedDigest || "");
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       return {
         verified: Boolean(parsed.verified),
         count: Number(parsed.count || 0),
         deviceId: parsed.deviceId,
         enrolledAt: parsed.enrolledAt ? Number(parsed.enrolledAt) : undefined,
+        activeDigest: parsed.activeDigest || undefined,
+        templateVersion: parsed.templateVersion ? Number(parsed.templateVersion) : undefined,
+        matchesExpectedDigest: parsed.matchesExpectedDigest !== undefined ? Boolean(parsed.matchesExpectedDigest) : true,
         error: parsed.error,
         message: parsed.message,
       };
@@ -681,11 +735,75 @@ export async function verifyNativePersistence(staffId: string): Promise<{
   }
 
   const status = await getNativeEnrollmentStatus(staffId);
+  const cleanExpected = (expectedDigest || "").trim();
+  const digestMatches = !cleanExpected || !status.activeDigest || status.activeDigest.toLowerCase() === cleanExpected.toLowerCase();
   return {
-    verified: Boolean(status.isAvailable && status.isEnrolled && status.count > 0),
+    verified: Boolean(status.isAvailable && status.isEnrolled && status.count > 0 && digestMatches),
     count: status.count,
     deviceId: status.deviceId,
     enrolledAt: status.enrolledAt,
+    activeDigest: status.activeDigest,
+    templateVersion: status.templateVersion,
+    matchesExpectedDigest: digestMatches,
+    error: digestMatches ? undefined : "DIGEST_MISMATCH",
+    message: digestMatches ? undefined : "Local active digest does not match expected digest.",
+  };
+}
+
+/**
+ * Safely inspect biometric metadata without exposing raw photos, embeddings, or keys.
+ */
+export async function getNativeBiometricMetadata(staffId: string, approvedDigest?: string): Promise<{
+  staffId?: string | undefined;
+  deviceId?: string | undefined;
+  activeTemplateCount: number;
+  stagedTemplateCount: number;
+  stagedDigest?: string | undefined;
+  activeDigest?: string | undefined;
+  activeVersion?: number | undefined;
+  approvedReplacementDigest?: string | undefined;
+  activeMatchesApproved?: boolean | undefined;
+  replacementCommitted?: boolean | undefined;
+  persistenceVerified?: boolean | undefined;
+  enrolledAt?: number | undefined;
+  hardwareKeystore?: boolean | undefined;
+  error?: string | undefined;
+  message?: string | undefined;
+}> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.getBiometricMetadata === "function") {
+    try {
+      const raw = bridge.getBiometricMetadata(staffId, approvedDigest || "");
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return parsed;
+    } catch (err: any) {
+      return {
+        activeTemplateCount: 0,
+        stagedTemplateCount: 0,
+        error: "DIAGNOSTIC_ERROR",
+        message: err?.message || "Failed to read diagnostic metadata from bridge.",
+      };
+    }
+  }
+
+  const status = await getNativeEnrollmentStatus(staffId);
+  const cleanApproved = (approvedDigest || "").trim();
+  const activeMatchesApproved = Boolean(cleanApproved && status.activeDigest && status.activeDigest.toLowerCase() === cleanApproved.toLowerCase());
+
+  return {
+    staffId,
+    deviceId: status.deviceId || "web-simulation",
+    activeTemplateCount: status.count,
+    stagedTemplateCount: status.stagedCount || 0,
+    stagedDigest: status.stagedDigest,
+    activeDigest: status.activeDigest,
+    activeVersion: status.templateVersion || 1,
+    approvedReplacementDigest: cleanApproved || undefined,
+    activeMatchesApproved,
+    replacementCommitted: activeMatchesApproved || (status.isEnrolled && !status.hasStagedReplacement),
+    persistenceVerified: status.isEnrolled,
+    enrolledAt: status.enrolledAt,
+    hardwareKeystore: status.hardwareKeystore,
   };
 }
 
