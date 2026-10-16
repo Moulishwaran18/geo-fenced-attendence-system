@@ -11,6 +11,9 @@ async function check() {
     let foundHideClose = false;
     let foundNodOnce = false;
     let foundResponsiveCalc = false;
+    let foundStep1 = false;
+    let foundTiltUp = false;
+    let foundCentering = false;
     let checkedCount = 0;
 
     for (const src of scriptMatches) {
@@ -22,6 +25,9 @@ async function check() {
         if (text.includes('hideCloseButton')) foundHideClose = true;
         if (text.includes('nod once') || text.includes('Please nod once')) foundNodOnce = true;
         if (text.includes('calc(100vw-16px)')) foundResponsiveCalc = true;
+        if (text.includes('Step 1 of 2 — Face Match') || text.includes('Step 1 of 2')) foundStep1 = true;
+        if (text.includes('Please tilt your head slightly upward')) foundTiltUp = true;
+        if (text.includes('transform:translate(-50%,-50%)') || text.includes('transform:translateY(-50%)')) foundCentering = true;
       }
     }
 
@@ -29,9 +35,12 @@ async function check() {
     console.log(`- hideCloseButton present: ${foundHideClose}`);
     console.log(`- 'Please nod once' present: ${foundNodOnce}`);
     console.log(`- 'calc(100vw-16px)' present: ${foundResponsiveCalc}`);
+    console.log(`- 'Step 1 of 2 — Face Match' present: ${foundStep1}`);
+    console.log(`- 'Please tilt your head slightly upward' present: ${foundTiltUp}`);
+    console.log(`- Centering transform fallback present: ${foundCentering}`);
 
-    if (foundResponsiveCalc && foundHideClose && foundNodOnce) {
-      console.log('SUCCESS: Production Vercel deployment is serving updated responsive FaceScanDialog assets!');
+    if (foundResponsiveCalc && foundStep1 && foundTiltUp && foundCentering) {
+      console.log('SUCCESS: Production Vercel deployment is serving updated commit 75eefc4 with 1-head movement & centered dialog!');
       process.exit(0);
     } else {
       console.log('PENDING: Vercel deployment is still building or caching previous bundle...');
