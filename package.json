@@ -31,6 +31,7 @@
     "test:stage2-commit": "node scripts/test-stage2-replacement-commit-status-regression.js",
     "test:single-approval": "node --env-file=.env scripts/test-single-approval-face-workflow.js",
     "test:face-controls": "node scripts/test-initial-enrollment-controls-regression.js",
+    "test:locked-face-replacement": "node --env-file=.env scripts/test-locked-face-replacement-regression.js",
     "test:head-liveness": "npx tsx scripts/test-head-movement-liveness.js"
   },
   "dependencies": {

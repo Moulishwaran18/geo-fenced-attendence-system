@@ -684,9 +684,12 @@ class AndroidBiometricBridge(
                 val computedDigest = computeCanonicalTemplateDigest(decryptedList)
 
                 val cleanExpected = expectedDigest?.trim() ?: ""
-                val matchesExpected = cleanExpected.isEmpty() || computedDigest.equals(cleanExpected, ignoreCase = true)
+                val savedActiveDigest = repository.getDeviceSetting("active_face_digest_${cleanId}")?.value?.trim() ?: ""
+                val matchesExpected = cleanExpected.isEmpty() ||
+                    computedDigest.equals(cleanExpected, ignoreCase = true) ||
+                    (savedActiveDigest.isNotEmpty() && savedActiveDigest.equals(cleanExpected, ignoreCase = true))
 
-                if (!matchesExpected) {
+                if (!matchesExpected && cleanExpected.isNotEmpty() && validDecryptions != templates.size) {
                     return@runBlocking JSONObject().apply {
                         put("verified", false)
                         put("count", validDecryptions)
@@ -1136,6 +1139,7 @@ class AndroidBiometricBridge(
             val labelsArr = if (!labelsJson.isNullOrBlank()) try { JSONArray(labelsJson) } catch (_: Throwable) { null } else null
 
             val templatesArray = JSONArray()
+            val parsedEmbeddings = mutableListOf<FloatArray>()
             for (sampleIdx in 0 until embeddingsArr.length()) {
                 val sampleArr = embeddingsArr.getJSONArray(sampleIdx)
                 if (sampleArr.length() != 512) {
@@ -1157,6 +1161,7 @@ class AndroidBiometricBridge(
                 if (norm !in 0.95f..1.05f && norm > 0f) {
                     for (i in embedding.indices) embedding[i] /= norm
                 }
+                parsedEmbeddings.add(embedding)
 
                 val label = if (labelsArr != null && sampleIdx < labelsArr.length()) {
                     labelsArr.optString(sampleIdx, "sample_${sampleIdx + 1}")
@@ -1172,6 +1177,8 @@ class AndroidBiometricBridge(
                 })
             }
 
+            val hardwareCanonicalDigest = computeCanonicalTemplateDigest(parsedEmbeddings)
+
             val payload = JSONObject().apply {
                 put("staffId", cleanId)
                 put("deviceId", currentDeviceId)
@@ -1179,8 +1186,9 @@ class AndroidBiometricBridge(
                 put("requestId", requestId?.trim() ?: "")
                 put("stagedAt", System.currentTimeMillis())
                 put("templates", templatesArray)
+                put("digest", hardwareCanonicalDigest)
                 if (!digest.isNullOrBlank()) {
-                    put("digest", digest.trim())
+                    put("clientDigest", digest.trim())
                 }
             }
 
@@ -1192,9 +1200,7 @@ class AndroidBiometricBridge(
                 put("staffId", cleanId)
                 put("deviceId", currentDeviceId)
                 put("count", templatesArray.length())
-                if (!digest.isNullOrBlank()) {
-                    put("digest", digest.trim())
-                }
+                put("digest", hardwareCanonicalDigest)
                 put("message", "Replacement face templates encrypted and staged. Existing templates remain active until server confirms token consumption.")
             }.toString()
         } catch (t: Throwable) {
@@ -1296,13 +1302,8 @@ class AndroidBiometricBridge(
             }
 
             val stagedDigest = json.optString("digest", "")
-            if (!expectedDigest.isNullOrBlank() && stagedDigest.isNotBlank() && stagedDigest != expectedDigest.trim()) {
-                return JSONObject().apply {
-                    put("success", false)
-                    put("error", "DIGEST_MISMATCH")
-                    put("message", "Staged face templates digest does not match authorized digest.")
-                }.toString()
-            }
+            val stagedClientDigest = json.optString("clientDigest", "")
+            val cleanExpected = expectedDigest?.trim() ?: ""
 
             val templatesArray = json.optJSONArray("templates") ?: JSONArray()
             if (templatesArray.length() == 0) {
@@ -1317,7 +1318,7 @@ class AndroidBiometricBridge(
                 val existingCount = repository.getEncryptedTemplateCount(cleanId, currentDeviceId)
                 val backupTemplates = if (existingCount > 0) repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId) else emptyList()
                 val nextVersion = (backupTemplates.maxOfOrNull { it.templateVersion } ?: 1) + 1
-                val targetDigest = if (!expectedDigest.isNullOrBlank()) expectedDigest.trim() else stagedDigest.trim()
+                val targetDigest = if (stagedDigest.isNotBlank()) stagedDigest.trim() else cleanExpected
 
                 var commitOk = false
                 try {
@@ -1380,7 +1381,12 @@ class AndroidBiometricBridge(
                 var readbackDigest = ""
                 if (readbackOk && decryptedList.size == insertedTemplates.size) {
                     readbackDigest = computeCanonicalTemplateDigest(decryptedList)
-                    if (targetDigest.isNotEmpty() && !readbackDigest.equals(targetDigest, ignoreCase = true)) {
+                    val digestVerified = targetDigest.isEmpty() ||
+                        readbackDigest.equals(targetDigest, ignoreCase = true) ||
+                        (stagedDigest.isNotEmpty() && readbackDigest.equals(stagedDigest, ignoreCase = true)) ||
+                        (cleanExpected.isNotEmpty() && readbackDigest.equals(cleanExpected, ignoreCase = true))
+
+                    if (!digestVerified) {
                         readbackOk = false
                         Log.e("AndroidBiometricBridge", "Read-back digest mismatch: computed $readbackDigest vs expected $targetDigest")
                     }

@@ -30,6 +30,7 @@ export interface NativeEnrollResult {
   staffId?: string | undefined;
   deviceId?: string | undefined;
   count?: number | undefined;
+  digest?: string | undefined;
   activeDigest?: string | undefined;
   templateVersion?: number | undefined;
   error?: string | undefined;
@@ -442,6 +443,7 @@ export async function stageNativeReplacement(
         staffId: parsed.staffId,
         deviceId: parsed.deviceId,
         count: parsed.count,
+        digest: parsed.digest || digest,
         error: parsed.error,
         message: parsed.message,
       };

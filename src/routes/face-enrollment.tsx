@@ -126,6 +126,7 @@ function StaffFaceEnrollmentPage() {
   const [samples, setSamples] = useState<EnrollmentSample[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isReplacementMode, setIsReplacementMode] = useState(false);
 
   const [isActivating, setIsActivating] = useState(false);
@@ -627,6 +628,7 @@ function StaffFaceEnrollmentPage() {
 
   // Save biometric enrollment locally & submit approval request to administrator
   const handleSaveRegistration = async () => {
+    setSaveError(null);
     const validSamples = samples.filter((s) => s.status === "valid" && s.embedding);
 
     if (validSamples.length < MIN_SAMPLES) {
@@ -654,14 +656,29 @@ function StaffFaceEnrollmentPage() {
     try {
       const embeddings = validSamples.map((s) => s.embedding!);
       const labels = validSamples.map((s, idx) => `sample_${idx + 1}`);
-      const oneTimeToken = serverStatus?.oneTimeToken || null;
+
+      const oneTimeToken = (
+        serverStatus?.oneTimeToken ||
+        serverStatus?.approvedRequest?.oneTimeToken ||
+        (serverStatus as any)?.activeRequest?.oneTimeToken ||
+        ""
+      ).trim();
+
+      const isAuthorizedToReplace = Boolean(
+        isEnrolled &&
+        oneTimeToken.startsWith("ftok_") &&
+        (serverStatus?.canSaveReplacement === true ||
+         serverStatus?.approvedRequest?.status === "approved" ||
+         serverStatus?.activeRequest?.status === "approved" ||
+         isApprovedForReplacement)
+      );
 
       // REPLACEMENT ENROLLMENT (Staff already enrolled & locked)
       if (isEnrolled) {
         // SINGLE APPROVAL: Staff authorized by administrator to replace face templates
-        if (serverStatus?.canSaveReplacement && oneTimeToken) {
+        if (isAuthorizedToReplace && oneTimeToken) {
           // STEP 1: Compute canonical cryptographic digest of the new verified embeddings
-          const digest = await computeCanonicalTemplateDigest(embeddings);
+          const jsDigest = await computeCanonicalTemplateDigest(embeddings);
 
           // STEP 2: STAGE REPLACEMENT TEMPLATES LOCALLY (Existing active templates remain untouched)
           const stageRes = await stageNativeReplacement(
@@ -670,27 +687,40 @@ function StaffFaceEnrollmentPage() {
             labels,
             oneTimeToken,
             serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
-            digest
+            jsDigest
           );
 
           if (!stageRes.success) {
-            toast.error(stageRes.message || "Failed to encrypt and stage replacement templates in Android Keystore.");
+            const msg = stageRes.message || "Failed to encrypt and stage replacement templates in Android Keystore.";
+            setSaveError(msg);
+            toast.error(msg);
             return;
           }
+
+          // Authoritative digest: prefer native hardware calculation if available, or client digest
+          const targetDigest = stageRes.digest || jsDigest;
 
           // STEP 3: ATOMICALLY COMMIT REPLACEMENT LOCALLY (With read-back verification & safe rollback)
-          const commitRes = await commitNativeReplacement(staffId, oneTimeToken, digest);
+          const commitRes = await commitNativeReplacement(staffId, oneTimeToken, targetDigest);
           if (!commitRes.success) {
-            toast.error(commitRes.message || "Failed to commit replacement templates. Old templates preserved.");
+            const msg = commitRes.message || "Failed to commit replacement templates. Old templates preserved.";
+            setSaveError(msg);
+            toast.error(msg);
             return;
           }
 
+          const activeDigest = commitRes.activeDigest || targetDigest;
+
           // STEP 4: VERIFY LOCAL PERSISTENCE IN ANDROID KEYSTORE
-          const verifyCheck = await verifyNativePersistence(staffId, digest);
+          const verifyCheck = await verifyNativePersistence(staffId, activeDigest);
           if (!verifyCheck.verified || verifyCheck.count === 0) {
-            toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+            const msg = verifyCheck.message || "Local persistence verification failed. Templates were not confirmed in secure device storage.";
+            setSaveError(msg);
+            toast.error(msg);
             return;
           }
+
+          const finalDigest = verifyCheck.activeDigest || activeDigest;
 
           // STEP 5: SERVER AUTHORIZATION & ATOMIC CONSUMPTION
           const serverEnrollRes = await submitStaffFaceEnrollment(
@@ -699,7 +729,7 @@ function StaffFaceEnrollmentPage() {
               templateCount: verifyCheck.count,
               oneTimeToken,
               requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
-              digest,
+              digest: finalDigest,
             },
             oneTimeToken
           );
@@ -715,11 +745,14 @@ function StaffFaceEnrollmentPage() {
                 stopCamera();
                 setSamples([]);
                 setIsReplacementMode(false);
+                setSaveError(null);
                 await checkStatus();
                 return;
               }
             }
-            toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server. Existing templates remain intact.");
+            const msg = serverEnrollRes.error || "Failed to finalize face enrollment on server. Existing templates remain intact.";
+            setSaveError(msg);
+            toast.error(msg);
             return;
           }
 
@@ -731,6 +764,7 @@ function StaffFaceEnrollmentPage() {
           stopCamera();
           setSamples([]);
           setIsReplacementMode(false);
+          setSaveError(null);
           await checkStatus();
           return;
         }
@@ -751,13 +785,17 @@ function StaffFaceEnrollmentPage() {
       if (oneTimeToken) {
         const enrollResult = await enrollNativeTemplatesBatch(staffId, embeddings, labels, oneTimeToken);
         if (!enrollResult.success) {
-          toast.error(enrollResult.message || "Failed to save templates to Android Keystore.");
+          const msg = enrollResult.message || "Failed to save templates to Android Keystore.";
+          setSaveError(msg);
+          toast.error(msg);
           return;
         }
 
-        const verifyCheck = await verifyNativePersistence(staffId);
+        const verifyCheck = await verifyNativePersistence(staffId, enrollResult.activeDigest);
         if (!verifyCheck.verified || verifyCheck.count === 0) {
-          toast.error("Local persistence verification failed. Templates were not confirmed in secure device storage.");
+          const msg = "Local persistence verification failed. Templates were not confirmed in secure device storage.";
+          setSaveError(msg);
+          toast.error(msg);
           return;
         }
 
@@ -767,12 +805,15 @@ function StaffFaceEnrollmentPage() {
             templateCount: verifyCheck.count,
             oneTimeToken,
             requestId: serverStatus?.approvedRequest?.id || serverStatus?.latestRequest?.id,
+            digest: verifyCheck.activeDigest,
           },
           oneTimeToken
         );
 
         if (!serverEnrollRes.success) {
-          toast.error(serverEnrollRes.error || "Failed to finalize face enrollment on server.");
+          const msg = serverEnrollRes.error || "Failed to finalize face enrollment on server.";
+          setSaveError(msg);
+          toast.error(msg);
           return;
         }
 
@@ -783,6 +824,7 @@ function StaffFaceEnrollmentPage() {
         stopCamera();
         setSamples([]);
         setIsReplacementMode(false);
+        setSaveError(null);
         await checkStatus();
         return;
       }
@@ -790,7 +832,9 @@ function StaffFaceEnrollmentPage() {
       // Initial registration staging workflow
       const stageRes = await stageNativePendingEnrollment(staffId, embeddings, labels);
       if (!stageRes.success) {
-        toast.error(stageRes.message || "Failed to encrypt and stage templates in Android Keystore.");
+        const msg = stageRes.message || "Failed to encrypt and stage templates in Android Keystore.";
+        setSaveError(msg);
+        toast.error(msg);
         return;
       }
 
@@ -801,7 +845,9 @@ function StaffFaceEnrollmentPage() {
       });
 
       if (!reqRes.success) {
-        toast.error(reqRes.error || "Failed to submit face approval request to administrator.");
+        const msg = reqRes.error || "Failed to submit face approval request to administrator.";
+        setSaveError(msg);
+        toast.error(msg);
         return;
       }
 
@@ -811,9 +857,12 @@ function StaffFaceEnrollmentPage() {
 
       stopCamera();
       setIsReplacementMode(false);
+      setSaveError(null);
       await checkStatus();
     } catch (err: any) {
-      toast.error("Failed to save biometric enrollment", { description: err?.message || String(err) });
+      const msg = err?.message || String(err);
+      setSaveError(msg);
+      toast.error("Failed to save biometric enrollment", { description: msg });
     } finally {
       setIsSaving(false);
     }
@@ -2168,6 +2217,18 @@ function StaffFaceEnrollmentPage() {
                     Raw face photos and vectors are <strong>NEVER transmitted to Supabase, Vercel, or cloud servers</strong>.
                   </p>
                 </div>
+
+                {/* Save Error Alert Banner */}
+                {saveError && (
+                  <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-xs text-destructive flex items-start gap-3">
+                    <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                    <div className="flex-1 space-y-1">
+                      <p className="font-semibold text-sm">Save Operation Failed</p>
+                      <p className="leading-relaxed">{saveError}</p>
+                      <p className="text-[11px] text-muted-foreground">Your existing active face templates remain completely safe and protected.</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Save Face Registration Action Button */}
                 <div className="pt-4 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3">
