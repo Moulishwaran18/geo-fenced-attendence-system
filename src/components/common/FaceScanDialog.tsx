@@ -221,7 +221,7 @@ export function FaceScanDialog({
   open,
   onOpenChange,
   onVerified,
-  expectedStaffCode = "PERSON_001",
+  expectedStaffCode = "",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -505,7 +505,7 @@ export function FaceScanDialog({
           return;
         }
 
-        // 1. Capture snapshot for ArcFace 112x112 alignment
+        // 1. Freeze snapshot frame synchronously
         const snapCanvas = document.createElement("canvas");
         snapCanvas.width = video.videoWidth;
         snapCanvas.height = video.videoHeight;
@@ -516,45 +516,110 @@ export function FaceScanDialog({
         }
         snapCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
 
-        // 2. 5-point alignment on live landmarks
+        // Run fresh landmark detection on the EXACT frozen snapshot canvas
+        // This guarantees zero temporal tearing or coordinate drift between pixels and landmarks
+        let matchFace = liveFace;
+        try {
+          const freshFaces = await detectFacesWithLandmarks(snapCanvas);
+          if (freshFaces.length === 1 && freshFaces[0]) {
+            matchFace = freshFaces[0];
+          }
+        } catch (e) {
+          console.warn("[FaceScan] Fallback to liveFace landmarks:", e);
+        }
+
+        // 2. 5-point alignment on exact snapshot landmarks
         const aligned = alignFaceDetailed(
           snapCanvas,
           video.videoWidth,
           video.videoHeight,
-          liveFace.landmarks,
+          matchFace.landmarks,
         );
 
-        // 3. Local ArcFace 512-D inference
-        const doubleRes = await runArcFaceDoubleInference(aligned.planar);
-        const liveEmbedding = doubleRes.embeddingA;
+        // 3. Local ArcFace 512-D inference (Canonical orientation)
+        let doubleRes = await runArcFaceDoubleInference(aligned.planar);
+        let liveEmbedding = doubleRes.embeddingA;
 
-        // 4. Target staff member
+        // 4. Target staff member: prioritize expectedStaffCode, then authenticated session
         const activeStaff = getActiveStaff();
         const targetStaff =
           (expectedStaffCode || "").trim() ||
-          (activeStaff?.staffId || activeStaff?.staff_code || "").trim() ||
-          "PERSON_001";
+          (activeStaff?.staffId || activeStaff?.staff_code || "").trim();
+
+        if (!targetStaff) {
+          isMatchingFaceRef.current = false;
+          setPhase("error");
+          const unauthMsg = "Staff profile not authenticated. Please log in first.";
+          setErrorMessage(unauthMsg);
+          setLiveGuidance(unauthMsg);
+          recordStage("STEP_1_MATCH", "FAILED", "UNAUTHENTICATED", unauthMsg);
+          return;
+        }
 
         // 5. Compare with active registered template locally on device (Step 1)
-        const matchRes = await matchNativeFace(targetStaff, liveEmbedding);
+        let matchRes = await matchNativeFace(targetStaff, liveEmbedding);
+
+        // If canonical orientation is rejected, check horizontally flipped embedding
+        // (Handles selfies saved mirrored by Android front cameras during enrollment)
+        if (!matchRes.matched && (!matchRes.error || matchRes.error === "FACE_NOT_RECOGNIZED")) {
+          try {
+            const flippedPlanar = new Float32Array(aligned.planar.length);
+            const C = 3, H = 112, W = 112;
+            for (let c = 0; c < C; c++) {
+              for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                  flippedPlanar[c * H * W + y * W + (W - 1 - x)] = aligned.planar[c * H * W + y * W + x]!;
+                }
+              }
+            }
+            const flippedRes = await runArcFaceDoubleInference(flippedPlanar);
+            const matchFlipped = await matchNativeFace(targetStaff, flippedRes.embeddingA);
+            if (
+              matchFlipped.matched ||
+              (matchFlipped.distance !== undefined &&
+                matchRes.distance !== undefined &&
+                matchFlipped.distance < matchRes.distance)
+            ) {
+              matchRes = matchFlipped;
+              if (matchFlipped.matched) {
+                liveEmbedding = flippedRes.embeddingA;
+                doubleRes = flippedRes;
+              }
+            }
+          } catch (flipErr) {
+            console.warn("[FaceScan] Flipped ArcFace inference skipped:", flipErr);
+          }
+        }
 
         if (!matchRes.matched) {
           isMatchingFaceRef.current = false;
           setPhase("unrecognized");
-          if (matchRes.requiresEnrollment) {
-            setErrorMessage(
+          if (matchRes.requiresEnrollment || matchRes.error === "NO_LOCAL_TEMPLATE") {
+            const enrollMsg =
               matchRes.message ||
-                `No registered biometric template found on this device for ${targetStaff}. Please enroll first.`,
-            );
+              `No registered biometric template found on this device for ${targetStaff}. Please enroll first.`;
+            setErrorMessage(enrollMsg);
+            setLiveGuidance(enrollMsg);
             recordStage(
               "STEP_1_MATCH",
               "FAILED",
               "NOT_ENROLLED",
               `No local template for ${targetStaff}`,
             );
+          } else if (matchRes.error === "DECRYPTION_FAILED") {
+            const decMsg = "Hardware Keystore decryption failed. Security tag verification rejected. Please re-enroll face.";
+            setErrorMessage(decMsg);
+            setLiveGuidance(decMsg);
+            recordStage("STEP_1_MATCH", "FAILED", "DECRYPTION_FAILED", decMsg);
+          } else if (matchRes.error === "UNTRUSTED_ORIGIN") {
+            const origMsg = "Security violation: Untrusted origin.";
+            setErrorMessage(origMsg);
+            setLiveGuidance(origMsg);
+            recordStage("STEP_1_MATCH", "FAILED", "UNTRUSTED_ORIGIN", origMsg);
           } else {
             const notRecognizedMsg =
-              "Face not recognized. Please position your face inside the frame and try again.";
+              matchRes.message ||
+              `Face not recognized for ${targetStaff}. Please position your face inside the frame and try again.`;
             setErrorMessage(notRecognizedMsg);
             setLiveGuidance(notRecognizedMsg);
             recordStage(
@@ -576,6 +641,7 @@ export function FaceScanDialog({
         );
 
         // Store matched details for Step 4 attestation
+        const resolvedBox = matchFace.box || matchFace.detection?.box || { x: 0, y: 0, width: 0, height: 0 };
         matchedStaffRef.current = {
           staffId: matchRes.staffId || targetStaff,
           name: activeStaff?.name || targetStaff,
@@ -583,12 +649,12 @@ export function FaceScanDialog({
           doubleRes,
           aligned,
           faceBox: {
-            x: Math.round(liveFace.detection.box.x),
-            y: Math.round(liveFace.detection.box.y),
-            width: Math.round(liveFace.detection.box.width),
-            height: Math.round(liveFace.detection.box.height),
+            x: Math.round(resolvedBox.x),
+            y: Math.round(resolvedBox.y),
+            width: Math.round(resolvedBox.width),
+            height: Math.round(resolvedBox.height),
           },
-          liveFace,
+          liveFace: matchFace,
           originalFramePreview: snapCanvas.toDataURL("image/jpeg", 0.85),
           distance: matchRes.distance ?? 0.25,
           threshold: matchRes.threshold ?? 0.45,
@@ -681,13 +747,14 @@ export function FaceScanDialog({
           aligned = matchedData.aligned;
           doubleRes = matchedData.doubleRes;
           faceBox = matchedData.faceBox;
-          liveFaceScore = matchedData.liveFace?.detection?.score ?? 0.98;
+          liveFaceScore = matchedData.liveFace?.confidence ?? matchedData.liveFace?.detection?.score ?? 0.98;
           originalFramePreview = matchedData.originalFramePreview;
+          const boxForCrop = matchedData.liveFace?.box || matchedData.liveFace?.detection?.box || faceBox;
           croppedFacePreview = generateCroppedFacePreview(
             snapCanvas,
             video.videoWidth,
             video.videoHeight,
-            matchedData.liveFace?.detection?.box || faceBox,
+            boxForCrop,
           );
         } else {
           // Fresh alignment fallback
@@ -712,11 +779,12 @@ export function FaceScanDialog({
           }
 
           const liveFace = validDetections[0]!;
+          const resolvedBox = (liveFace as any).box || liveFace.detection?.box || { x: 0, y: 0, width: 0, height: 0 };
           faceBox = {
-            x: Math.round(liveFace.detection.box.x),
-            y: Math.round(liveFace.detection.box.y),
-            width: Math.round(liveFace.detection.box.width),
-            height: Math.round(liveFace.detection.box.height),
+            x: Math.round(resolvedBox.x),
+            y: Math.round(resolvedBox.y),
+            width: Math.round(resolvedBox.width),
+            height: Math.round(resolvedBox.height),
           };
           aligned = alignFaceDetailed(
             snapCanvas,
@@ -731,17 +799,23 @@ export function FaceScanDialog({
             snapCanvas,
             video.videoWidth,
             video.videoHeight,
-            liveFace.detection.box,
+            resolvedBox,
           );
-          liveFaceScore = liveFace.detection.score;
+          liveFaceScore = (liveFace as any).confidence ?? liveFace.detection?.score ?? 0.95;
         }
 
         // 3. Step 4: Final attendance decision & hardware attestation
         const targetStaff =
           matchedData?.staffId ||
           (expectedStaffCode || "").trim() ||
-          (getActiveStaff()?.staffId || getActiveStaff()?.staff_code || "").trim() ||
-          "PERSON_001";
+          (getActiveStaff()?.staffId || getActiveStaff()?.staff_code || "").trim();
+
+        if (!targetStaff) {
+          setPhase("error");
+          setErrorMessage("Staff profile not authenticated. Please log in first.");
+          isVerifyingRef.current = false;
+          return;
+        }
 
         const finalAntiSpoofScore = Math.max(0.85, padResult.medianLiveScore || 0.85);
 
@@ -1559,7 +1633,7 @@ export function FaceScanDialog({
       }}
     >
       <DialogContent
-        className="max-w-2xl max-h-[94vh] overflow-y-auto p-4 sm:p-5"
+        className="w-[calc(100vw-1rem)] sm:w-full max-w-xl max-h-[94vh] overflow-y-auto overflow-x-hidden p-3 sm:p-5"
         onPointerDownOutside={(e) => {
           // Prevent backdrop clicks from closing during attendance verification
           e.preventDefault();
@@ -1574,22 +1648,22 @@ export function FaceScanDialog({
           }
         }}
       >
-        <DialogHeader className="pb-2 border-b border-border">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <DialogTitle className="flex items-center gap-2 text-base">
-                <ScanFace className="size-5 text-primary" />
-                Liveness &amp; Presentation-Attack Protected Face Recognition
+        <DialogHeader className="pb-2 border-b border-border overflow-hidden">
+          <div className="flex items-center justify-between gap-2 overflow-hidden">
+            <div className="min-w-0">
+              <DialogTitle className="flex items-center gap-2 text-sm sm:text-base truncate">
+                <ScanFace className="size-4 sm:size-5 text-primary shrink-0" />
+                <span className="truncate">Liveness &amp; Face Recognition</span>
               </DialogTitle>
-              <DialogDescription className="text-xs">
-                Temporal Active Liveness · MiniFASNet-V2 Anti-Spoof · InsightFace MobileFaceNet ArcFace
+              <DialogDescription className="text-[11px] sm:text-xs truncate">
+                Temporal Liveness · MiniFASNet-V2 Anti-Spoof · ArcFace Biometrics
               </DialogDescription>
             </div>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => handleExplicitClose("User clicked Cancel")}
-              className="h-8 px-2.5 text-muted-foreground hover:text-foreground shrink-0"
+              className="h-8 px-2 text-muted-foreground hover:text-foreground shrink-0"
             >
               <X className="size-4 mr-1" /> Cancel
             </Button>
@@ -1597,7 +1671,7 @@ export function FaceScanDialog({
         </DialogHeader>
 
         {/* Video Camera Container */}
-        <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black border border-border shadow-inner">
+        <div className="relative aspect-[4/3] sm:aspect-video w-full overflow-hidden rounded-xl bg-black border border-border shadow-inner">
           <video
             ref={videoRef}
             playsInline
@@ -1606,7 +1680,7 @@ export function FaceScanDialog({
           />
           <canvas
             ref={canvasRef}
-            className="pointer-events-none absolute inset-0 size-full -scale-x-100"
+            className="pointer-events-none absolute inset-0 size-full object-cover -scale-x-100"
           />
 
           {/* Model Loading State */}
@@ -2056,7 +2130,7 @@ export function FaceScanDialog({
                     <div className="text-muted-foreground font-sans">Final decision</div>
                     <div className="font-bold font-mono truncate">
                       {diag.distance !== null && diag.distance <= diag.threshold ? (
-                        <span className="text-success">PERSON_001 (AUTHORIZED)</span>
+                        <span className="text-success">{expectedStaffCode || getActiveStaff()?.staffId || "STAFF"} (AUTHORIZED)</span>
                       ) : (
                         <span className="text-destructive">UNKNOWN</span>
                       )}
@@ -2343,15 +2417,15 @@ export function FaceScanDialog({
                 </div>
               </div>
 
-              {/* Section 3: PostgreSQL pgvector Distance vs 5 PERSON_001 Reference Embeddings */}
+              {/* Section 3: Cosine Distance vs Active Reference Embeddings */}
               <div className="rounded-lg border border-border bg-muted/30 p-2.5 space-y-2">
                 <div className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground font-sans border-b border-border pb-1">
-                  <span>4. PostgreSQL pgvector Cosine Distance vs 5 PERSON_001 Active Embeddings:</span>
+                  <span className="truncate">4. Local Keystore Cosine Distance vs Active Embeddings:</span>
                   <Badge
                     variant="outline"
                     className={cn(
-                      "text-[10px] font-mono h-4 font-bold",
-                      diag.finalResult.startsWith("PERSON_")
+                      "text-[10px] font-mono h-4 font-bold shrink-0",
+                      diag.finalResult.startsWith("PERSON_") || diag.finalResult.includes("AUTHORIZED")
                         ? "border-success text-success bg-success/10"
                         : "border-destructive text-destructive bg-destructive/10",
                     )}
@@ -2361,7 +2435,7 @@ export function FaceScanDialog({
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[9px] font-mono">
-                  {["P001-1", "P001-2", "P001-3", "P001-4", "P001-5"].map((slot) => {
+                  {["Slot-1", "Slot-2", "Slot-3", "Slot-4", "Slot-5"].map((slot) => {
                     const dist = diag.p001Distances[slot];
                     return (
                       <div key={slot} className="bg-background/80 p-1.5 rounded border border-border text-center">
@@ -2395,7 +2469,7 @@ export function FaceScanDialog({
                     <div className="text-muted-foreground font-sans font-semibold">Final Decision</div>
                     <div className="text-xs font-bold text-foreground font-mono">
                       {diag.distance !== null && diag.distance <= diag.threshold ? (
-                        <span className="text-success">PERSON_001 (AUTHORIZED)</span>
+                        <span className="text-success">{expectedStaffCode || getActiveStaff()?.staffId || "STAFF"} (AUTHORIZED)</span>
                       ) : (
                         <span className="text-destructive">UNKNOWN</span>
                       )}

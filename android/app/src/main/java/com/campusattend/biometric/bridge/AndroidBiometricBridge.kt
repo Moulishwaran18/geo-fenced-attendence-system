@@ -1620,7 +1620,13 @@ class AndroidBiometricBridge(
             }
 
             runBlocking(Dispatchers.IO) {
-                val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                var templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                if (templates.isEmpty()) {
+                    val fallbackTemplates = repository.getEncryptedTemplatesForStaff(cleanId)
+                    if (fallbackTemplates.isNotEmpty()) {
+                        templates = fallbackTemplates
+                    }
+                }
 
                 if (templates.isEmpty()) {
                     return@runBlocking JSONObject().apply {
@@ -1635,19 +1641,28 @@ class AndroidBiometricBridge(
                 var validDecryptions = 0
 
                 for (tmpl in templates) {
+                    val decDeviceId = if (tmpl.deviceId.isNotBlank()) tmpl.deviceId else currentDeviceId
                     val decryptedFloats = keystoreManager.decryptEmbedding(
                         cleanId,
-                        currentDeviceId,
+                        decDeviceId,
                         tmpl.encryptedTemplate,
                         tmpl.iv
                     ) ?: continue
+
+                    // Strictly L2-normalize decrypted template embedding
+                    var decSumSq = 0.0
+                    for (f in decryptedFloats) decSumSq += f * f
+                    val decNorm = sqrt(decSumSq).toFloat()
+                    if (decNorm > 0f) {
+                        for (i in decryptedFloats.indices) decryptedFloats[i] /= decNorm
+                    }
 
                     validDecryptions++
                     var dot = 0.0f
                     for (i in 0 until 512) {
                         dot += liveFloats[i] * decryptedFloats[i]
                     }
-                    val dist = 1.0f - dot
+                    val dist = kotlin.math.max(0.0f, 1.0f - dot)
                     if (dist < bestDistance) {
                         bestDistance = dist
                     }
@@ -1657,7 +1672,7 @@ class AndroidBiometricBridge(
                     return@runBlocking JSONObject().apply {
                         put("matched", false)
                         put("error", "DECRYPTION_FAILED")
-                        put("message", "Hardware keystore decryption failed.")
+                        put("message", "Hardware keystore decryption failed. Security tag verification rejected.")
                     }.toString()
                 }
 
@@ -1683,7 +1698,7 @@ class AndroidBiometricBridge(
                         put("similarity", (1.0f - bestDistance).toDouble())
                         put("threshold", threshold.toDouble())
                         put("error", "FACE_NOT_RECOGNIZED")
-                        put("message", "Face not recognized. Please position your face inside the frame and try again.")
+                        put("message", "Face not recognized. Distance (${String.format(java.util.Locale.US, "%.4f", bestDistance)}) exceeds threshold (${threshold}).")
                     }.toString()
                 }
             }
@@ -1852,7 +1867,13 @@ class AndroidBiometricBridge(
             }
 
             runBlocking(Dispatchers.IO) {
-                val templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                var templates = repository.getEncryptedTemplatesForStaffAndDevice(cleanId, currentDeviceId)
+                if (templates.isEmpty()) {
+                    val fallbackTemplates = repository.getEncryptedTemplatesForStaff(cleanId)
+                    if (fallbackTemplates.isNotEmpty()) {
+                        templates = fallbackTemplates
+                    }
+                }
 
                 if (templates.isEmpty()) {
                     return@runBlocking JSONObject().apply {
@@ -1867,19 +1888,28 @@ class AndroidBiometricBridge(
                 var validDecryptions = 0
 
                 for (tmpl in templates) {
+                    val decDeviceId = if (tmpl.deviceId.isNotBlank()) tmpl.deviceId else currentDeviceId
                     val decryptedFloats = keystoreManager.decryptEmbedding(
                         cleanId,
-                        currentDeviceId,
+                        decDeviceId,
                         tmpl.encryptedTemplate,
                         tmpl.iv
                     ) ?: continue
+
+                    // Strictly L2-normalize decrypted template embedding
+                    var decSumSq = 0.0
+                    for (f in decryptedFloats) decSumSq += f * f
+                    val decNorm = sqrt(decSumSq).toFloat()
+                    if (decNorm > 0f) {
+                        for (i in decryptedFloats.indices) decryptedFloats[i] /= decNorm
+                    }
 
                     validDecryptions++
                     var dot = 0.0f
                     for (i in 0 until 512) {
                         dot += liveFloats[i] * decryptedFloats[i]
                     }
-                    val dist = 1.0f - dot
+                    val dist = kotlin.math.max(0.0f, 1.0f - dot)
                     if (dist < bestDistance) {
                         bestDistance = dist
                     }
@@ -1926,7 +1956,7 @@ class AndroidBiometricBridge(
                         put("distance", bestDistance.toDouble())
                         put("threshold", threshold.toDouble())
                         put("error", "FACE_MISMATCH")
-                        put("message", "Unknown Face. Best distance (${String.format("%.4f", bestDistance)}) exceeds threshold (${threshold}).")
+                        put("message", "Unknown Face. Best distance (${String.format(java.util.Locale.US, "%.4f", bestDistance)}) exceeds threshold (${threshold}).")
                     }.toString()
                 }
             }
