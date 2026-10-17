@@ -48,16 +48,15 @@ export type ChallengeCategory =
   | "turn-left-then-blink"
   | "turn-right-then-blink";
 
-export type StepType = "pose" | "blink" | "nod";
+export type StepType = "pose";
 
-export type LivenessAction = "TURN_LEFT" | "TURN_RIGHT" | "LOOK_UP" | "LOOK_DOWN" | "NOD_ONCE";
+export type LivenessAction = "TURN_LEFT" | "TURN_RIGHT" | "LOOK_UP" | "LOOK_DOWN";
 
 export const SUPPORTED_LIVENESS_ACTIONS: LivenessAction[] = [
   "TURN_LEFT",
   "TURN_RIGHT",
   "LOOK_UP",
   "LOOK_DOWN",
-  "NOD_ONCE",
 ];
 
 export function getActionInstruction(action: LivenessAction): string {
@@ -70,8 +69,6 @@ export function getActionInstruction(action: LivenessAction): string {
       return "Face matched! Please tilt your head slightly upward.";
     case "LOOK_DOWN":
       return "Face matched! Please tilt your head slightly downward.";
-    case "NOD_ONCE":
-      return "Face matched! Please nod once.";
   }
 }
 
@@ -247,8 +244,8 @@ export function generateRandomChallenge(specifiedDirection?: HeadDirection): Gen
 }
 
 /**
- * Generate a single random liveness action from the 5 supported actions:
- * TURN_LEFT, TURN_RIGHT, LOOK_UP, LOOK_DOWN, NOD_ONCE.
+ * Generate a single random liveness action from the 4 supported head movement actions:
+ * TURN_LEFT, TURN_RIGHT, LOOK_UP, LOOK_DOWN.
  */
 export function generateSingleActionChallenge(
   specifiedAction?: LivenessAction,
@@ -261,40 +258,30 @@ export function generateSingleActionChallenge(
       : SUPPORTED_LIVENESS_ACTIONS[Math.floor(Math.random() * SUPPORTED_LIVENESS_ACTIONS.length)]!;
 
   let category: ChallengeCategory = "head-movement";
-  let stepType: StepType = "pose";
+  const stepType: StepType = "pose";
   let targetDirection: HeadDirection = "center";
   let name = "";
 
   switch (action) {
     case "TURN_LEFT":
       category = "turn-left";
-      stepType = "pose";
       targetDirection = "left";
       name = "Turn Left Challenge";
       break;
     case "TURN_RIGHT":
       category = "turn-right";
-      stepType = "pose";
       targetDirection = "right";
       name = "Turn Right Challenge";
       break;
     case "LOOK_UP":
       category = "look-up";
-      stepType = "pose";
       targetDirection = "up";
       name = "Look Up Challenge";
       break;
     case "LOOK_DOWN":
       category = "look-down";
-      stepType = "pose";
       targetDirection = "down";
       name = "Look Down Challenge";
-      break;
-    case "NOD_ONCE":
-      category = "look-down";
-      stepType = "nod";
-      targetDirection = "down";
-      name = "Head Nod Challenge";
       break;
   }
 
@@ -354,7 +341,6 @@ export class LivenessSession {
   // Single Action Challenge State
   private selectedAction: LivenessAction | null = null;
   private consecutiveSatisfiedFrames: number = 0;
-  private nodDownObserved: boolean = false;
   private retryCount: number = 0;
   private timeoutMs: number = 0;
 
@@ -428,7 +414,6 @@ export class LivenessSession {
     this.faceLostFrames = 0;
     this.multiFaceFrames = 0;
     this.consecutiveSatisfiedFrames = 0;
-    this.nodDownObserved = false;
     this.lastBox = null;
     this.lastTimestamp = 0;
     this.earReadings = [];
@@ -445,13 +430,9 @@ export class LivenessSession {
     const current = this.challenge.steps[this.currentStepIndex];
     if (!current) return;
 
-    if (current.type === "blink") {
-      this.blinkDetector.reset(current.targetBlinks ?? 1);
-    } else {
-      // Directional movements require 2 frames (or 3 if baseline not yet calibrated); return-to-center requires 2 frames
-      const reqFrames = current.targetDirection === "center" ? 2 : (this.baselineCalibrated ? 2 : 3);
-      this.poseDetector.reset(current.targetDirection, reqFrames);
-    }
+    // Directional movements require 2 frames (or 3 if baseline not yet calibrated); return-to-center requires 2 frames
+    const reqFrames = current.targetDirection === "center" ? 2 : (this.baselineCalibrated ? 2 : 3);
+    this.poseDetector.reset(current.targetDirection, reqFrames);
   }
 
   /**
@@ -568,36 +549,10 @@ export class LivenessSession {
       return this.evaluateCompletion();
     }
 
-    if (currentStep.type === "blink") {
-      const bState = this.blinkDetector.processFrame(landmarks, now);
-      if (bState.isComplete) {
-        currentStep.completed = true;
-        this.advanceToNextStep();
-      }
-    } else if (currentStep.type === "nod") {
-      const deltaPitch = poseInfo.pitch - this.calibratedBaseline.pitch;
-      if (deltaPitch <= -7.0) {
-        this.nodDownObserved = true;
-      }
-      if (this.nodDownObserved && deltaPitch >= -4.0) {
-        this.consecutiveSatisfiedFrames++;
-        if (this.consecutiveSatisfiedFrames >= 2) {
-          currentStep.completed = true;
-          this.advanceToNextStep();
-        }
-      } else {
-        const pState = this.poseDetector.processFrame(landmarks);
-        if (pState.isSatisfied) {
-          currentStep.completed = true;
-          this.advanceToNextStep();
-        }
-      }
-    } else {
-      const poseState = this.poseDetector.processFrame(landmarks);
-      if (poseState.isSatisfied) {
-        currentStep.completed = true;
-        this.advanceToNextStep();
-      }
+    const poseState = this.poseDetector.processFrame(landmarks);
+    if (poseState.isSatisfied) {
+      currentStep.completed = true;
+      this.advanceToNextStep();
     }
 
     return this.getState();

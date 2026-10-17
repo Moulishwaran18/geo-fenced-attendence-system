@@ -1457,6 +1457,50 @@ export function FaceScanDialog({
   /*  Model Initialization & Dialog Lifecycle                          */
   /* ---------------------------------------------------------------- */
 
+  const loadModelsAndStartCamera = useCallback(async () => {
+    try {
+      setPhase("loading-models");
+      setErrorMessage("");
+      setModelProgress(15);
+
+      await loadModels();
+      setModelProgress(50);
+
+      await initArcFaceSession();
+      setModelProgress(75);
+
+      await antiSpoofServiceRef.current.initializeModel();
+      setModelProgress(100);
+
+      await startCameraRef.current();
+    } catch (err) {
+      console.error("Model loading error:", err);
+      setPhase("error");
+      setErrorMessage(
+        "Failed to load facial recognition models. Please check network/models folder.",
+      );
+    }
+  }, []);
+
+  // Lock background scrolling and touch gestures while overlay is open
+  useEffect(() => {
+    if (!open) return;
+
+    const originalBodyOverflow = document.body.style.overflow;
+    const originalHtmlOverflow = document.documentElement.style.overflow;
+    const originalTouchAction = document.body.style.touchAction;
+
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+
+    return () => {
+      document.body.style.overflow = originalBodyOverflow;
+      document.documentElement.style.overflow = originalHtmlOverflow;
+      document.body.style.touchAction = originalTouchAction;
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open) {
       stopCamera();
@@ -1464,43 +1508,12 @@ export function FaceScanDialog({
       return;
     }
 
-    let isCancelled = false;
-
-    async function init() {
-      try {
-        setPhase("loading-models");
-        setModelProgress(15);
-
-        await loadModels();
-        if (isCancelled) return;
-        setModelProgress(50);
-
-        await initArcFaceSession();
-        if (isCancelled) return;
-        setModelProgress(75);
-
-        await antiSpoofServiceRef.current.initializeModel();
-        if (isCancelled) return;
-        setModelProgress(100);
-
-        await startCameraRef.current();
-      } catch (err) {
-        if (isCancelled) return;
-        console.error("Model loading error:", err);
-        setPhase("error");
-        setErrorMessage(
-          "Failed to load facial recognition models. Please check network/models folder.",
-        );
-      }
-    }
-
-    void init();
+    void loadModelsAndStartCamera();
 
     return () => {
-      isCancelled = true;
       stopCamera();
     };
-  }, [open, stopCamera]);
+  }, [open, loadModelsAndStartCamera, stopCamera]);
 
   const copyDiagnostics = useCallback(() => {
     const diagnosticPayload = {
@@ -1665,8 +1678,9 @@ export function FaceScanDialog({
       }}
     >
       <DialogContent
+        fullScreen={true}
         hideCloseButton={true}
-        className="fixed inset-x-0 mx-auto translate-x-0 top-1/2 -translate-y-1/2 [transform:translateY(-50%)] w-[calc(100vw-16px)] sm:w-full max-w-xl max-h-[92vh] max-h-[calc(100dvh-20px)] overflow-y-auto overflow-x-hidden p-3 sm:p-5 box-border min-w-0"
+        className="fixed inset-0 z-50 flex flex-col w-full h-full h-[100dvh] bg-background text-foreground border-none shadow-none p-0 overflow-y-auto overflow-x-hidden m-0 rounded-none [transform:none]"
         onPointerDownOutside={(e) => {
           // Prevent backdrop clicks from closing during attendance verification
           e.preventDefault();
@@ -1681,13 +1695,15 @@ export function FaceScanDialog({
           }
         }}
       >
-        <DialogHeader className="pb-2 border-b border-border overflow-hidden min-w-0">
-          <div className="flex items-center justify-between gap-2 min-w-0">
+        <div className="w-full h-full min-h-[100dvh] max-w-lg mx-auto flex flex-col justify-between p-3 sm:p-5 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] px-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] box-border min-w-0">
+          {/* 1. A compact header titled Face Authentication, with one visible Close button */}
+          {/* 2. Progress label: Step 1 of 2 — Face Match / Step 2 of 2 — Head Movement */}
+          <div className="flex items-center justify-between gap-2 border-b border-border pb-2.5 min-w-0 shrink-0">
             <div className="min-w-0 flex-1">
-              <DialogTitle className="flex items-center gap-1.5 sm:gap-2 text-sm sm:text-base font-bold text-foreground min-w-0">
+              <div className="flex items-center gap-1.5 sm:gap-2 text-sm sm:text-base font-bold text-foreground min-w-0">
                 <ScanFace className="size-4 sm:size-5 text-primary shrink-0" />
                 <span className="truncate">Face Authentication</span>
-              </DialogTitle>
+              </div>
               <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
                 <Badge
                   variant="outline"
@@ -1712,225 +1728,209 @@ export function FaceScanDialog({
               variant="ghost"
               size="sm"
               onClick={() => handleExplicitClose("User clicked Close")}
-              className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1"
+              className="h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground shrink-0 gap-1 rounded-lg"
             >
               <X className="size-4" />
               <span>Close</span>
             </Button>
           </div>
-        </DialogHeader>
 
-        {/* Video Camera Container */}
-        <div className="relative aspect-[4/3] sm:aspect-video w-full max-w-full overflow-hidden rounded-xl bg-black border border-border shadow-inner min-w-0">
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            className="size-full object-cover -scale-x-100 block"
-          />
-          <canvas
-            ref={canvasRef}
-            className="pointer-events-none absolute inset-0 size-full object-cover -scale-x-100 block"
-          />
+          {/* 3. A large, centered live camera preview occupying most of the available screen */}
+          <div className="flex-1 min-h-[260px] max-h-[56dvh] w-full max-w-sm sm:max-w-md mx-auto my-auto flex items-center justify-center min-w-0 py-2 shrink-0">
+            <div className="relative aspect-[3/4] w-full h-full max-h-full overflow-hidden rounded-2xl bg-black border-2 border-border/80 shadow-2xl min-w-0">
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                className="size-full object-cover -scale-x-100 block"
+              />
+              <canvas
+                ref={canvasRef}
+                className="pointer-events-none absolute inset-0 size-full object-cover -scale-x-100 block"
+              />
 
-          {/* Model Loading State */}
-          {phase === "loading-models" && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 p-4 sm:p-6 text-center z-20 min-w-0">
-              <div className="w-full max-w-xs space-y-3 text-center min-w-0 px-2">
-                <Loader2 className="mx-auto size-8 animate-spin text-primary shrink-0" />
-                <p className="text-sm font-semibold text-foreground break-words leading-snug">
-                  Loading face recognition models…
-                </p>
-                <Progress value={modelProgress} className="h-2 w-full max-w-full" />
-                <p className="text-xs text-muted-foreground font-mono">
-                  {modelProgress > 0 ? `${modelProgress}%` : "Initializing neural networks…"}
-                </p>
+              {/* Subtly framed face guide oval */}
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
+                <div
+                  className={cn(
+                    "w-44 h-60 sm:w-52 sm:h-72 rounded-[48%] border-2 border-dashed transition-colors duration-300",
+                    faceDetected
+                      ? "border-emerald-400/60 shadow-[0_0_24px_rgba(52,211,153,0.2)]"
+                      : "border-white/30",
+                  )}
+                />
               </div>
-            </div>
-          )}
 
-          {/* Camera Starting State */}
-          {phase === "starting" && (
-            <div className="absolute inset-0 grid place-items-center bg-muted/80 text-xs sm:text-sm text-muted-foreground p-3 text-center min-w-0">
-              <span className="flex items-center gap-2">
-                <Loader2 className="size-4 animate-spin shrink-0" aria-hidden /> Starting camera feed…
-              </span>
-            </div>
-          )}
-
-          {/* Recognizing State */}
-          {phase === "recognizing" && (
-            <div className="absolute inset-0 grid place-items-center bg-black/60 backdrop-blur-[2px] text-white p-3 text-center min-w-0">
-              <div className="text-center space-y-2 min-w-0">
-                <Loader2 className="size-7 sm:size-8 animate-spin mx-auto text-primary" />
-                <p className="text-xs sm:text-sm font-semibold">112×112 ArcFace Inference &amp; Biometric Verification…</p>
-              </div>
-            </div>
-          )}
-
-          {/* Active Liveness Challenge HUD */}
-          {phase === "liveness-challenge" && livenessState && (
-            <div className="absolute top-1.5 inset-x-1.5 sm:top-2 sm:inset-x-2 flex flex-col items-center gap-1.5 pointer-events-none z-10 min-w-0">
-              <div className="w-full max-w-[calc(100%-8px)] sm:max-w-sm bg-black/90 backdrop-blur-md border border-primary/50 rounded-lg p-2 sm:p-2.5 shadow-lg text-white space-y-1.5 sm:space-y-2 pointer-events-auto min-w-0 box-border">
-                <div className="flex items-center justify-between text-[11px] sm:text-xs min-w-0 gap-1.5">
-                  <span className="font-semibold text-primary flex items-center gap-1.5 truncate">
-                    <Sparkles className="size-3.5 text-primary animate-pulse shrink-0" />
-                    <span className="truncate">Liveness Verification Challenge</span>
-                  </span>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[9px] sm:text-[10px] bg-emerald-500/10 font-bold flex items-center gap-1 px-1.5 py-0">
-                      <Timer className="size-3 text-emerald-300 shrink-0" />
-                      {livenessState.timeRemainingSec ?? 10}s
-                    </Badge>
+              {/* Model Loading State */}
+              {phase === "loading-models" && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 p-4 sm:p-6 text-center z-20 min-w-0">
+                  <div className="w-full max-w-xs space-y-3 text-center min-w-0 px-2">
+                    <Loader2 className="mx-auto size-8 animate-spin text-primary shrink-0" />
+                    <p className="text-sm font-semibold text-foreground break-words leading-snug">
+                      Loading face recognition models…
+                    </p>
+                    <Progress value={modelProgress} className="h-2 w-full max-w-full" />
+                    <p className="text-xs text-muted-foreground font-mono">
+                      {modelProgress > 0 ? `${modelProgress}%` : "Initializing neural networks…"}
+                    </p>
                   </div>
+                </div>
+              )}
+
+              {/* Camera Starting State */}
+              {phase === "starting" && (
+                <div className="absolute inset-0 grid place-items-center bg-background/90 text-xs sm:text-sm text-muted-foreground p-3 text-center min-w-0 z-20">
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="size-4 animate-spin shrink-0 text-primary" aria-hidden /> Starting camera feed…
+                  </span>
+                </div>
+              )}
+
+              {/* Recognizing State */}
+              {phase === "recognizing" && (
+                <div className="absolute inset-0 grid place-items-center bg-black/60 backdrop-blur-[2px] text-white p-3 text-center min-w-0 z-20">
+                  <div className="text-center space-y-2 min-w-0">
+                    <Loader2 className="size-8 animate-spin mx-auto text-primary" />
+                    <p className="text-xs sm:text-sm font-semibold">112×112 ArcFace Inference &amp; Biometric Verification…</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Camera or Model Loading Error with Retry */}
+              {phase === "error" && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center bg-background/95 min-w-0 z-20">
+                  <CameraOff className="size-10 text-destructive shrink-0" aria-hidden />
+                  <p className="text-xs sm:text-sm text-destructive font-medium break-words max-w-xs">{errorMessage}</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setPhase("loading-models");
+                      void loadModelsAndStartCamera();
+                    }}
+                    className="text-xs font-semibold gap-1.5"
+                  >
+                    <RefreshCw className="size-3.5" />
+                    <span>Retry</span>
+                  </Button>
+                </div>
+              )}
+
+              {/* Matched State Banner */}
+              {phase === "matched" && matchName && (
+                <div className="absolute inset-x-0 bottom-0 bg-emerald-600/95 text-white px-3 py-2 text-center backdrop-blur-sm min-w-0 z-10">
+                  <p className="flex items-center justify-center gap-1.5 text-xs font-bold break-words">
+                    <ShieldCheck className="size-4 shrink-0" />
+                    <span className="min-w-0 truncate">Recognized: {matchCode} ({matchName})</span>
+                  </p>
+                </div>
+              )}
+
+              {/* Unrecognized / Mismatch Banner */}
+              {phase === "unrecognized" && (
+                <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2 text-center backdrop-blur-sm space-y-0.5 min-w-0 z-10">
+                  <p className="flex items-center justify-center gap-1 text-xs font-bold break-words">
+                    <XCircle className="size-4 shrink-0" />
+                    <span className="min-w-0 break-words">{errorMessage || "Face not recognized. Please position your face inside the frame and try again."}</span>
+                  </p>
+                </div>
+              )}
+
+              {/* Spoof Detected Banner */}
+              {phase === "spoof-detected" && (
+                <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-3 py-2 text-center backdrop-blur-sm space-y-0.5 min-w-0 z-10">
+                  <p className="flex items-center justify-center gap-1.5 text-xs font-bold text-white break-words">
+                    <ShieldAlert className="size-4 text-amber-200 shrink-0" />
+                    <span className="min-w-0 break-words">{errorMessage || "Presentation attack or spoofing detected. Verification rejected."}</span>
+                  </p>
+                </div>
+              )}
+
+              {/* Subtle top indicator during detecting */}
+              {phase === "detecting" && (
+                <div className="absolute top-2 left-2 right-2 flex items-center justify-between gap-1.5 pointer-events-none z-10 min-w-0">
+                  <div className="bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-mono border border-white/10 text-white shrink-0">
+                    {diag.faceCount === 1 ? (
+                      <span className="text-emerald-400 font-bold">● 1 Face ({(diag.faceConfidence * 100).toFixed(0)}%)</span>
+                    ) : (
+                      <span className="text-amber-400">○ Position Face</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 4. A clearly visible status or movement instruction */}
+          <div className="w-full max-w-sm sm:max-w-md mx-auto my-1.5 space-y-1.5 min-w-0 shrink-0">
+            {phase === "liveness-challenge" && livenessState ? (
+              <div className="bg-zinc-900 border border-emerald-500/50 rounded-xl p-2.5 sm:p-3 shadow-md text-white space-y-2 min-w-0">
+                <div className="flex items-center justify-between text-xs min-w-0 gap-2">
+                  <span className="font-semibold text-emerald-400 flex items-center gap-1.5 truncate">
+                    <Sparkles className="size-3.5 text-emerald-400 animate-pulse shrink-0" />
+                    <span className="truncate">Step 2: Head Movement Challenge</span>
+                  </span>
+                  <Badge variant="outline" className="border-emerald-400 text-emerald-300 font-mono text-[10px] bg-emerald-500/10 font-bold flex items-center gap-1 px-1.5 py-0 shrink-0">
+                    <Timer className="size-3 text-emerald-300 shrink-0" />
+                    {livenessState.timeRemainingSec ?? 10}s
+                  </Badge>
                 </div>
 
                 <Progress
-                  value={Math.max(
-                    0,
-                    Math.min(
-                      100,
-                      Math.round(((livenessState.timeRemainingSec ?? 10) / 10) * 100),
-                    ),
-                  )}
+                  value={Math.max(0, Math.min(100, Math.round(((livenessState.timeRemainingSec ?? 10) / 10) * 100)))}
                   className="h-1.5 bg-white/20"
                 />
 
                 <div className="text-center pt-0.5 space-y-1 min-w-0">
-                  <div className="text-xs sm:text-sm font-bold text-emerald-400 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 leading-tight px-1 min-w-0">
+                  <div className="text-xs sm:text-sm font-bold text-emerald-300 flex items-center justify-center gap-2 leading-snug px-1 min-w-0">
                     <div className="flex items-center justify-center shrink-0">
                       {livenessState.poseState?.targetDirection === "left" && (
-                        <ArrowLeft className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                        <ArrowLeft className="size-5 animate-pulse text-emerald-400" />
                       )}
                       {livenessState.poseState?.targetDirection === "right" && (
-                        <ArrowRight className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                        <ArrowRight className="size-5 animate-pulse text-emerald-400" />
                       )}
                       {livenessState.poseState?.targetDirection === "up" && (
-                        <ArrowUp className="size-4 sm:size-5 animate-pulse text-emerald-400" />
+                        <ArrowUp className="size-5 animate-pulse text-emerald-400" />
                       )}
                       {livenessState.poseState?.targetDirection === "down" && (
-                        <ArrowDown className="size-4 sm:size-5 animate-pulse text-emerald-400" />
-                      )}
-                      {livenessState.poseState?.targetDirection === "center" && (
-                        <Crosshair className="size-4 sm:size-5 animate-spin text-emerald-400" />
+                        <ArrowDown className="size-5 animate-pulse text-emerald-400" />
                       )}
                     </div>
-                    <span className="min-w-0 break-words whitespace-normal text-center font-bold text-emerald-300 leading-snug">
+                    <span className="min-w-0 break-words whitespace-normal text-center font-bold text-emerald-300">
                       {livenessState.instruction}
                     </span>
                   </div>
-
-                  {livenessState.poseState && (
-                    <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[9px] sm:text-[10px] text-zinc-300 font-mono">
-                      <span>
-                        ΔYaw: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.yaw ?? 0) >= 14 ? "text-emerald-300" : "text-white")}>
-                          {(livenessState.poseState?.deltaAngles.yaw ?? 0) > 0 ? "+" : ""}
-                          {(livenessState.poseState?.deltaAngles.yaw ?? 0).toFixed(1)}°
-                        </span>
-                      </span>
-                      <span>·</span>
-                      <span>
-                        ΔPitch: <span className={cn("font-semibold", Math.abs(livenessState.poseState?.deltaAngles.pitch ?? 0) >= 9 ? "text-emerald-300" : "text-white")}>
-                          {(livenessState.poseState?.deltaAngles.pitch ?? 0) > 0 ? "+" : ""}
-                          {(livenessState.poseState?.deltaAngles.pitch ?? 0).toFixed(1)}°
-                        </span>
-                      </span>
-                      <span>·</span>
-                      <span>
-                        Hold: <span className={cn("font-semibold", (livenessState.poseState?.consecutiveFramesSatisfied ?? 0) >= 2 ? "text-emerald-300" : "text-amber-300")}>
-                          {livenessState.poseState?.consecutiveFramesSatisfied ?? 0}/{livenessState.poseState?.requiredFrames ?? 2}
-                        </span>
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* Spoof Detected Banner */}
-          {phase === "spoof-detected" && (
-            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-2.5 sm:px-3 py-2 text-center backdrop-blur-sm space-y-0.5 z-10 min-w-0">
-              <p className="flex items-center justify-center gap-1.5 text-xs font-bold text-white break-words">
-                <ShieldAlert className="size-4 text-amber-200 shrink-0" />
-                <span className="min-w-0 break-words">{errorMessage || "Presentation attack or spoofing detected. Verification rejected."}</span>
-              </p>
-              <p className="text-[10px] sm:text-[11px] text-white/80 break-words">
-                Static photographs, screen replays, and unverified movements are prohibited.
-              </p>
-            </div>
-          )}
-
-          {/* Camera Error */}
-          {phase === "error" && (
-            <div className="absolute inset-0 grid place-items-center gap-2 p-4 text-center bg-muted/95 min-w-0">
-              <div className="min-w-0 max-w-xs">
-                <CameraOff className="mx-auto size-8 text-destructive" aria-hidden />
-                <p className="mt-2 text-xs sm:text-sm text-destructive font-medium break-words">{errorMessage}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Matched State Banner */}
-          {phase === "matched" && matchName && (
-            <div className="absolute inset-x-0 bottom-0 bg-success/95 text-white px-2.5 sm:px-3 py-2 text-center backdrop-blur-sm min-w-0">
-              <p className="flex items-center justify-center gap-1.5 text-xs font-bold break-words">
-                <ShieldCheck className="size-4 shrink-0" />
-                <span className="min-w-0 truncate">Recognized: {matchCode} ({matchName})</span>
-              </p>
-            </div>
-          )}
-
-          {/* Unrecognized / Unknown State Banner */}
-          {phase === "unrecognized" && (
-            <div className="absolute inset-x-0 bottom-0 bg-destructive/95 text-white px-2.5 sm:px-3 py-2 text-center backdrop-blur-sm space-y-1 min-w-0">
-              <p className="flex items-center justify-center gap-1 text-xs font-bold break-words">
-                <XCircle className="size-4 shrink-0" />
-                <span className="min-w-0 break-words">{errorMessage || "Face not recognized. Please position your face inside the frame and try again."}</span>
-              </p>
-            </div>
-          )}
-
-          {/* Live Guidance Indicator */}
-          {phase === "detecting" && (
-            <div className="absolute top-2 left-2 right-2 flex flex-wrap items-center gap-1.5 pointer-events-none z-10 min-w-0">
-              <div className="bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-mono border border-white/10 text-white shrink-0">
-                {diag.faceCount === 1 ? (
-                  <span className="text-emerald-400 font-bold">● 1 Face ({(diag.faceConfidence * 100).toFixed(0)}%)</span>
-                ) : (
-                  <span className="text-amber-400">○ Center face</span>
+            ) : (
+              <div className="bg-muted/60 border border-border rounded-xl p-2 sm:p-2.5 text-center min-w-0">
+                <p className="text-xs sm:text-sm font-semibold text-foreground break-words min-w-0">
+                  {phase === "detecting"
+                    ? (faceDetected ? "Face framed ✓ Hold still to authenticate..." : "Position your face inside the frame.")
+                    : phase === "recognizing"
+                      ? "Movement verified. Checking attendance eligibility…"
+                      : phase === "matched"
+                        ? "Face verified! Attendance authorized."
+                        : phase === "unrecognized"
+                          ? (errorMessage || "Face not recognized. Please reposition and try again.")
+                          : liveGuidance}
+                </p>
+                {phase === "detecting" && faceDetected && (
+                  <div className="mt-1.5 space-y-1">
+                    <Progress value={stableFaceProgress} className="h-1.5 bg-background" />
+                  </div>
                 )}
               </div>
-              <div className="bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-sans border border-white/10 text-white font-medium truncate max-w-[calc(100%-110px)] sm:max-w-none">
-                {liveGuidance}
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {/* PRIMARY ACTION BUTTON */}
-        <div className="pt-1 space-y-2 min-w-0">
-          {phase === "detecting" && (
-            <>
-              {faceDetected && (
-                <div className="space-y-1 bg-muted/40 p-2.5 rounded-lg border border-border min-w-0">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground gap-1 min-w-0">
-                    <span className="flex items-center gap-1.5 font-medium text-emerald-500 truncate">
-                      <Sparkles className="size-3.5 animate-pulse shrink-0" />
-                      Face detected &amp; centered
-                    </span>
-                    <span className="font-mono text-[10px] sm:text-[11px] font-semibold text-foreground shrink-0">
-                      {stableFaceProgress >= 100
-                        ? "Authenticating face..."
-                        : `Auto in ${Math.max(0, 0.5 - stableFaceProgress * 0.005).toFixed(1)}s`}
-                    </span>
-                  </div>
-                  <Progress value={stableFaceProgress} className="h-1.5 bg-background" />
-                </div>
-              )}
+          {/* 5. One primary action when needed, such as Start Face Check or Try Again */}
+          <div className="w-full max-w-sm sm:max-w-md mx-auto space-y-2 min-w-0 shrink-0">
+            {phase === "detecting" && (
               <Button
                 size="lg"
-                className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
+                className="w-full whitespace-normal h-auto min-h-[2.75rem] py-2.5 px-4 text-xs sm:text-sm bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
                 disabled={!faceDetected}
                 onClick={() => {
                   if (lastDetectedFaceRef.current) {
@@ -1944,102 +1944,89 @@ export function FaceScanDialog({
                 <ShieldCheck className="size-4 sm:size-5 shrink-0" />
                 <span className="min-w-0 break-words">Start Face Check</span>
               </Button>
-            </>
-          )}
+            )}
 
-          {phase === "liveness-challenge" && (
-            <div className="flex flex-col sm:flex-row gap-2 w-full min-w-0">
-              <div
-                className="flex-1 min-w-0 bg-amber-600 text-white font-bold py-3 px-3.5 rounded-lg text-xs sm:text-sm shadow-md flex items-center justify-center gap-2 text-center leading-snug break-words"
-                role="status"
-                aria-live="polite"
-              >
-                <Loader2 className="size-4 sm:size-5 animate-spin shrink-0 text-amber-100" />
-                <span className="min-w-0 break-words whitespace-normal font-semibold">
-                  {liveGuidance}
-                </span>
-              </div>
+            {phase === "liveness-challenge" && (
               <Button
                 size="lg"
                 variant="outline"
-                className="w-full sm:w-auto border-border text-foreground hover:bg-destructive/10 hover:text-destructive font-semibold px-4 py-3 h-auto text-xs sm:text-sm shrink-0"
+                className="w-full border-border text-foreground hover:bg-destructive/10 hover:text-destructive font-semibold py-2.5 h-auto text-xs sm:text-sm"
                 onClick={() => handleExplicitClose("User cancelled liveness challenge")}
               >
                 <X className="size-4 mr-1.5 shrink-0" /> Cancel
               </Button>
-            </div>
-          )}
+            )}
 
-          {phase === "recognizing" && (
-            <Button
-              size="lg"
-              className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-blue-600 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 cursor-wait text-center leading-snug"
-              disabled
-            >
-              <Loader2 className="size-4 sm:size-5 animate-spin shrink-0" />
-              <span className="min-w-0 break-words">FINALIZING BIOMETRIC VERIFICATION &amp; ATTESTATION…</span>
-            </Button>
-          )}
-
-          {(phase === "spoof-detected" || phase === "error" || phase === "unrecognized") && (
-            <div className="flex flex-col sm:flex-row gap-2 w-full min-w-0">
+            {phase === "recognizing" && (
               <Button
                 size="lg"
-                className="flex-1 min-w-0 whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
-                onClick={() => {
-                  setPhase("detecting");
-                  setErrorMessage("");
-                  setMatchName("");
-                  setMatchCode("");
-                  isVerifyingRef.current = false;
-                  isMatchingFaceRef.current = false;
-                  livenessRetriesRef.current = 0;
-                  matchedStaffRef.current = null;
-                  stableFaceFramesRef.current = 0;
-                  multiFaceConsecutiveFramesRef.current = 0;
-                  setStableFaceProgress(0);
-                  antiSpoofServiceRef.current.reset();
-                  livenessSessionRef.current = null;
-                  recordStage("RETRY", "DETECTING", "RESET", "User restarted challenge verification");
-                  startDetectionLoopRef.current();
-                }}
+                className="w-full whitespace-normal h-auto min-h-[2.75rem] py-2.5 px-4 text-xs sm:text-sm bg-blue-600 text-white font-bold shadow-md flex items-center justify-center gap-2 cursor-wait text-center leading-snug"
+                disabled
               >
-                <RefreshCw className="size-4 sm:size-5 shrink-0" />
-                <span className="min-w-0 break-words">Try Again</span>
+                <Loader2 className="size-4 sm:size-5 animate-spin shrink-0" />
+                <span className="min-w-0 break-words">VERIFYING BIOMETRICS &amp; ATTESTATION…</span>
               </Button>
+            )}
+
+            {(phase === "spoof-detected" || phase === "error" || phase === "unrecognized") && (
+              <div className="flex gap-2 w-full min-w-0">
+                <Button
+                  size="lg"
+                  className="flex-1 min-w-0 whitespace-normal h-auto min-h-[2.75rem] py-2.5 px-4 text-xs sm:text-sm bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
+                  onClick={() => {
+                    setPhase("detecting");
+                    setErrorMessage("");
+                    setMatchName("");
+                    setMatchCode("");
+                    isVerifyingRef.current = false;
+                    isMatchingFaceRef.current = false;
+                    livenessRetriesRef.current = 0;
+                    matchedStaffRef.current = null;
+                    stableFaceFramesRef.current = 0;
+                    multiFaceConsecutiveFramesRef.current = 0;
+                    setStableFaceProgress(0);
+                    antiSpoofServiceRef.current.reset();
+                    livenessSessionRef.current = null;
+                    recordStage("RETRY", "DETECTING", "RESET", "User restarted challenge verification");
+                    startDetectionLoopRef.current();
+                  }}
+                >
+                  <RefreshCw className="size-4 sm:size-5 shrink-0" />
+                  <span className="min-w-0 break-words">Try Again</span>
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="border-border text-foreground hover:bg-muted font-semibold px-4 py-2.5 h-auto text-xs sm:text-sm shrink-0"
+                  onClick={() => handleExplicitClose("User closed after challenge failure")}
+                >
+                  <X className="size-4 mr-1.5 shrink-0" /> Close
+                </Button>
+              </div>
+            )}
+
+            {phase === "matched" && (
               <Button
                 size="lg"
-                variant="outline"
-                className="w-full sm:w-auto border-border text-foreground hover:bg-muted font-semibold px-5 py-3 h-auto text-xs sm:text-sm shrink-0"
-                onClick={() => handleExplicitClose("User closed after challenge failure")}
+                className="w-full whitespace-normal h-auto min-h-[2.75rem] py-2.5 px-4 text-xs sm:text-sm bg-emerald-700 text-white font-bold shadow-md flex items-center justify-center gap-2 text-center leading-snug"
+                disabled
               >
-                <X className="size-4 mr-1.5 shrink-0" /> Close
+                <CheckCircle2 className="size-4 sm:size-5 shrink-0" />
+                <span className="min-w-0 break-words">BIOMETRICALLY VERIFIED &amp; AUTHORIZED</span>
               </Button>
-            </div>
-          )}
+            )}
 
-          {phase === "matched" && (
-            <Button
-              size="lg"
-              className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-emerald-700 text-white font-bold shadow-md transition-all flex items-center justify-center gap-2 text-center leading-snug"
-              disabled
-            >
-              <CheckCircle2 className="size-4 sm:size-5 shrink-0" />
-              <span className="min-w-0 break-words">BIOMETRICALLY VERIFIED &amp; AUTHORIZED</span>
-            </Button>
-          )}
-
-          {(phase === "loading-models" || phase === "starting") && (
-            <Button
-              size="lg"
-              className="w-full whitespace-normal h-auto min-h-[3rem] py-3 px-4 text-xs sm:text-sm bg-muted text-muted-foreground font-bold shadow-md flex items-center justify-center gap-2 text-center leading-snug"
-              disabled
-            >
-              <Loader2 className="size-4 sm:size-5 animate-spin shrink-0" />
-              <span className="min-w-0 break-words">INITIALIZING HARDWARE &amp; AI MODELS…</span>
-            </Button>
-          )}
-        </div>
+            {(phase === "loading-models" || phase === "starting") && (
+              <Button
+                size="lg"
+                className="w-full whitespace-normal h-auto min-h-[2.75rem] py-2.5 px-4 text-xs sm:text-sm bg-muted text-muted-foreground font-bold shadow-md flex items-center justify-center gap-2 text-center leading-snug"
+                disabled
+              >
+                <Loader2 className="size-4 sm:size-5 animate-spin shrink-0" />
+                <span className="min-w-0 break-words">INITIALIZING HARDWARE &amp; AI MODELS…</span>
+              </Button>
+            )}
+          </div>
 
         {/* ================================================== */}
         {/* ADVANCED DIAGNOSTICS & TELEMETRY PANEL             */}
@@ -2539,25 +2526,6 @@ export function FaceScanDialog({
             </div>
           )}
         </div>
-
-        {/* Action Controls */}
-        <div className="flex gap-2 min-w-0">
-          {phase === "matched" || phase === "unrecognized" || phase === "error" ? (
-            <Button
-              className="w-full text-xs sm:text-sm py-2.5 h-auto min-h-[2.5rem]"
-              variant="outline"
-              onClick={() => {
-                setPhase("detecting");
-                setErrorMessage("");
-                setMatchName("");
-                setMatchCode("");
-                isVerifyingRef.current = false;
-                startDetectionLoopRef.current();
-              }}
-            >
-              <RefreshCw className="mr-2 size-4 shrink-0" /> Reset / Ready Next Frame
-            </Button>
-          ) : null}
         </div>
       </DialogContent>
     </Dialog>

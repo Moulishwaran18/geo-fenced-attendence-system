@@ -832,15 +832,16 @@ async function runTestSuite() {
   }
 
   // ---------------------------------------------------------------------------
-  // TEST 20: Verified removal of BLINK_ONCE & strict 5-action random generation
+  // TEST 20: Verified removal of BLINK_ONCE & NOD_ONCE (Strict 4 Allowed Actions)
   // ---------------------------------------------------------------------------
-  console.log("--- TEST 20: Verified Removal of BLINK_ONCE & 5 Allowed Actions ---");
+  console.log("--- TEST 20: Verified Removal of BLINK_ONCE & NOD_ONCE (Exactly 4 Allowed Actions) ---");
   {
-    const expected = ["TURN_LEFT", "TURN_RIGHT", "LOOK_UP", "LOOK_DOWN", "NOD_ONCE"];
+    const expected = ["TURN_LEFT", "TURN_RIGHT", "LOOK_UP", "LOOK_DOWN"];
     const actionsMatch =
-      SUPPORTED_LIVENESS_ACTIONS.length === 5 &&
+      SUPPORTED_LIVENESS_ACTIONS.length === 4 &&
       expected.every((a) => SUPPORTED_LIVENESS_ACTIONS.includes(a)) &&
-      !SUPPORTED_LIVENESS_ACTIONS.includes("BLINK_ONCE");
+      !SUPPORTED_LIVENESS_ACTIONS.includes("BLINK_ONCE") &&
+      !SUPPORTED_LIVENESS_ACTIONS.includes("NOD_ONCE");
 
     // Sample 250 single action challenges
     const sampledCounts = {};
@@ -851,23 +852,24 @@ async function runTestSuite() {
     }
 
     const hasBlink = Boolean(sampledCounts["BLINK_ONCE"]);
-    const hasAllFive = expected.every((a) => (sampledCounts[a] || 0) > 0);
+    const hasNod = Boolean(sampledCounts["NOD_ONCE"]);
+    const hasAllFour = expected.every((a) => (sampledCounts[a] || 0) > 0);
 
     console.log("Supported Actions List:", SUPPORTED_LIVENESS_ACTIONS);
     console.log("250 Sampled Challenge Counts:", sampledCounts);
 
-    if (actionsMatch && !hasBlink && hasAllFive) {
-      console.log("✓ TEST 20 PASSED: BLINK_ONCE is strictly eliminated; only 5 allowed head movement actions generated!\n");
+    if (actionsMatch && !hasBlink && !hasNod && hasAllFour) {
+      console.log("✓ TEST 20 PASSED: BLINK_ONCE and NOD_ONCE are strictly eliminated; exactly 4 allowed head movement actions generated!\n");
       passed++;
     } else {
-      throw new Error("Test 20 Failed: Challenge generation contains BLINK_ONCE or does not generate all 5 actions");
+      throw new Error("Test 20 Failed: Challenge generation contains BLINK_ONCE / NOD_ONCE or does not generate all 4 actions");
     }
   }
 
   // ---------------------------------------------------------------------------
-  // TEST 21: Full simulation of all 5 individual head movement actions
+  // TEST 21: Full simulation of all 4 individual head movement actions
   // ---------------------------------------------------------------------------
-  console.log("--- TEST 21: Full Simulation of All 5 Individual Head Movement Actions ---");
+  console.log("--- TEST 21: Full Simulation of All 4 Individual Head Movement Actions ---");
   {
     const baseBox = { x: 150, y: 150, width: 140, height: 140 };
 
@@ -907,34 +909,22 @@ async function runTestSuite() {
       stateDown = sessDown.processFrame(createMockLandmarks(0, -12), baseBox, Date.now() + f * 100, 1);
     }
 
-    // 5. NOD_ONCE (dip down <= -7° then return >= -4°)
-    const sessNod = new LivenessSession();
-    sessNod.setNeutralBaseline({ yaw: 0, pitch: 0 });
-    sessNod.start("NOD_ONCE");
-    // Frame 1: dip down
-    sessNod.processFrame(createMockLandmarks(0, -8), baseBox, Date.now() + 100, 1);
-    // Frame 2 & 3: return towards center
-    sessNod.processFrame(createMockLandmarks(0, -2), baseBox, Date.now() + 200, 1);
-    const stateNod = sessNod.processFrame(createMockLandmarks(0, -1), baseBox, Date.now() + 300, 1);
-
     console.log("TURN_LEFT Status:", stateLeft?.status);
     console.log("TURN_RIGHT Status:", stateRight?.status);
     console.log("LOOK_UP Status:", stateUp?.status);
     console.log("LOOK_DOWN Status:", stateDown?.status);
-    console.log("NOD_ONCE Status:", stateNod?.status);
 
     const allPassed =
       stateLeft?.status === "passed" &&
       stateRight?.status === "passed" &&
       stateUp?.status === "passed" &&
-      stateDown?.status === "passed" &&
-      stateNod?.status === "passed";
+      stateDown?.status === "passed";
 
     if (allPassed) {
-      console.log("✓ TEST 21 PASSED: All 5 actions (Left, Right, Up, Down, Nod) successfully verified with live landmarks!\n");
+      console.log("✓ TEST 21 PASSED: All 4 actions (Left, Right, Up, Down) successfully verified with live landmarks!\n");
       passed++;
     } else {
-      throw new Error("Test 21 Failed: Not all 5 movement actions passed detection");
+      throw new Error("Test 21 Failed: Not all 4 movement actions passed detection");
     }
   }
 

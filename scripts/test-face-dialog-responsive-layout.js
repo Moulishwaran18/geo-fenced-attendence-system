@@ -1,6 +1,6 @@
 /**
  * CampusAttend - Face Authentication Dialog Mobile Responsive Layout Regression Suite
- * Tests layout constraints, overflow prevention, and dynamic liveness challenge wrapping across viewports:
+ * Tests full-screen overlay layout, overflow prevention, and dynamic liveness challenge wrapping across viewports:
  * - 320x568 (iPhone SE 1st gen)
  * - 360x800 (Galaxy S20 / Android standard)
  * - 390x844 (iPhone 12/13/14)
@@ -44,23 +44,25 @@ const faceScanDialogCode = fs.readFileSync(faceScanDialogPath, "utf-8");
 const dialogUiCode = fs.readFileSync(dialogUiPath, "utf-8");
 const livenessEngineCode = fs.readFileSync(livenessEnginePath, "utf-8");
 
-// TEST 1: Dialog Content Viewport Constraints
+// TEST 1: Full-Screen Dialog Overlay & Viewport Height Fallbacks
 assert(
-  faceScanDialogCode.includes("w-[calc(100vw-16px)]") &&
-  faceScanDialogCode.includes("max-w-xl") &&
-  faceScanDialogCode.includes("min-w-0"),
-  "DialogContent is constrained to w-[calc(100vw-16px)] with min-w-0 and max-w-xl"
+  faceScanDialogCode.includes("fullScreen={true}") &&
+  dialogUiCode.includes("fullScreen?: boolean") &&
+  dialogUiCode.includes("h-[100dvh]") &&
+  dialogUiCode.includes("fixed inset-0"),
+  "DialogContent implements fullScreen={true} with fixed inset-0 and h-[100dvh] viewport coverage"
 );
 
-// TEST 2: Dialog Centering Without Rightward Clipping
+// TEST 2: Dialog Centering Without Conflicting Mobile Transforms or Rightward Clipping
 assert(
-  dialogUiCode.includes("left-1/2 top-1/2") &&
-  dialogUiCode.includes("-translate-x-1/2 -translate-y-1/2") &&
-  faceScanDialogCode.includes("fixed inset-x-0 mx-auto translate-x-0 top-1/2 -translate-y-1/2"),
-  "DialogContent implements bulletproof horizontal and vertical centering without rightward clipping"
+  dialogUiCode.includes("[transform:none]") &&
+  faceScanDialogCode.includes("[transform:none]") &&
+  faceScanDialogCode.includes("overflow-x-hidden") &&
+  faceScanDialogCode.includes("safe-area-inset-top"),
+  "DialogContent removes conflicting transforms ([transform:none]) and respects mobile safe areas without horizontal overflow"
 );
 
-// TEST 3: Duplicate Close Button Prevention
+// TEST 3: Single Header Close Button & Dialog Close Button Suppression
 assert(
   dialogUiCode.includes("hideCloseButton?: boolean") &&
   dialogUiCode.includes("!hideCloseButton &&") &&
@@ -70,26 +72,28 @@ assert(
 
 // TEST 4: Camera Preview and Canvas Aspect Ratio & Mirroring
 assert(
-  faceScanDialogCode.includes("relative aspect-[4/3] sm:aspect-video w-full max-w-full overflow-hidden") &&
+  faceScanDialogCode.includes("aspect-[3/4]") &&
   faceScanDialogCode.includes("-scale-x-100 block") &&
-  faceScanDialogCode.includes("canvasRef"),
-  "Camera preview container has max-w-full with responsive aspect ratio and mirror-aligned video/canvas"
+  faceScanDialogCode.includes("canvasRef") &&
+  faceScanDialogCode.includes("videoRef"),
+  "Camera preview container uses portrait aspect-[3/4] with mirror-aligned video and canvas overlay"
 );
 
-// TEST 5: Strict Removal of BLINK_ONCE from Challenge Engine
+// TEST 5: Strict Removal of BLINK_ONCE & NOD_ONCE from Challenge Engine
 assert(
   !livenessEngineCode.includes('"BLINK_ONCE"') &&
-  !livenessEngineCode.includes("'BLINK_ONCE'"),
-  "BLINK_ONCE is strictly removed from liveness-engine.ts challenge options"
+  !livenessEngineCode.includes("'BLINK_ONCE'") &&
+  !livenessEngineCode.includes('"NOD_ONCE"') &&
+  !livenessEngineCode.includes("'NOD_ONCE'"),
+  "Both BLINK_ONCE and NOD_ONCE are strictly eliminated from liveness-engine.ts challenge options"
 );
 
-// TEST 6: All 5 Allowed Movement Actions Fully Supported
+// TEST 6: Exactly 4 Allowed Head-Movement Actions Fully Supported
 const expectedActions = [
   { action: "TURN_LEFT", text: "Face matched! Please turn your head slightly to the left." },
   { action: "TURN_RIGHT", text: "Face matched! Please turn your head slightly to the right." },
   { action: "LOOK_UP", text: "Face matched! Please tilt your head slightly upward." },
   { action: "LOOK_DOWN", text: "Face matched! Please tilt your head slightly downward." },
-  { action: "NOD_ONCE", text: "Face matched! Please nod once." },
 ];
 
 for (const { action, text } of expectedActions) {
@@ -106,20 +110,19 @@ assert(
   "Liveness challenge instruction text wraps with break-words whitespace-normal"
 );
 
-// TEST 8: Challenge HUD Container Mobile Max Width
+// TEST 8: Challenge Status Container Mobile Sizing Below Camera Preview
 assert(
-  faceScanDialogCode.includes("max-w-[calc(100%-8px)] sm:max-w-sm") &&
-  faceScanDialogCode.includes("bg-black/90") &&
-  faceScanDialogCode.includes("box-border"),
-  "Active Liveness Challenge HUD is bounded by max-w-[calc(100%-8px)] with box-border"
+  faceScanDialogCode.includes("max-w-sm sm:max-w-md") &&
+  faceScanDialogCode.includes("Step 2: Head Movement Challenge") &&
+  faceScanDialogCode.includes("livenessState.timeRemainingSec"),
+  "Challenge status container is placed below camera with clear time remaining countdown"
 );
 
-// TEST 9: Telemetry Angles Wrapping on Narrow Displays
+// TEST 9: Background Scroll Lock During Full-Screen Presentation
 assert(
-  faceScanDialogCode.includes("flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[9px]") &&
-  faceScanDialogCode.includes("ΔYaw:") &&
-  faceScanDialogCode.includes("ΔPitch:"),
-  "Yaw and pitch telemetry line uses flex-wrap to prevent overflow on 320px screens"
+  faceScanDialogCode.includes("document.body.style.overflow = \"hidden\"") &&
+  faceScanDialogCode.includes("document.body.style.touchAction = \"none\""),
+  "Dialog locks background scrolling and touch gestures when open and restores them on close"
 );
 
 // TEST 10: Simplified Header and Two-Step Progress Labels
@@ -159,7 +162,7 @@ assert(
   "ArcFace matching threshold (0.45) and mirrored alignment pipeline are strictly preserved"
 );
 
-// TEST 15: Simulated Viewport Layout Calculations
+// TEST 15: Simulated Viewport Layout Calculations for Full-Screen Interface
 const viewports = [
   { name: "iPhone SE (1st gen)", width: 320, height: 568 },
   { name: "Galaxy S20 (Android)", width: 360, height: 800 },
@@ -170,21 +173,25 @@ const viewports = [
 ];
 
 for (const vp of viewports) {
-  const dialogWidth = Math.min(vp.width - 16, 576);
+  const overlayWidth = vp.width;
+  const overlayHeight = vp.height;
+  const contentWidth = Math.min(overlayWidth, 512); // max-w-lg = 512px
   const padding = vp.width < 640 ? 24 : 40; // p-3 (12*2) vs p-5 (20*2)
-  const availableContentWidth = dialogWidth - padding;
-  const challengeHudWidth = Math.min(availableContentWidth - 8, 384);
+  const innerContentWidth = contentWidth - padding;
+  const cameraWidth = Math.min(innerContentWidth, 384); // max-w-sm = 384px
 
-  // Approximate character width for 14px bold text ~ 7.2px per char
+  // Longest instruction text
   const longestInstruction = "Face matched! Please turn your head slightly to the left."; // 57 chars
   const singleLineWidth = longestInstruction.length * 7.2; // ~410px
-
-  const fitsSingleLine = singleLineWidth <= challengeHudWidth - 40; // 40px for icon and padding
-  const requiresWrapping = !fitsSingleLine;
+  const requiresWrapping = singleLineWidth > (cameraWidth - 48);
 
   assert(
-    dialogWidth <= vp.width && availableContentWidth > 0 && challengeHudWidth <= availableContentWidth,
-    `Viewport ${vp.name} (${vp.width}x${vp.height}): dialog=${dialogWidth}px, inner=${availableContentWidth}px, HUD=${challengeHudWidth}px -> Overflow bounded (wrapping required: ${requiresWrapping})`
+    overlayWidth === vp.width &&
+    overlayHeight === vp.height &&
+    contentWidth <= vp.width &&
+    innerContentWidth > 0 &&
+    cameraWidth <= innerContentWidth,
+    `Viewport ${vp.name} (${vp.width}x${vp.height}): overlay=${overlayWidth}x${overlayHeight}px, content=${contentWidth}px, camera=${cameraWidth}px -> Fullscreen bounded (instruction wrapping: ${requiresWrapping})`
   );
 }
 
