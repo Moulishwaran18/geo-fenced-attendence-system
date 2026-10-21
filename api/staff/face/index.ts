@@ -18,6 +18,7 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { getActiveDeviceForStaff } from "../../../src/server/device-binding.ts";
 
 const STAFF_TOKEN_SECRET =
   (typeof process !== "undefined" &&
@@ -194,6 +195,18 @@ export default async function handler(req: any, res?: any) {
     return sendJsonResponse(res, 403, {
       success: false,
       error: "Staff account is deactivated.",
+    });
+  }
+
+  // Enforce One Faculty ID = One Phone policy on protected biometric operations
+  const activeDevice = await getActiveDeviceForStaff(staffCode);
+  if (!activeDevice || activeDevice.status !== "Active") {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: activeDevice ? "DEVICE_REVOKED" : "NO_REGISTERED_DEVICE",
+      message: activeDevice
+        ? "Biometric operations rejected: The registered device for this account has been revoked by administration."
+        : "Biometric operations rejected: Faculty account has no active registered device. One Faculty ID = One Phone policy requires a registered device.",
     });
   }
 

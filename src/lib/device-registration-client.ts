@@ -111,7 +111,7 @@ export async function fetchDeviceRegistrationStatus(token?: string): Promise<Dev
 /**
  * Generates an ECDSA P-256 non-exportable key pair in WebCrypto (IndexedDB backed).
  */
-async function getOrCreateWebCryptoKeyPair(staffId: string): Promise<{
+export async function getOrCreateWebCryptoKeyPair(staffId: string): Promise<{
   keyPair: CryptoKeyPair;
   publicKeyPem: string;
   keyId: string;
@@ -361,4 +361,118 @@ export async function signAttendanceRequest(
     console.warn("[device-registration-client] WebCrypto sign error:", err);
     return null;
   }
+}
+
+/**
+ * Generates cryptographic login authentication proof using the device's hardware key.
+ */
+export async function getDeviceLoginPayload(staffId: string): Promise<{
+  deviceSignature?: string;
+  deviceTimestamp?: number;
+  deviceNonce?: string;
+  deviceKeyId?: string;
+  publicKey?: string;
+  platform: string;
+  model: string;
+  os: string;
+} | null> {
+  const cleanStaffId = staffId.trim().toUpperCase();
+  const timestamp = Date.now();
+  const nonce =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  const canonicalPayload = `${cleanStaffId}:${nonce}:${timestamp}`;
+
+  // 1. Android Keystore native bridge
+  if (isAndroidKeystoreAvailable()) {
+    try {
+      const bridge = getAndroidBridge();
+      const rawRes = bridge.signAttendancePayload(cleanStaffId, canonicalPayload);
+      const parsed = typeof rawRes === "string" ? JSON.parse(rawRes) : rawRes;
+      if (parsed && parsed.success && parsed.signature) {
+        return {
+          deviceSignature: parsed.signature,
+          deviceKeyId: parsed.keyId || `DEV_ANDROID_${cleanStaffId}`,
+          deviceTimestamp: timestamp,
+          deviceNonce: nonce,
+          publicKey: parsed.publicKeyPem,
+          platform: "android",
+          model: parsed.model || "Android Keystore Device",
+          os: parsed.os || "Android",
+        };
+      }
+    } catch {}
+  }
+
+  // 2. WebCrypto non-exportable key
+  try {
+    if (typeof window !== "undefined" && window.crypto?.subtle) {
+      const { keyPair, publicKeyPem, keyId } = await getOrCreateWebCryptoKeyPair(cleanStaffId);
+      const payloadBytes = new TextEncoder().encode(canonicalPayload);
+      const sigDer = await window.crypto.subtle.sign(
+        { name: "ECDSA", hash: { name: "SHA-256" } },
+        keyPair.privateKey,
+        payloadBytes,
+      );
+      const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sigDer)));
+      const platform = detectPlatform();
+      const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "Browser";
+      let model = "Web Browser";
+      if (/iPhone/.test(userAgent)) model = "Apple iPhone";
+      else if (/Android/.test(userAgent)) model = "Android Phone";
+      else if (/Windows/.test(userAgent)) model = "Windows PC";
+      else if (/Macintosh/.test(userAgent)) model = "Apple Mac";
+
+      return {
+        deviceSignature: sigB64,
+        deviceKeyId: keyId,
+        deviceTimestamp: timestamp,
+        deviceNonce: nonce,
+        publicKey: publicKeyPem,
+        platform,
+        model,
+        os: platform === "ios" ? "iOS" : "Web Platform",
+      };
+    }
+  } catch (err) {
+    console.warn("[device-registration-client] getDeviceLoginPayload notice:", err);
+  }
+
+  return null;
+}
+
+/**
+ * Signs a server-issued challenge nonce using the local device's hardware key.
+ */
+export async function signLoginChallenge(staffId: string, challenge: string): Promise<string | null> {
+  const cleanStaffId = staffId.trim().toUpperCase();
+
+  if (isAndroidKeystoreAvailable()) {
+    try {
+      const bridge = getAndroidBridge();
+      const rawRes = bridge.signAttendancePayload(cleanStaffId, challenge);
+      const parsed = typeof rawRes === "string" ? JSON.parse(rawRes) : rawRes;
+      if (parsed && parsed.success && parsed.signature) {
+        return parsed.signature;
+      }
+    } catch {}
+  }
+
+  try {
+    if (typeof window !== "undefined" && window.crypto?.subtle) {
+      const { keyPair } = await getOrCreateWebCryptoKeyPair(cleanStaffId);
+      const challengeBytes = new TextEncoder().encode(challenge);
+      const sigDer = await window.crypto.subtle.sign(
+        { name: "ECDSA", hash: { name: "SHA-256" } },
+        keyPair.privateKey,
+        challengeBytes,
+      );
+      return btoa(String.fromCharCode(...new Uint8Array(sigDer)));
+    }
+  } catch (err) {
+    console.warn("[device-registration-client] signLoginChallenge error:", err);
+  }
+
+  return null;
 }

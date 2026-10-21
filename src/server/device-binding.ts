@@ -49,7 +49,7 @@ export interface DeviceChallengeTokenPayload {
   staffId: string;
   issuedAt: number;
   expiresAt: number;
-  purpose: "device_registration" | "attendance_verification";
+  purpose: "device_registration" | "attendance_verification" | "device_login";
 }
 
 const CHALLENGE_SECRET =
@@ -102,7 +102,7 @@ function cleanExpiredNonces() {
  */
 export function createDeviceChallenge(
   staffId: string,
-  purpose: "device_registration" | "attendance_verification" = "device_registration",
+  purpose: "device_registration" | "attendance_verification" | "device_login" = "device_registration",
   ttlMs = 300_000,
 ): {
   challenge: string;

@@ -14,6 +14,7 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { registerDeviceForStaff, type DevicePlatform } from "../../src/server/device-binding.ts";
 
 // Shared account-creation password from environment or secure default
 const DEFAULT_STAFF_REGISTRATION_CODE = "staff@123";
@@ -295,7 +296,38 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // 6. Return sanitized success response (no passwords, no hashes, no salts, no shared codes)
+    // 6. Bind device on initial registration if public key is provided
+    let registeredDevice: any = undefined;
+    const clientPublicKey = body?.publicKey || body?.devicePublicKey;
+    if (clientPublicKey) {
+      try {
+        const regRes = await registerDeviceForStaff({
+          staffCode: cleanStaffCode,
+          staffId: insertedStaff.id,
+          staffName: cleanName,
+          publicKey: clientPublicKey,
+          keyAlgorithm: body?.keyAlgorithm || "ECDSA_P256",
+          platform: (body?.platform as DevicePlatform) || "android",
+          attestationStatus: body?.isStrongBox ? "StrongBox" : body?.isHardwareBacked ? "TEE" : "Software",
+          attestationType: body?.attestationType || "HardwareKeystore",
+          attestationEvidence: body?.attestationEvidence,
+          model: body?.model || "Mobile Device",
+          os: body?.os || "Android",
+          auditMetadata: {
+            isStrongBox: !!body?.isStrongBox,
+            isHardwareBacked: !!body?.isHardwareBacked,
+            registeredVia: "staff_register",
+          },
+        });
+        if (regRes.success) {
+          registeredDevice = regRes.device;
+        }
+      } catch (devErr) {
+        console.warn("[register] Initial device binding notice:", devErr);
+      }
+    }
+
+    // 7. Return sanitized success response (no passwords, no hashes, no salts, no shared codes)
     return sendJsonResponse(res, 201, {
       success: true,
       message: "Staff account created successfully! Please sign in with your Staff ID and personal password.",
@@ -309,6 +341,14 @@ export default async function handler(req: any, res?: any) {
         designation: insertedStaff.designation,
         role: "staff",
       },
+      device: registeredDevice
+        ? {
+            id: registeredDevice.id,
+            model: registeredDevice.model,
+            platform: registeredDevice.platform,
+            status: registeredDevice.status,
+          }
+        : undefined,
     });
   } catch (err: any) {
     console.error("[register] Unexpected error:", err);

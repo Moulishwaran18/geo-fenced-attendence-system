@@ -1,5 +1,56 @@
 {
-  "staff": [],
+  "staff": [
+    {
+      "id": "ee8c4fdc-0a5b-46f2-825e-2613b4e6e9c5",
+      "staff_code": "SCT-001",
+      "name": "Moulishwaran S",
+      "email": "sct001@sonatech.ac.in",
+      "department": "Computer Science & Engineering",
+      "designation": "Staff",
+      "device": "auth:pbkdf2$c76167c1947c3317587b8d24096e8112$88021fc3d620b3a148e868d729035d1afb9da6ae801b930c3010cdb54efb342c",
+      "active": true
+    },
+    {
+      "id": "2fa60621-45fd-403b-8b96-48fe47186f18",
+      "staff_code": "SCT-002",
+      "name": "Kavi",
+      "email": "sct002@sonatech.ac.in",
+      "department": "Computer Science & Engineering",
+      "designation": "Staff",
+      "device": "auth:pbkdf2$78519288781ce5d5cf95a367a0a51581$b0038b05dc6ad43af4dce4e6bce6271119b83998f1830989451efcbd4175ef58",
+      "active": true
+    },
+    {
+      "id": "9829d805-bdc9-444e-b7d9-59c6d2d47f79",
+      "staff_code": "SCT-003",
+      "name": "Mugunthan N",
+      "email": "sct003@sonatech.ac.in",
+      "department": "Computer Science & Engineering",
+      "designation": "Staff",
+      "device": "auth:pbkdf2$a38bb2d32732dfa29ed3edf53377512e$2d0ccbb9e55460bd9d28c402f4c50d2e33ad070dc3b2e3383f6315d09d64ed05",
+      "active": true
+    },
+    {
+      "id": "7b25621f-0d83-4a24-b8f4-0197951f78aa",
+      "staff_code": "SCT-004",
+      "name": "Nithish Kanna",
+      "email": "sct004@sonatech.ac.in",
+      "department": "Computer Science & Engineering",
+      "designation": "Staff",
+      "device": "auth:pbkdf2$5910cd3d06ec78deb42dc5320b0ae73f$0f008b45b2a2f5fb51d7a6b3e1337a4b4dfbfd98c477373a7805f7322954edf4",
+      "active": true
+    },
+    {
+      "id": "1966cae4-6fc0-4407-8f9a-d58ad823a486",
+      "staff_code": "SCT-005",
+      "name": "Mathesh",
+      "email": "sct005@sonatech.ac.in",
+      "department": "Computer Science & Engineering",
+      "designation": "Staff",
+      "device": "auth:pbkdf2$b440b87a39084c03d7c0039d864ba4bd$801c130d1bc72b99233afa12df57f3ed276b7bb46ef9c283eb0d38b8fcd18906",
+      "active": true
+    }
+  ],
   "face_embeddings": [],
   "rejected_gallery_audit": [
     {
@@ -3819,6 +3870,27 @@
       "username": "moulish",
       "expires_at": 1792683885988,
       "revoked_at": "2026-10-21T15:44:46.173Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "26844aab2f31542fb6fb86a301e55aec",
+      "username": "moulish",
+      "expires_at": 1792689544277,
+      "revoked_at": "2026-10-21T17:19:05.009Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "124f29de6be467d4ee3e2b4e92d8cbbe",
+      "username": "moulish",
+      "expires_at": 1792689545225,
+      "revoked_at": "2026-10-21T17:19:05.596Z",
+      "reason": "User logout"
+    },
+    {
+      "token_id": "35d13f3265eedb38d6564f5a55c18dba",
+      "username": "moulish",
+      "expires_at": 1792689545725,
+      "revoked_at": "2026-10-21T17:19:05.866Z",
       "reason": "User logout"
     }
   ],
