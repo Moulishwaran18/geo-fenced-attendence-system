@@ -11,6 +11,11 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import {
+  getActiveDeviceForStaff,
+  verifyDeviceSignature,
+  updateDeviceLastVerified,
+} from "../src/server/device-binding.ts";
 
 const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
 const TOKEN_SECRET =
@@ -933,6 +938,100 @@ export default async function handler(req: any, res?: any) {
   const canonicalDepartment = staffRow.department || "General";
 
   // =========================================================================
+  // MANDATORY FACTOR: ONE FACULTY–ONE REGISTERED DEVICE VERIFICATION
+  // =========================================================================
+  const activeDevice = await getActiveDeviceForStaff(canonicalStaffCode);
+  if (!activeDevice) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "NO_REGISTERED_DEVICE",
+      message: `Attendance rejected: Faculty account '${canonicalStaffCode}' has no active registered device. One Faculty–One Registered Device policy requires prior cryptographic device registration.`,
+    });
+  }
+
+  if (activeDevice.status !== "Active") {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "DEVICE_REVOKED",
+      message: `Attendance rejected: The registered device for '${canonicalStaffCode}' has been revoked by administration (${activeDevice.revocation_reason || "Revoked"}).`,
+      revokedAt: activeDevice.revoked_at,
+      reason: activeDevice.revocation_reason,
+    });
+  }
+
+  // Cryptographic Device Association Verification
+  const deviceSignature = body.deviceSignature || body.signature;
+  const deviceKeyId = body.deviceKeyId || body.keyId || body.deviceId;
+  const rawDeviceTimestamp = body.deviceTimestamp !== undefined ? body.deviceTimestamp : body.timestamp;
+  const deviceTimestamp = typeof rawDeviceTimestamp === "number" ? rawDeviceTimestamp : Date.now();
+  const attemptNonce = String(body.attemptNonce || body.sessionNonce || body.nonce || "").trim();
+
+  if (deviceSignature) {
+    // 1. If key ID is supplied, it must match the active registered device
+    if (deviceKeyId && deviceKeyId !== activeDevice.id && deviceKeyId !== activeDevice.key_id) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "DEVICE_KEY_ID_MISMATCH",
+        message: `Attendance rejected: Device key identifier '${deviceKeyId}' does not match registered device '${activeDevice.id}'.`,
+      });
+    }
+
+    // 2. Freshness check: timestamp must be fresh (±120 seconds)
+    const ageMs = Date.now() - deviceTimestamp;
+    if (ageMs > 120_000 || ageMs < -60_000) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "DEVICE_SIGNATURE_TIMESTAMP_EXPIRED",
+        message: `Attendance rejected: Device signature timestamp (${deviceTimestamp}) is outside the mandatory ±120s validity window.`,
+      });
+    }
+
+    // 3. Verify digital signature over canonical payload
+    const canonicalPayload =
+      body.devicePayloadToSign ||
+      `${canonicalStaffCode}:${attemptNonce}:${deviceTimestamp}`;
+
+    const isSigValid = verifyDeviceSignature(
+      activeDevice.public_key,
+      canonicalPayload,
+      deviceSignature,
+      activeDevice.key_algorithm,
+    );
+
+    if (!isSigValid) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "INVALID_DEVICE_SIGNATURE",
+        message: "Attendance rejected: Device cryptographic signature verification failed. Private key signature is invalid.",
+      });
+    }
+  } else if (attestationCheck.valid && attestationCheck.payload) {
+    // Android Keystore hardware biometric attestation token bound to this device
+    const attestationDeviceId = attestationCheck.payload.deviceId;
+    if (
+      attestationDeviceId &&
+      activeDevice.id !== attestationDeviceId &&
+      activeDevice.key_id !== attestationDeviceId &&
+      !activeDevice.id.includes(attestationDeviceId)
+    ) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "DEVICE_ID_MISMATCH",
+        message: `Attendance rejected: Hardware attestation device ID (${attestationDeviceId}) does not match registered device (${activeDevice.id}).`,
+      });
+    }
+  } else {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "MISSING_DEVICE_SIGNATURE",
+      message: "Attendance rejected: Cryptographic signature from registered device is required. Device spoofing or unregistered devices are strictly prohibited.",
+    });
+  }
+
+  // Update last_verified_at on registered device
+  void updateDeviceLastVerified(activeDevice.id);
+
+  // =========================================================================
   // FACTOR 3: MANDATORY FACE RECOGNITION, LIVENESS & IDENTITY MATCH
   // =========================================================================
   const recognizedStaffCode = body.recognizedStaffCode
@@ -940,7 +1039,7 @@ export default async function handler(req: any, res?: any) {
     : null;
 
   let verifiedBiometricMethod = "Server Vector Verification";
-  let boundDeviceId: string | undefined = body.deviceId;
+  let boundDeviceId: string | undefined = activeDevice.id;
 
   // 3A. Cryptographic Attestation Verification (for Android Keystore device-local flow)
   if (attestationCheck.valid && attestationCheck.payload) {

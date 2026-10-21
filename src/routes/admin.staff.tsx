@@ -7,7 +7,9 @@ import {
   Plus,
   ScanFace,
   Search,
+  ShieldAlert,
   ShieldCheck,
+  Smartphone,
   UserCheck,
   UserPlus,
   UserX,
@@ -79,6 +81,12 @@ function AdminStaffPage() {
   const [viewing, setViewing] = useState<StaffProfile | null>(null);
   const [statusTarget, setStatusTarget] = useState<StaffProfile | null>(null);
 
+  // Device registration management state
+  const [deviceMap, setDeviceMap] = useState<Record<string, any>>({});
+  const [revokeTarget, setRevokeTarget] = useState<any | null>(null);
+  const [revocationReason, setRevocationReason] = useState("");
+  const [isRevoking, setIsRevoking] = useState(false);
+
   // New staff form state
   const [newStaffCode, setNewStaffCode] = useState("");
   const [newName, setNewName] = useState("");
@@ -92,12 +100,61 @@ function AdminStaffPage() {
     try {
       const data = await fetchAllStaff();
       setStaffList(data);
+
+      try {
+        const res = await fetch("/api/admin/devices", { credentials: "include" });
+        const devData = await res.json();
+        if (devData.success && Array.isArray(devData.devices)) {
+          const map: Record<string, any> = {};
+          for (const d of devData.devices) {
+            if (d.status === "Active") {
+              map[d.staffCode?.toUpperCase()] = d;
+            }
+          }
+          setDeviceMap(map);
+        }
+      } catch {}
     } catch {
       toast.error("Failed to load staff list from database");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleRevokeDevice = async () => {
+    if (!revokeTarget || !revocationReason.trim()) {
+      toast.error("A revocation reason is required.");
+      return;
+    }
+    setIsRevoking(true);
+    try {
+      const res = await fetch("/api/admin/devices/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          deviceId: revokeTarget.id,
+          staffCode: revokeTarget.staffCode,
+          reason: revocationReason.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success(`Device revoked for ${revokeTarget.staffCode}`, {
+          description: "Device invalidated. Faculty member can now register a replacement device.",
+        });
+        setRevokeTarget(null);
+        setRevocationReason("");
+        await loadData();
+      } else {
+        toast.error("Revocation failed", { description: data.error || data.message });
+      }
+    } catch (e: any) {
+      toast.error("Revocation error", { description: e?.message });
+    } finally {
+      setIsRevoking(false);
+    }
+  };
 
   useEffect(() => {
     void loadData();
@@ -233,6 +290,7 @@ function AdminStaffPage() {
                     "Department",
                     "Designation",
                     "Biometric Status",
+                    "Registered Device",
                     "Account Status",
                     "Actions",
                   ].map((h) => (
@@ -245,6 +303,7 @@ function AdminStaffPage() {
               <tbody>
                 {rows.map((s) => {
                   const isEnrolled = s.embeddingCount > 0;
+                  const activeDev = deviceMap[s.staffId.toUpperCase()];
                   return (
                     <tr
                       key={s.id}
@@ -268,6 +327,33 @@ function AdminStaffPage() {
                           <Badge variant="outline" className="text-warning border-warning/40">
                             <Clock className="mr-1 size-3" />
                             Pending Enrollment
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="px-5 py-3.5 whitespace-nowrap">
+                        {activeDev ? (
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary text-xs">
+                              <Smartphone className="mr-1 size-3" />
+                              {activeDev.model} ({activeDev.attestationStatus})
+                            </Badge>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7 text-destructive hover:bg-destructive/10"
+                              title="Revoke Device Registration"
+                              onClick={() => {
+                                setRevokeTarget(activeDev);
+                                setRevocationReason("");
+                              }}
+                            >
+                              <ShieldAlert className="size-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <Badge variant="outline" className="border-border text-muted-foreground text-xs">
+                            <Smartphone className="mr-1 size-3" />
+                            Unregistered
                           </Badge>
                         )}
                       </td>
@@ -460,6 +546,71 @@ function AdminStaffPage() {
         destructive={!!statusTarget?.active}
         onConfirm={() => void handleToggleStatus()}
       />
+
+      {/* Revoke Device Dialog */}
+      <Dialog open={!!revokeTarget} onOpenChange={(o) => !o && setRevokeTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <ShieldAlert className="size-5" />
+              Revoke Registered Device
+            </DialogTitle>
+            <DialogDescription>
+              Revoking this device will immediately invalidate its hardware-backed signature binding for staff member{" "}
+              <strong>{revokeTarget?.staffName || revokeTarget?.staffCode}</strong> ({revokeTarget?.staffCode}). The staff member will be required to perform a new device registration before marking attendance.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs space-y-1">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Device Model:</span>
+                <span className="font-medium">{revokeTarget?.model || "Unknown Device"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Platform / OS:</span>
+                <span className="font-medium">{revokeTarget?.os || "Unknown OS"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Registered At:</span>
+                <span className="font-medium">
+                  {revokeTarget?.registeredAt ? new Date(revokeTarget.registeredAt).toLocaleString() : "—"}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="revoke-reason">
+                Reason for Revocation <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="revoke-reason"
+                placeholder="e.g. Lost device, phone upgraded, security policy reset..."
+                value={revocationReason}
+                onChange={(e) => setRevocationReason(e.target.value)}
+                autoFocus
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRevokeTarget(null)}
+              disabled={isRevoking}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void handleRevokeDevice()}
+              disabled={isRevoking || !revocationReason.trim()}
+            >
+              {isRevoking ? "Revoking..." : "Confirm Revocation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppShell>
   );
 }

@@ -56,6 +56,11 @@ import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time
 import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
+import {
+  fetchDeviceRegistrationStatus,
+  registerCurrentDevice,
+  type DeviceStatusResponse,
+} from "@/lib/device-registration-client";
 
 export const Route = createFileRoute("/mark-attendance")({
   head: () => ({
@@ -140,6 +145,52 @@ function MarkAttendancePage() {
 
   const loggedInStaff = useActiveStaff();
 
+  // One Faculty–One Registered Device state
+  const [deviceStatus, setDeviceStatus] = useState<DeviceStatusResponse | null>(null);
+  const [isDeviceChecking, setIsDeviceChecking] = useState(false);
+  const [isRegisteringDevice, setIsRegisteringDevice] = useState(false);
+
+  const checkDeviceStatus = useCallback(async () => {
+    if (!loggedInStaff?.staffId) return;
+    setIsDeviceChecking(true);
+    try {
+      const res = await fetchDeviceRegistrationStatus(loggedInStaff.token);
+      setDeviceStatus(res);
+    } catch {
+      // ignore
+    } finally {
+      setIsDeviceChecking(false);
+    }
+  }, [loggedInStaff?.staffId, loggedInStaff?.token]);
+
+  useEffect(() => {
+    void checkDeviceStatus();
+  }, [checkDeviceStatus]);
+
+  const handleRegisterDevice = async () => {
+    if (!loggedInStaff?.staffId) return;
+    setIsRegisteringDevice(true);
+    try {
+      const res = await registerCurrentDevice(loggedInStaff.staffId, loggedInStaff.token);
+      if (res.success) {
+        toast.success("Device Registered Successfully!", {
+          description: `Bound to ${res.device?.model || "this device"} (${res.device?.attestationStatus}). You can now mark attendance.`,
+        });
+        await checkDeviceStatus();
+      } else {
+        toast.error("Device Registration Failed", {
+          description: res.error || "Could not register device.",
+        });
+      }
+    } catch (err: any) {
+      toast.error("Registration Error", {
+        description: err?.message || "Device registration encountered an error.",
+      });
+    } finally {
+      setIsRegisteringDevice(false);
+    }
+  };
+
   // Identity match check: recognized face must match the authenticated individual
   const isIdentityMatched = Boolean(
     loggedInStaff &&
@@ -166,9 +217,10 @@ function MarkAttendancePage() {
   );
 
   // FINAL DECISION RULE:
-  // wifiAuthorized && gpsInsideGeofence && faceAuthenticated (which guarantees same individual match) -> ALLOWED
+  // wifiAuthorized && gpsInsideGeofence && faceAuthenticated && isDeviceReady -> ALLOWED
   // otherwise -> REJECTED
-  const canMarkAttendance = Boolean(loggedInStaff && wifiAuthorized && gpsInsideGeofence && faceAuthenticated);
+  const isDeviceReady = Boolean(isUsingMockScenario || (deviceStatus?.hasActiveDevice ?? true));
+  const canMarkAttendance = Boolean(loggedInStaff && wifiAuthorized && gpsInsideGeofence && faceAuthenticated && isDeviceReady);
 
   // Final Attendance Status Text
   const finalAttendanceStatus = useMemo(() => {
@@ -806,6 +858,36 @@ function MarkAttendancePage() {
                 </Button>
               }
             />
+          )}
+
+          {/* One Faculty–One Registered Device Policy Banner */}
+          {!isUsingMockScenario && loggedInStaff && !isDeviceChecking && deviceStatus && !deviceStatus.hasActiveDevice && (
+            <AlertBanner
+              tone="error"
+              icon={Smartphone}
+              title="Device Registration Required (Policy Enforcement)"
+              description="One Faculty–One Registered Device policy requires binding your physical device before marking attendance. Hardware-backed keys protect your identity from proxy attendance."
+              action={
+                <Button
+                  size="sm"
+                  onClick={() => void handleRegisterDevice()}
+                  disabled={isRegisteringDevice}
+                  className="mt-2 h-8 gap-1.5"
+                >
+                  {isRegisteringDevice ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
+                  Register This Device Now
+                </Button>
+              }
+            />
+          )}
+
+          {!isUsingMockScenario && loggedInStaff && deviceStatus?.hasActiveDevice && (
+            <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+              <ShieldCheck className="size-4 shrink-0 text-primary" />
+              <span>
+                <strong>Bound Device:</strong> {deviceStatus.device?.model} ({deviceStatus.device?.attestationStatus}) · Hardware-bound cryptographic attendance active
+              </span>
+            </div>
           )}
 
           {!isUsingMockScenario && (geofence.status === "location_services_off" || geofence.status === "position_unavailable") ? (

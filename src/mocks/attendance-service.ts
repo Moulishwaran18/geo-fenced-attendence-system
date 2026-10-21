@@ -1,5 +1,6 @@
 import { formatIndiaDate, formatIndiaTime, indiaDateKey } from "@/lib/india-time";
 import { supabase } from "@/lib/supabase";
+import { signAttendanceRequest } from "@/lib/device-registration-client";
 /**
  * Mock attendance/verification service.
  * Swap these implementations for real GPS / Wi-Fi / BLE / face APIs later.
@@ -213,6 +214,10 @@ export interface MarkAttendanceParams {
   sessionNonce?: string | undefined;
   attemptNonce?: string | undefined;
   livenessEvidence?: any | undefined;
+  deviceSignature?: string | undefined;
+  deviceKeyId?: string | undefined;
+  deviceTimestamp?: number | undefined;
+  devicePayloadToSign?: string | undefined;
 }
 
 export async function markAttendance(params?: MarkAttendanceParams): Promise<AttendanceReceipt> {
@@ -228,11 +233,26 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
     reqHeaders["x-network-auth-token"] = params.networkAuthToken;
   }
 
+  const payload: any = { ...(params || {}) };
+
+  // If cryptographic deviceSignature is not yet provided, automatically sign with registered device
+  if (!payload.deviceSignature && payload.staffCode) {
+    const nonce = payload.attemptNonce || payload.sessionNonce || `att_nonce_${Date.now()}`;
+    payload.attemptNonce = nonce;
+    const signedDevice = await signAttendanceRequest(payload.staffCode, nonce);
+    if (signedDevice) {
+      payload.deviceSignature = signedDevice.deviceSignature;
+      payload.deviceKeyId = signedDevice.deviceKeyId;
+      payload.deviceTimestamp = signedDevice.deviceTimestamp;
+      payload.devicePayloadToSign = signedDevice.devicePayloadToSign;
+    }
+  }
+
   const res = await fetch("/api/attendance", {
     method: "POST",
     headers: reqHeaders,
     credentials: "include",
-    body: JSON.stringify(params || {}),
+    body: JSON.stringify(payload),
   });
 
   const data = await res.json().catch(() => ({}));

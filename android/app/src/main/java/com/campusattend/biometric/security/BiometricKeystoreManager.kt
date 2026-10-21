@@ -6,7 +6,10 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.Signature
+import java.security.spec.ECGenParameterSpec
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -212,5 +215,132 @@ class BiometricKeystoreManager(private val context: Context) {
         )
 
         return "$payloadB64.$signatureB64"
+    }
+
+    data class DeviceKeyResult(
+        val keyId: String,
+        val publicKeyPem: String,
+        val challengeSignature: String,
+        val attestationChain: List<String>,
+        val isStrongBox: Boolean,
+        val isHardwareBacked: Boolean,
+        val securityLevel: String
+    )
+
+    /**
+     * Generate a non-exportable hardware-backed EC P-256 signing key in Android Keystore.
+     * Prefers StrongBox when supported; falls back explicitly to standard TEE.
+     * Uses Key Attestation to bind the server challenge into the hardware certificate chain.
+     */
+    fun generateDeviceSigningKey(challenge: String, staffId: String): DeviceKeyResult {
+        val cleanId = staffId.trim().lowercase()
+        val alias = "campusattend_device_signing_$cleanId"
+        var isStrongBox = false
+        var isHardwareBacked = true
+        var securityLevel = "TEE"
+
+        if (keyStore.containsAlias(alias)) {
+            try {
+                keyStore.deleteEntry(alias)
+            } catch (_: Throwable) {}
+        }
+
+        var keyGenSuccess = false
+        // 1. Prefer StrongBox dedicated HSM
+        try {
+            val kpg = KeyPairGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_EC,
+                ANDROID_KEYSTORE
+            )
+            val strongBoxSpec = KeyGenParameterSpec.Builder(
+                alias,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+            )
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setAttestationChallenge(challenge.toByteArray(Charsets.UTF_8))
+                .setIsStrongBoxBacked(true)
+                .setUserAuthenticationRequired(false)
+                .build()
+
+            kpg.init(strongBoxSpec)
+            kpg.generateKeyPair()
+            keyGenSuccess = true
+            isStrongBox = true
+            securityLevel = "StrongBox"
+        } catch (e: Throwable) {
+            android.util.Log.i(TAG, "StrongBox not available on device (${e.message}), falling back to TEE Android Keystore")
+        }
+
+        // 2. Fallback to TEE Android Keystore
+        if (!keyGenSuccess) {
+            val kpg = KeyPairGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_EC,
+                ANDROID_KEYSTORE
+            )
+            val teeSpec = KeyGenParameterSpec.Builder(
+                alias,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+            )
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setAttestationChallenge(challenge.toByteArray(Charsets.UTF_8))
+                .setUserAuthenticationRequired(false)
+                .build()
+
+            kpg.init(teeSpec)
+            kpg.generateKeyPair()
+            securityLevel = "TEE"
+        }
+
+        val certChain = keyStore.getCertificateChain(alias)
+        val attestationB64List = certChain?.map { cert ->
+            android.util.Base64.encodeToString(cert.encoded, android.util.Base64.NO_WRAP)
+        } ?: emptyList()
+
+        val publicKey = keyStore.getCertificate(alias).publicKey
+        val pubKeyB64 = android.util.Base64.encodeToString(publicKey.encoded, android.util.Base64.NO_WRAP)
+        val pubKeyPem = "-----BEGIN PUBLIC KEY-----\n" +
+                pubKeyB64.chunked(64).joinToString("\n") +
+                "\n-----END PUBLIC KEY-----"
+
+        // Sign the server challenge with the newly minted private key
+        val privateKey = (keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry).privateKey
+        val signer = Signature.getInstance("SHA256withECDSA")
+        signer.initSign(privateKey)
+        signer.update(challenge.toByteArray(Charsets.UTF_8))
+        val signatureBytes = signer.sign()
+        val signatureB64 = android.util.Base64.encodeToString(signatureBytes, android.util.Base64.NO_WRAP)
+
+        val keyId = "DEV_ANDROID_${getDeviceId().take(12)}_${cleanId.uppercase()}"
+
+        return DeviceKeyResult(
+            keyId = keyId,
+            publicKeyPem = pubKeyPem,
+            challengeSignature = signatureB64,
+            attestationChain = attestationB64List,
+            isStrongBox = isStrongBox,
+            isHardwareBacked = isHardwareBacked,
+            securityLevel = securityLevel
+        )
+    }
+
+    /**
+     * Cryptographically sign an attendance request payload using the device's private key.
+     */
+    fun signAttendancePayload(staffId: String, payload: String): String? {
+        return try {
+            val alias = "campusattend_device_signing_${staffId.trim().lowercase()}"
+            if (!keyStore.containsAlias(alias)) return null
+            val privateKey = (keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry).privateKey
+            val signer = Signature.getInstance("SHA256withECDSA")
+            signer.initSign(privateKey)
+            signer.update(payload.toByteArray(Charsets.UTF_8))
+            val signatureBytes = signer.sign()
+            android.util.Base64.encodeToString(signatureBytes, android.util.Base64.NO_WRAP)
+        } catch (e: Throwable) {
+            android.util.Log.e(TAG, "signAttendancePayload failed for staff $staffId: ${e.message}")
+            null
+        }
     }
 }

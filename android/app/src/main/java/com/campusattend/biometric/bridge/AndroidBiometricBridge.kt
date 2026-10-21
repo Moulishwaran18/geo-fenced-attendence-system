@@ -93,6 +93,85 @@ class AndroidBiometricBridge(
     }
 
     /**
+     * Generate non-exportable hardware-backed signing key in Android Keystore with Key Attestation.
+     */
+    @JavascriptInterface
+    fun generateDeviceRegistrationKey(challenge: String?, staffId: String?): String {
+        return try {
+            if (!isCallingOriginTrusted()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "UNTRUSTED_ORIGIN")
+                }.toString()
+            }
+            if (challenge.isNullOrBlank() || staffId.isNullOrBlank()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "MISSING_CHALLENGE_OR_STAFF_ID")
+                }.toString()
+            }
+            val result = keystoreManager.generateDeviceSigningKey(challenge, staffId)
+            JSONObject().apply {
+                put("success", true)
+                put("keyId", result.keyId)
+                put("publicKeyPem", result.publicKeyPem)
+                put("challengeSignature", result.challengeSignature)
+                put("attestationChain", JSONArray(result.attestationChain))
+                put("isStrongBox", result.isStrongBox)
+                put("isHardwareBacked", result.isHardwareBacked)
+                put("securityLevel", result.securityLevel)
+                put("model", android.os.Build.MODEL ?: "Android Device")
+                put("os", "Android " + android.os.Build.VERSION.RELEASE)
+            }.toString()
+        } catch (t: Throwable) {
+            Log.e("AndroidBiometricBridge", "generateDeviceRegistrationKey error", t)
+            JSONObject().apply {
+                put("success", false)
+                put("error", t.message ?: "KEY_GENERATION_FAILED")
+            }.toString()
+        }
+    }
+
+    /**
+     * Cryptographically sign an attendance request payload using the device's private key.
+     */
+    @JavascriptInterface
+    fun signAttendancePayload(staffId: String?, payload: String?): String {
+        return try {
+            if (!isCallingOriginTrusted()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "UNTRUSTED_ORIGIN")
+                }.toString()
+            }
+            if (staffId.isNullOrBlank() || payload.isNullOrBlank()) {
+                return JSONObject().apply {
+                    put("success", false)
+                    put("error", "MISSING_PAYLOAD_OR_STAFF_ID")
+                }.toString()
+            }
+            val sig = keystoreManager.signAttendancePayload(staffId, payload)
+            if (sig != null) {
+                JSONObject().apply {
+                    put("success", true)
+                    put("signature", sig)
+                }.toString()
+            } else {
+                JSONObject().apply {
+                    put("success", false)
+                    put("error", "SIGNING_FAILED_OR_NO_KEY")
+                }.toString()
+            }
+        } catch (t: Throwable) {
+            Log.e("AndroidBiometricBridge", "signAttendancePayload error", t)
+            JSONObject().apply {
+                put("success", false)
+                put("error", t.message ?: "SIGNING_EXCEPTION")
+            }.toString()
+        }
+    }
+
+    /**
      * Deterministic, canonical SHA-256 digest computation matching web client exactly.
      */
     fun computeCanonicalTemplateDigest(embeddings: List<FloatArray>): String {
