@@ -115,17 +115,19 @@ async function registerDeviceForStaff(params: {
         };
       }
 
+      const cleanB64Key = normalizedKey
+        .replace(/-----BEGIN[^-]+-----/, "")
+        .replace(/-----END[^-]+-----/, "")
+        .replace(/\s+/g, "");
+
       await supabaseClient.from("security_events").insert({
         time: now,
         staff: cleanStaffCode,
         event: `DEVICE_REGISTERED|${keyId}`,
         device: JSON.stringify({
-          keyId,
-          publicKey: normalizedKey,
-          keyAlgorithm: deviceRecord.key_algorithm,
-          platform: deviceRecord.platform,
-          model: deviceRecord.model,
-          os: deviceRecord.os,
+          id: keyId,
+          pub: cleanB64Key,
+          algo: deviceRecord.key_algorithm,
         }),
         location: "Staff Registration Gate",
         result: "Allowed",

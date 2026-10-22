@@ -116,10 +116,11 @@ async function getActiveDeviceForStaff(cleanCode: string) {
             .maybeSingle();
           if (eventRow?.device) {
             const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
-            if (devMeta?.publicKey) {
-              pubKey = devMeta.publicKey;
-              if (devMeta.keyAlgorithm) keyAlgo = devMeta.keyAlgorithm;
-              if (devMeta.keyId) keyId = devMeta.keyId;
+            const foundKey = devMeta?.pub || devMeta?.publicKey;
+            if (foundKey) {
+              pubKey = normalizePublicKeyToPem(foundKey);
+              if (devMeta.algo || devMeta.keyAlgorithm) keyAlgo = devMeta.algo || devMeta.keyAlgorithm;
+              if (devMeta.id || devMeta.keyId) keyId = devMeta.id || devMeta.keyId;
             }
           }
         } catch {}

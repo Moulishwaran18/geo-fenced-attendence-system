@@ -308,10 +308,11 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
             .maybeSingle();
           if (eventRow?.device) {
             const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
-            if (devMeta?.publicKey) {
-              pubKey = devMeta.publicKey;
-              if (devMeta.keyAlgorithm) keyAlgo = devMeta.keyAlgorithm;
-              if (devMeta.keyId) keyId = devMeta.keyId;
+            const foundKey = devMeta?.pub || devMeta?.publicKey;
+            if (foundKey) {
+              pubKey = normalizePublicKeyToPem(foundKey);
+              if (devMeta.algo || devMeta.keyAlgorithm) keyAlgo = devMeta.algo || devMeta.keyAlgorithm;
+              if (devMeta.id || devMeta.keyId) keyId = devMeta.id || devMeta.keyId;
             }
           }
         } catch {}
@@ -434,17 +435,19 @@ async function registerDeviceForStaff(params: {
         };
       }
 
+      const cleanB64Key = normalizedKey
+        .replace(/-----BEGIN[^-]+-----/, "")
+        .replace(/-----END[^-]+-----/, "")
+        .replace(/\s+/g, "");
+
       await supabaseClient.from("security_events").insert({
         time: now,
         staff: cleanStaffCode,
         event: `DEVICE_REGISTERED|${keyId}`,
         device: JSON.stringify({
-          keyId,
-          publicKey: normalizedKey,
-          keyAlgorithm: deviceRecord.key_algorithm,
-          platform: deviceRecord.platform,
-          model: deviceRecord.model,
-          os: deviceRecord.os,
+          id: keyId,
+          pub: cleanB64Key,
+          algo: deviceRecord.key_algorithm,
         }),
         location: "Device Registration Gate",
         result: "Allowed",
