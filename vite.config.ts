@@ -21,6 +21,12 @@ import staffRegisterHandler from "./api/staff/register.ts";
 import staffLoginHandler from "./api/staff/login.ts";
 import staffFaceHandler from "./api/staff/face/index.ts";
 import adminFaceRequestsHandler from "./api/admin/face-requests/index.ts";
+import staffSessionHandler from "./api/staff/session.ts";
+import deviceStatusHandler from "./api/device/status.ts";
+import deviceChallengeHandler from "./api/device/challenge.ts";
+import deviceRegisterHandler from "./api/device/register.ts";
+import adminDevicesHandler from "./api/admin/devices/index.ts";
+import adminRevokeHandler from "./api/admin/devices/revoke.ts";
 
 function apiMiddlewarePlugin(): Plugin {
   return {
@@ -177,6 +183,36 @@ function apiMiddlewarePlugin(): Plugin {
 
         if (req.url && req.url.startsWith("/api/staff/face")) {
           await staffFaceHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/staff/session")) {
+          await staffSessionHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/device/status")) {
+          await deviceStatusHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/device/challenge")) {
+          await deviceChallengeHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/device/register")) {
+          await deviceRegisterHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/admin/devices/revoke")) {
+          await adminRevokeHandler(req, res);
+          return;
+        }
+
+        if (req.url && req.url.startsWith("/api/admin/devices")) {
+          await adminDevicesHandler(req, res);
           return;
         }
 
