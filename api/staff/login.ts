@@ -22,14 +22,241 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import {
-  getActiveDeviceForStaff,
-  getAllDevicesForStaff,
-  verifyDeviceSignature,
-  createDeviceChallenge,
-  verifyAndConsumeChallenge,
-  updateDeviceLastVerified,
-} from "../../src/server/device-binding.ts";
+const CHALLENGE_SECRET =
+  (typeof process !== "undefined" &&
+    (process.env["DEVICE_CHALLENGE_SECRET"] ||
+      process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["STAFF_AUTH_SECRET"])) ||
+  "campusattend-device-challenge-sec-key-2026";
+
+const consumedChallenges = new Map<string, number>();
+
+function normalizePublicKeyToPem(rawKey: string | Record<string, any>): string {
+  if (typeof rawKey === "object" && rawKey !== null) {
+    const jwk = rawKey as Record<string, any>;
+    if (jwk["kty"] === "EC" && jwk["crv"] === "P-256" && jwk["x"] && jwk["y"]) {
+      const keyObj = crypto.createPublicKey({ key: jwk as any, format: "jwk" });
+      return keyObj.export({ type: "spki", format: "pem" }).toString();
+    }
+  }
+  const trimmed = String(rawKey).trim();
+  if (trimmed.includes("-----BEGIN PUBLIC KEY-----")) return trimmed;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return normalizePublicKeyToPem(JSON.parse(trimmed));
+    } catch {}
+  }
+  const cleanB64 = trimmed.replace(/\s+/g, "");
+  const formatted = cleanB64.match(/.{1,64}/g)?.join("\n") || cleanB64;
+  return `-----BEGIN PUBLIC KEY-----\n${formatted}\n-----END PUBLIC KEY-----`;
+}
+
+function convertP1363ToDer(rawSig: Buffer): Buffer {
+  if (rawSig.length !== 64) return rawSig;
+  const r = rawSig.subarray(0, 32);
+  const s = rawSig.subarray(32, 64);
+  function encodeInteger(bytes: Buffer): Buffer {
+    let start = 0;
+    while (start < bytes.length - 1 && bytes[start] === 0) start++;
+    let slice = bytes.subarray(start);
+    if (slice[0]! >= 0x80) {
+      slice = Buffer.concat([Buffer.from([0x00]), slice]);
+    }
+    return Buffer.concat([Buffer.from([0x02, slice.length]), slice]);
+  }
+  const rDer = encodeInteger(r);
+  const sDer = encodeInteger(s);
+  return Buffer.concat([Buffer.from([0x30, rDer.length + sDer.length]), rDer, sDer]);
+}
+
+function verifyDeviceSignature(
+  publicKeyPemOrB64: string,
+  dataToVerify: string | Buffer,
+  signatureB64OrHex: string,
+  keyAlgorithm = "ECDSA_P256"
+): boolean {
+  if (!publicKeyPemOrB64 || !dataToVerify || !signatureB64OrHex) return false;
+  try {
+    const pem = normalizePublicKeyToPem(publicKeyPemOrB64);
+    const dataBuffer = Buffer.isBuffer(dataToVerify) ? dataToVerify : Buffer.from(dataToVerify, "utf-8");
+    let sigBuffer: Buffer;
+    const cleanSig = signatureB64OrHex.trim();
+    if (/^[0-9a-fA-F]+$/.test(cleanSig) && cleanSig.length % 2 === 0 && !cleanSig.includes("=")) {
+      sigBuffer = Buffer.from(cleanSig, "hex");
+    } else {
+      sigBuffer = Buffer.from(cleanSig, "base64");
+    }
+    const verifier = crypto.createVerify("SHA256");
+    verifier.update(dataBuffer);
+    let derSig = sigBuffer;
+    if (keyAlgorithm.includes("ECDSA") && sigBuffer.length === 64) {
+      derSig = convertP1363ToDer(sigBuffer);
+    }
+    let isValid = verifier.verify(pem, derSig);
+    if (!isValid && derSig !== sigBuffer) {
+      const retryVerifier = crypto.createVerify("SHA256");
+      retryVerifier.update(dataBuffer);
+      isValid = retryVerifier.verify(pem, sigBuffer);
+    }
+    return isValid;
+  } catch (err) {
+    console.warn("[verifyDeviceSignature] Error:", err);
+    return false;
+  }
+}
+
+function createDeviceChallenge(staffId: string, purpose: string, ttlMs = 180_000) {
+  const nonce = crypto.randomBytes(32).toString("hex");
+  const now = Date.now();
+  const payload = {
+    nonce,
+    staffId: staffId.trim().toUpperCase(),
+    issuedAt: now,
+    expiresAt: now + ttlMs,
+    purpose,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", CHALLENGE_SECRET).update(payloadB64).digest("base64url");
+  return {
+    challenge: nonce,
+    challengeToken: `${payloadB64}.${signature}`,
+    expiresAt: payload.expiresAt,
+  };
+}
+
+async function verifyAndConsumeChallenge(
+  challengeToken: string,
+  candidateChallenge: string,
+  expectedStaffId: string,
+  expectedPurpose: string
+): Promise<{ valid: boolean; error?: string }> {
+  if (!challengeToken || !candidateChallenge) return { valid: false, error: "MISSING_CHALLENGE" };
+  const parts = challengeToken.trim().split(".");
+  if (parts.length !== 2) return { valid: false, error: "INVALID_CHALLENGE_FORMAT" };
+  const [payloadB64, signature] = parts;
+  if (!payloadB64 || !signature) return { valid: false, error: "INVALID_CHALLENGE_FORMAT" };
+  try {
+    const expectedSig = crypto.createHmac("sha256", CHALLENGE_SECRET).update(payloadB64).digest("base64url");
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, error: "CHALLENGE_FORGERY_DETECTED" };
+    }
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8"));
+    if (Date.now() > payload.expiresAt) return { valid: false, error: "CHALLENGE_EXPIRED" };
+    if (payload.staffId?.toUpperCase() !== expectedStaffId.trim().toUpperCase()) return { valid: false, error: "CHALLENGE_STAFF_MISMATCH" };
+    if (payload.purpose !== expectedPurpose) return { valid: false, error: "CHALLENGE_PURPOSE_MISMATCH" };
+    if (payload.nonce !== candidateChallenge.trim()) return { valid: false, error: "CHALLENGE_NONCE_MISMATCH" };
+    if (consumedChallenges.has(payload.nonce)) return { valid: false, error: "CHALLENGE_ALREADY_USED" };
+    consumedChallenges.set(payload.nonce, Date.now());
+    return { valid: true };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || "CHALLENGE_VERIFY_EXCEPTION" };
+  }
+}
+
+async function getActiveDeviceForStaff(cleanCode: string) {
+  const code = cleanCode.trim().toUpperCase();
+  const supabaseClient = getSupabaseClient();
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient
+      .from("devices")
+      .select("*")
+      .ilike("staff_code", code)
+      .eq("status", "Active")
+      .order("registered_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data) {
+      let pubKey = data.public_key;
+      let keyAlgo = data.key_algorithm || "ECDSA_P256";
+      let keyId = data.key_id || data.id;
+
+      if (!pubKey) {
+        try {
+          const { data: eventRow } = await supabaseClient
+            .from("security_events")
+            .select("device")
+            .ilike("staff", code)
+            .like("event", "DEVICE_REGISTERED|%")
+            .order("time", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (eventRow?.device) {
+            const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
+            if (devMeta?.publicKey) {
+              pubKey = devMeta.publicKey;
+              if (devMeta.keyAlgorithm) keyAlgo = devMeta.keyAlgorithm;
+              if (devMeta.keyId) keyId = devMeta.keyId;
+            }
+          }
+        } catch {}
+      }
+
+      return {
+        id: data.id,
+        staff_id: data.staff_id,
+        staff_code: data.staff_code,
+        staff_name: data.staff_name,
+        public_key: pubKey,
+        key_id: keyId,
+        key_algorithm: keyAlgo,
+        platform: data.platform || "android",
+        model: data.model || "Mobile Device",
+        os: data.os || "Android",
+        status: data.status || "Active",
+        registered_at: data.registered_at,
+        last_verified_at: data.last_verified_at || data.registered_at,
+        revocation_reason: data.revocation_reason,
+        revoked_at: data.revoked_at,
+      };
+    }
+  } catch (e) {
+    console.warn("[getActiveDeviceForStaff] Error:", e);
+  }
+  return null;
+}
+
+async function getAllDevicesForStaff(cleanCode: string) {
+  const code = cleanCode.trim().toUpperCase();
+  const supabaseClient = getSupabaseClient();
+  if (!supabaseClient) return [];
+  try {
+    const { data, error } = await supabaseClient
+      .from("devices")
+      .select("*")
+      .ilike("staff_code", code)
+      .order("registered_at", { ascending: false });
+
+    if (!error && Array.isArray(data)) {
+      return data.map((d: any) => ({
+        id: d.id,
+        staff_code: d.staff_code,
+        key_id: d.key_id || d.id,
+        model: d.model,
+        platform: d.platform,
+        status: d.status,
+        registered_at: d.registered_at,
+        revoked_at: d.revoked_at,
+        revocation_reason: d.revocation_reason,
+      }));
+    }
+  } catch {}
+  return [];
+}
+
+async function updateDeviceLastVerified(deviceId: string): Promise<void> {
+  const now = new Date().toISOString();
+  const supabaseClient = getSupabaseClient();
+  if (supabaseClient) {
+    try {
+      await supabaseClient.from("devices").update({ last_verified_at: now }).eq("id", deviceId);
+    } catch {}
+  }
+}
+
 
 const STAFF_TOKEN_SECRET =
   (typeof process !== "undefined" &&

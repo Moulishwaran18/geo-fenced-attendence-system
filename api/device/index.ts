@@ -6,22 +6,11 @@
  * - POST /api/device/register  (action=register) : Complete cryptographic device registration
  * - GET  /api/device/status    (action=status)   : Query device registration status
  *
- * Consolidates challenge.ts, register.ts, and status.ts to satisfy
- * Vercel Hobby plan limit of 12 Serverless Functions.
+ * 100% self-contained for Vercel Serverless bundling reliability (zero relative .ts imports).
  */
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import {
-  createDeviceChallenge,
-  verifyAndConsumeChallenge,
-  verifyDeviceSignature,
-  registerDeviceForStaff,
-  getActiveDeviceForStaff,
-  getAllDevicesForStaff,
-  normalizePublicKeyToPem,
-  type DevicePlatform,
-} from "../../src/server/device-binding.ts";
 
 const STAFF_TOKEN_SECRET =
   (typeof process !== "undefined" &&
@@ -29,6 +18,16 @@ const STAFF_TOKEN_SECRET =
       process.env["STAFF_AUTH_SECRET"] ||
       process.env["CAMPUS_ADMIN_SECRET"])) ||
   "campusattend-staff-auth-session-sec-key-2026";
+
+const CHALLENGE_SECRET =
+  (typeof process !== "undefined" &&
+    (process.env["CAMPUS_AUTH_SECRET"] ||
+      process.env["STAFF_AUTH_SECRET"] ||
+      process.env["DEVICE_AUTH_SECRET"] ||
+      process.env["CAMPUS_ADMIN_SECRET"])) ||
+  "campusattend-device-binding-sec-key-2026";
+
+const consumedChallenges = new Map<string, number>();
 
 function getSupabaseClient() {
   const url =
@@ -155,6 +154,310 @@ function verifyPassword(candidatePassword: string, deviceField?: string | null):
   return false;
 }
 
+function normalizePublicKeyToPem(rawKey: string | Record<string, any>): string {
+  if (typeof rawKey === "object" && rawKey !== null) {
+    const jwk = rawKey as Record<string, any>;
+    if (jwk["kty"] === "EC" && jwk["crv"] === "P-256" && jwk["x"] && jwk["y"]) {
+      const keyObj = crypto.createPublicKey({ key: jwk as any, format: "jwk" });
+      return keyObj.export({ type: "spki", format: "pem" }).toString();
+    }
+  }
+  const trimmed = String(rawKey).trim();
+  if (trimmed.includes("-----BEGIN PUBLIC KEY-----")) return trimmed;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return normalizePublicKeyToPem(JSON.parse(trimmed));
+    } catch {}
+  }
+  const cleanB64 = trimmed.replace(/\s+/g, "");
+  const formatted = cleanB64.match(/.{1,64}/g)?.join("\n") || cleanB64;
+  return `-----BEGIN PUBLIC KEY-----\n${formatted}\n-----END PUBLIC KEY-----`;
+}
+
+function convertP1363ToDer(rawSig: Buffer): Buffer {
+  if (rawSig.length !== 64) return rawSig;
+  const r = rawSig.subarray(0, 32);
+  const s = rawSig.subarray(32, 64);
+  function encodeInteger(bytes: Buffer): Buffer {
+    let start = 0;
+    while (start < bytes.length - 1 && bytes[start] === 0) start++;
+    let slice = bytes.subarray(start);
+    if (slice[0]! >= 0x80) {
+      slice = Buffer.concat([Buffer.from([0x00]), slice]);
+    }
+    return Buffer.concat([Buffer.from([0x02, slice.length]), slice]);
+  }
+  const rDer = encodeInteger(r);
+  const sDer = encodeInteger(s);
+  return Buffer.concat([Buffer.from([0x30, rDer.length + sDer.length]), rDer, sDer]);
+}
+
+function verifyDeviceSignature(
+  publicKeyPemOrB64: string,
+  dataToVerify: string | Buffer,
+  signatureB64OrHex: string,
+  keyAlgorithm = "ECDSA_P256"
+): boolean {
+  if (!publicKeyPemOrB64 || !dataToVerify || !signatureB64OrHex) return false;
+  try {
+    const pem = normalizePublicKeyToPem(publicKeyPemOrB64);
+    const dataBuffer = Buffer.isBuffer(dataToVerify) ? dataToVerify : Buffer.from(dataToVerify, "utf-8");
+    let sigBuffer: Buffer;
+    const cleanSig = signatureB64OrHex.trim();
+    if (/^[0-9a-fA-F]+$/.test(cleanSig) && cleanSig.length % 2 === 0 && !cleanSig.includes("=")) {
+      sigBuffer = Buffer.from(cleanSig, "hex");
+    } else {
+      sigBuffer = Buffer.from(cleanSig, "base64");
+    }
+    const verifier = crypto.createVerify("SHA256");
+    verifier.update(dataBuffer);
+    let derSig = sigBuffer;
+    if (keyAlgorithm.includes("ECDSA") && sigBuffer.length === 64) {
+      derSig = convertP1363ToDer(sigBuffer);
+    }
+    let isValid = verifier.verify(pem, derSig);
+    if (!isValid && derSig !== sigBuffer) {
+      const retryVerifier = crypto.createVerify("SHA256");
+      retryVerifier.update(dataBuffer);
+      isValid = retryVerifier.verify(pem, sigBuffer);
+    }
+    return isValid;
+  } catch (err) {
+    console.warn("[verifyDeviceSignature] Error:", err);
+    return false;
+  }
+}
+
+function createDeviceChallenge(staffId: string, purpose: string, ttlMs = 180_000) {
+  const nonce = crypto.randomBytes(32).toString("hex");
+  const now = Date.now();
+  const payload = {
+    nonce,
+    staffId: staffId.trim().toUpperCase(),
+    issuedAt: now,
+    expiresAt: now + ttlMs,
+    purpose,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", CHALLENGE_SECRET).update(payloadB64).digest("base64url");
+  return {
+    challenge: nonce,
+    challengeToken: `${payloadB64}.${signature}`,
+    expiresAt: payload.expiresAt,
+  };
+}
+
+async function verifyAndConsumeChallenge(
+  challengeToken: string,
+  candidateChallenge: string,
+  expectedStaffId: string,
+  expectedPurpose: string
+): Promise<{ valid: boolean; error?: string }> {
+  if (!challengeToken || !candidateChallenge) return { valid: false, error: "MISSING_CHALLENGE" };
+  const parts = challengeToken.trim().split(".");
+  if (parts.length !== 2) return { valid: false, error: "INVALID_CHALLENGE_FORMAT" };
+  const [payloadB64, signature] = parts;
+  if (!payloadB64 || !signature) return { valid: false, error: "INVALID_CHALLENGE_FORMAT" };
+  try {
+    const expectedSig = crypto.createHmac("sha256", CHALLENGE_SECRET).update(payloadB64).digest("base64url");
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return { valid: false, error: "CHALLENGE_FORGERY_DETECTED" };
+    }
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8"));
+    if (Date.now() > payload.expiresAt) return { valid: false, error: "CHALLENGE_EXPIRED" };
+    if (payload.staffId?.toUpperCase() !== expectedStaffId.trim().toUpperCase()) return { valid: false, error: "CHALLENGE_STAFF_MISMATCH" };
+    if (payload.purpose !== expectedPurpose) return { valid: false, error: "CHALLENGE_PURPOSE_MISMATCH" };
+    if (payload.nonce !== candidateChallenge.trim()) return { valid: false, error: "CHALLENGE_NONCE_MISMATCH" };
+    if (consumedChallenges.has(payload.nonce)) return { valid: false, error: "CHALLENGE_ALREADY_USED" };
+    consumedChallenges.set(payload.nonce, Date.now());
+    return { valid: true };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || "CHALLENGE_VERIFY_EXCEPTION" };
+  }
+}
+
+async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
+  const code = cleanCode.trim().toUpperCase();
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient
+      .from("devices")
+      .select("*")
+      .ilike("staff_code", code)
+      .eq("status", "Active")
+      .order("registered_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data) {
+      let pubKey = data.public_key;
+      let keyAlgo = data.key_algorithm || "ECDSA_P256";
+      let keyId = data.key_id || data.id;
+
+      if (!pubKey) {
+        try {
+          const { data: eventRow } = await supabaseClient
+            .from("security_events")
+            .select("device")
+            .ilike("staff", code)
+            .like("event", "DEVICE_REGISTERED|%")
+            .order("time", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (eventRow?.device) {
+            const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
+            if (devMeta?.publicKey) {
+              pubKey = devMeta.publicKey;
+              if (devMeta.keyAlgorithm) keyAlgo = devMeta.keyAlgorithm;
+              if (devMeta.keyId) keyId = devMeta.keyId;
+            }
+          }
+        } catch {}
+      }
+
+      return {
+        id: data.id,
+        staff_id: data.staff_id,
+        staff_code: data.staff_code,
+        staff_name: data.staff_name,
+        public_key: pubKey,
+        key_id: keyId,
+        key_algorithm: keyAlgo,
+        platform: data.platform || "android",
+        model: data.model || "Mobile Device",
+        os: data.os || "Android",
+        status: data.status || "Active",
+        registered_at: data.registered_at,
+        last_verified_at: data.last_verified_at || data.registered_at,
+      };
+    }
+  } catch (e) {
+    console.warn("[getActiveDeviceForStaff] Error:", e);
+  }
+  return null;
+}
+
+async function getAllDevicesForStaff(cleanCode: string, supabaseClient: any) {
+  const code = cleanCode.trim().toUpperCase();
+  if (!supabaseClient) return [];
+  try {
+    const { data, error } = await supabaseClient
+      .from("devices")
+      .select("*")
+      .ilike("staff_code", code)
+      .order("registered_at", { ascending: false });
+    if (!error && Array.isArray(data)) {
+      return data.map((d: any) => ({
+        id: d.id,
+        staff_id: d.staff_id,
+        staff_code: d.staff_code,
+        staff_name: d.staff_name,
+        public_key: d.public_key,
+        key_id: d.key_id || d.id,
+        key_algorithm: d.key_algorithm || "ECDSA_P256",
+        platform: d.platform || "android",
+        model: d.model,
+        os: d.os,
+        status: d.status,
+        registered_at: d.registered_at,
+        last_verified_at: d.last_verified_at,
+      }));
+    }
+  } catch {}
+  return [];
+}
+
+async function registerDeviceForStaff(params: {
+  staffCode: string;
+  staffId: string;
+  staffName: string;
+  publicKey: string;
+  keyAlgorithm?: string;
+  platform?: string;
+  model?: string;
+  os?: string;
+  attestationStatus?: string;
+  attestationType?: string;
+  attestationEvidence?: any;
+  auditMetadata?: Record<string, any>;
+}, supabaseClient: any) {
+  const cleanStaffCode = params.staffCode.trim().toUpperCase();
+  const existingActive = await getActiveDeviceForStaff(cleanStaffCode, supabaseClient);
+  if (existingActive) {
+    return {
+      success: false,
+      statusCode: 409,
+      error: `Faculty account '${cleanStaffCode}' already has an active registered device (${existingActive.model}, ID: ${existingActive.id}).`,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const normalizedKey = normalizePublicKeyToPem(params.publicKey);
+  const keyId = `DEV_${(params.platform || "android").toUpperCase()}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
+
+  const deviceRecord = {
+    id: keyId,
+    staff_id: params.staffId,
+    staff_code: cleanStaffCode,
+    staff_name: params.staffName,
+    public_key: normalizedKey,
+    key_id: keyId,
+    key_algorithm: params.keyAlgorithm || "ECDSA_P256",
+    platform: params.platform || "android",
+    model: params.model || "Mobile Device",
+    os: params.os || "Android",
+    status: "Active",
+    registered_at: now,
+    last_verified_at: now,
+  };
+
+  if (supabaseClient) {
+    try {
+      const { error: insErr } = await supabaseClient.from("devices").insert({
+        id: deviceRecord.id,
+        staff_id: deviceRecord.staff_id,
+        staff_code: deviceRecord.staff_code,
+        staff_name: deviceRecord.staff_name,
+        model: deviceRecord.model,
+        os: deviceRecord.os,
+        status: "Active",
+        registered_at: now,
+      });
+
+      if (insErr && (insErr.code === "23505" || insErr.message.includes("unique"))) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: "Device registration conflict: Database unique constraint prevents binding multiple active devices.",
+        };
+      }
+
+      await supabaseClient.from("security_events").insert({
+        time: now,
+        staff: cleanStaffCode,
+        event: `DEVICE_REGISTERED|${keyId}`,
+        device: JSON.stringify({
+          keyId,
+          publicKey: normalizedKey,
+          keyAlgorithm: deviceRecord.key_algorithm,
+          platform: deviceRecord.platform,
+          model: deviceRecord.model,
+          os: deviceRecord.os,
+        }),
+        location: "Device Registration Gate",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch (e: any) {
+      console.warn("[registerDeviceForStaff] Exception:", e?.message);
+    }
+  }
+
+  return { success: true, statusCode: 201, device: deviceRecord };
+}
+
 export default async function handler(req: any, res?: any) {
   const method = (req.method || "GET").toUpperCase();
 
@@ -171,7 +474,6 @@ export default async function handler(req: any, res?: any) {
     actionParam = (parsed.searchParams.get("action") || "").toLowerCase();
   } catch {}
 
-  // Parse body safely for POST/PUT requests
   let body: any = {};
   if (method === "POST" || method === "PUT") {
     try {
@@ -208,7 +510,6 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  // Helper to authenticate request via token OR staff credentials
   async function authenticateCaller(): Promise<{
     authenticated: boolean;
     staffCode?: string;
@@ -232,7 +533,6 @@ export default async function handler(req: any, res?: any) {
       }
     }
 
-    // Fallback: Authenticate via staff_code + password in request body or headers
     const candidateCode = String(body?.staff_code || body?.staffId || req.headers?.["x-staff-code"] || "").trim().toUpperCase();
     const candidatePassword = String(body?.password || req.headers?.["x-staff-password"] || "").trim();
 
@@ -254,10 +554,7 @@ export default async function handler(req: any, res?: any) {
     return { authenticated: false, error: "Valid staff session token or verified credentials required." };
   }
 
-  // ===========================================================================
   // 1. ACTION: CHALLENGE (POST /api/device/challenge)
-  // Issues fresh, unpredictable, single-use challenge token for device registration
-  // ===========================================================================
   if (determinedAction === "challenge" || (method === "POST" && pathname.endsWith("/challenge"))) {
     if (method !== "POST") {
       return sendJsonResponse(res, 405, { error: "Method not allowed. Use POST." });
@@ -273,9 +570,7 @@ export default async function handler(req: any, res?: any) {
     }
 
     const staffCode = caller.staffCode;
-
-    // Check if an active registered device ALREADY exists
-    const existingActive = await getActiveDeviceForStaff(staffCode);
+    const existingActive = await getActiveDeviceForStaff(staffCode, supabase);
     if (existingActive) {
       return sendJsonResponse(res, 409, {
         success: false,
@@ -291,7 +586,6 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Generate single-use challenge with 5-minute TTL
     const challengeData = createDeviceChallenge(staffCode, "device_registration", 300_000);
 
     return sendJsonResponse(res, 200, {
@@ -303,10 +597,7 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  // ===========================================================================
   // 2. ACTION: REGISTER (POST /api/device/register)
-  // Binds cryptographic public key to faculty account
-  // ===========================================================================
   if (determinedAction === "register" || (method === "POST" && pathname.endsWith("/register"))) {
     if (method !== "POST") {
       return sendJsonResponse(res, 405, { error: "Method not allowed. Use POST." });
@@ -346,8 +637,7 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Concurrency check: Ensure faculty does not already have an active device
-    const existingActive = await getActiveDeviceForStaff(staffCode);
+    const existingActive = await getActiveDeviceForStaff(staffCode, supabase);
     if (existingActive) {
       return sendJsonResponse(res, 409, {
         success: false,
@@ -362,7 +652,6 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Validate challenge token & single-use replay protection
     const challengeCheck = await verifyAndConsumeChallenge(
       challengeToken,
       challenge,
@@ -378,7 +667,6 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Cryptographic proof-of-possession verification
     const isSignatureValid = verifyDeviceSignature(publicKey, challenge, signature, keyAlgorithm);
     if (!isSignatureValid) {
       return sendJsonResponse(res, 403, {
@@ -388,14 +676,13 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // Register device atomically
     const regResult = await registerDeviceForStaff({
       staffCode,
       staffId: staffRow.id,
       staffName: staffRow.name,
       publicKey,
       keyAlgorithm,
-      platform: (platform as DevicePlatform) || "android",
+      platform: platform || "android",
       attestationStatus: isStrongBox ? "StrongBox" : isHardwareBacked ? "TEE" : "Verified",
       attestationType: body.attestationType || "HardwareKeystore",
       attestationEvidence,
@@ -406,7 +693,7 @@ export default async function handler(req: any, res?: any) {
         isHardwareBacked: !!isHardwareBacked,
         registeredVia: "device_register",
       },
-    });
+    }, supabase);
 
     if (!regResult.success || !regResult.device) {
       return sendJsonResponse(res, regResult.statusCode || 409, {
@@ -423,17 +710,13 @@ export default async function handler(req: any, res?: any) {
         id: regResult.device.id,
         model: regResult.device.model,
         platform: regResult.device.platform,
-        attestationStatus: regResult.device.attestation_status,
         registeredAt: regResult.device.registered_at,
         status: regResult.device.status,
       },
     });
   }
 
-  // ===========================================================================
   // 3. ACTION: STATUS (GET /api/device/status)
-  // Queries active registration status
-  // ===========================================================================
   if (determinedAction === "status" || method === "GET") {
     let staffCode = "";
     const token = extractBearerOrCookieToken(req);
@@ -454,8 +737,8 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    const activeDevice = await getActiveDeviceForStaff(staffCode);
-    const allDevices = await getAllDevicesForStaff(staffCode);
+    const activeDevice = await getActiveDeviceForStaff(staffCode, supabase);
+    const allDevices = await getAllDevicesForStaff(staffCode, supabase);
 
     return sendJsonResponse(res, 200, {
       success: true,
@@ -468,7 +751,6 @@ export default async function handler(req: any, res?: any) {
             model: activeDevice.model,
             os: activeDevice.os,
             platform: activeDevice.platform,
-            attestationStatus: activeDevice.attestation_status,
             registeredAt: activeDevice.registered_at,
             lastVerifiedAt: activeDevice.last_verified_at,
             status: activeDevice.status,
@@ -480,7 +762,6 @@ export default async function handler(req: any, res?: any) {
         platform: d.platform,
         status: d.status,
         registeredAt: d.registered_at,
-        revokedAt: d.revoked_at,
       })),
     });
   }

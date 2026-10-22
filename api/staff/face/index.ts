@@ -18,7 +18,43 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import { getActiveDeviceForStaff } from "../../../src/server/device-binding.ts";
+async function getActiveDeviceForStaff(cleanCode: string) {
+  const code = cleanCode.trim().toUpperCase();
+  const supabaseClient = getSupabaseClient();
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient
+      .from("devices")
+      .select("*")
+      .ilike("staff_code", code)
+      .eq("status", "Active")
+      .order("registered_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data) {
+      return {
+        id: data.id,
+        staff_id: data.staff_id,
+        staff_code: data.staff_code,
+        staff_name: data.staff_name,
+        public_key: data.public_key,
+        key_id: data.key_id || data.id,
+        key_algorithm: data.key_algorithm || "ECDSA_P256",
+        platform: data.platform || "android",
+        model: data.model || "Mobile Device",
+        os: data.os || "Android",
+        status: data.status || "Active",
+        registered_at: data.registered_at,
+        last_verified_at: data.last_verified_at || data.registered_at,
+      };
+    }
+  } catch (e) {
+    console.warn("[getActiveDeviceForStaff] Error:", e);
+  }
+  return null;
+}
+
 
 const STAFF_TOKEN_SECRET =
   (typeof process !== "undefined" &&

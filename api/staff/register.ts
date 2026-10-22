@@ -14,7 +14,131 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import { registerDeviceForStaff, type DevicePlatform } from "../../src/server/device-binding.ts";
+type DevicePlatform = "android" | "ios" | "web" | "desktop";
+
+function normalizePublicKeyToPem(rawKey: string | Record<string, any>): string {
+  if (typeof rawKey === "object" && rawKey !== null) {
+    const jwk = rawKey as Record<string, any>;
+    if (jwk["kty"] === "EC" && jwk["crv"] === "P-256" && jwk["x"] && jwk["y"]) {
+      const keyObj = crypto.createPublicKey({ key: jwk as any, format: "jwk" });
+      return keyObj.export({ type: "spki", format: "pem" }).toString();
+    }
+  }
+  const trimmed = String(rawKey).trim();
+  if (trimmed.includes("-----BEGIN PUBLIC KEY-----")) return trimmed;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return normalizePublicKeyToPem(JSON.parse(trimmed));
+    } catch {}
+  }
+  const cleanB64 = trimmed.replace(/\s+/g, "");
+  const formatted = cleanB64.match(/.{1,64}/g)?.join("\n") || cleanB64;
+  return `-----BEGIN PUBLIC KEY-----\n${formatted}\n-----END PUBLIC KEY-----`;
+}
+
+async function registerDeviceForStaff(params: {
+  staffCode: string;
+  staffId: string;
+  staffName: string;
+  publicKey: string;
+  keyAlgorithm?: string;
+  platform?: DevicePlatform;
+  model?: string;
+  os?: string;
+  attestationStatus?: string;
+  attestationType?: string;
+  attestationEvidence?: any;
+  auditMetadata?: Record<string, any>;
+}) {
+  const cleanStaffCode = params.staffCode.trim().toUpperCase();
+  const supabaseClient = getSupabaseClient();
+  if (supabaseClient) {
+    try {
+      const { data: existingActive } = await supabaseClient
+        .from("devices")
+        .select("*")
+        .ilike("staff_code", cleanStaffCode)
+        .eq("status", "Active")
+        .limit(1)
+        .maybeSingle();
+
+      if (existingActive) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `Faculty account '${cleanStaffCode}' already has an active registered device (${existingActive.model}, ID: ${existingActive.id}).`,
+        };
+      }
+    } catch (e: any) {
+      console.warn("[registerDeviceForStaff] Check error:", e?.message);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const normalizedKey = normalizePublicKeyToPem(params.publicKey);
+  const keyId = `DEV_${(params.platform || "android").toUpperCase()}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
+
+  const deviceRecord = {
+    id: keyId,
+    staff_id: params.staffId,
+    staff_code: cleanStaffCode,
+    staff_name: params.staffName,
+    public_key: normalizedKey,
+    key_id: keyId,
+    key_algorithm: params.keyAlgorithm || "ECDSA_P256",
+    platform: params.platform || "android",
+    model: params.model || "Mobile Device",
+    os: params.os || "Android",
+    status: "Active",
+    registered_at: now,
+    last_verified_at: now,
+  };
+
+  if (supabaseClient) {
+    try {
+      const { error: insErr } = await supabaseClient.from("devices").insert({
+        id: deviceRecord.id,
+        staff_id: deviceRecord.staff_id,
+        staff_code: deviceRecord.staff_code,
+        staff_name: deviceRecord.staff_name,
+        model: deviceRecord.model,
+        os: deviceRecord.os,
+        status: "Active",
+        registered_at: now,
+      });
+
+      if (insErr && (insErr.code === "23505" || insErr.message.includes("unique"))) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: "Device registration conflict: Database unique constraint prevents binding multiple active devices.",
+        };
+      }
+
+      await supabaseClient.from("security_events").insert({
+        time: now,
+        staff: cleanStaffCode,
+        event: `DEVICE_REGISTERED|${keyId}`,
+        device: JSON.stringify({
+          keyId,
+          publicKey: normalizedKey,
+          keyAlgorithm: deviceRecord.key_algorithm,
+          platform: deviceRecord.platform,
+          model: deviceRecord.model,
+          os: deviceRecord.os,
+        }),
+        location: "Staff Registration Gate",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch (e: any) {
+      console.warn("[registerDeviceForStaff] Exception:", e?.message);
+    }
+  }
+
+  return { success: true, statusCode: 201, device: deviceRecord };
+}
+
 
 // Shared account-creation password from environment or secure default
 const DEFAULT_STAFF_REGISTRATION_CODE = "staff@123";

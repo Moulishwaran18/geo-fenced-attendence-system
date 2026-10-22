@@ -11,11 +11,154 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import {
-  getActiveDeviceForStaff,
-  verifyDeviceSignature,
-  updateDeviceLastVerified,
-} from "../src/server/device-binding.ts";
+function normalizePublicKeyToPem(rawKey: string | Record<string, any>): string {
+  if (typeof rawKey === "object" && rawKey !== null) {
+    const jwk = rawKey as Record<string, any>;
+    if (jwk["kty"] === "EC" && jwk["crv"] === "P-256" && jwk["x"] && jwk["y"]) {
+      const keyObj = crypto.createPublicKey({ key: jwk as any, format: "jwk" });
+      return keyObj.export({ type: "spki", format: "pem" }).toString();
+    }
+  }
+  const trimmed = String(rawKey).trim();
+  if (trimmed.includes("-----BEGIN PUBLIC KEY-----")) return trimmed;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return normalizePublicKeyToPem(JSON.parse(trimmed));
+    } catch {}
+  }
+  const cleanB64 = trimmed.replace(/\s+/g, "");
+  const formatted = cleanB64.match(/.{1,64}/g)?.join("\n") || cleanB64;
+  return `-----BEGIN PUBLIC KEY-----\n${formatted}\n-----END PUBLIC KEY-----`;
+}
+
+function convertP1363ToDer(rawSig: Buffer): Buffer {
+  if (rawSig.length !== 64) return rawSig;
+  const r = rawSig.subarray(0, 32);
+  const s = rawSig.subarray(32, 64);
+  function encodeInteger(bytes: Buffer): Buffer {
+    let start = 0;
+    while (start < bytes.length - 1 && bytes[start] === 0) start++;
+    let slice = bytes.subarray(start);
+    if (slice[0]! >= 0x80) {
+      slice = Buffer.concat([Buffer.from([0x00]), slice]);
+    }
+    return Buffer.concat([Buffer.from([0x02, slice.length]), slice]);
+  }
+  const rDer = encodeInteger(r);
+  const sDer = encodeInteger(s);
+  return Buffer.concat([Buffer.from([0x30, rDer.length + sDer.length]), rDer, sDer]);
+}
+
+function verifyDeviceSignature(
+  publicKeyPemOrB64: string,
+  dataToVerify: string | Buffer,
+  signatureB64OrHex: string,
+  keyAlgorithm = "ECDSA_P256"
+): boolean {
+  if (!publicKeyPemOrB64 || !dataToVerify || !signatureB64OrHex) return false;
+  try {
+    const pem = normalizePublicKeyToPem(publicKeyPemOrB64);
+    const dataBuffer = Buffer.isBuffer(dataToVerify) ? dataToVerify : Buffer.from(dataToVerify, "utf-8");
+    let sigBuffer: Buffer;
+    const cleanSig = signatureB64OrHex.trim();
+    if (/^[0-9a-fA-F]+$/.test(cleanSig) && cleanSig.length % 2 === 0 && !cleanSig.includes("=")) {
+      sigBuffer = Buffer.from(cleanSig, "hex");
+    } else {
+      sigBuffer = Buffer.from(cleanSig, "base64");
+    }
+    const verifier = crypto.createVerify("SHA256");
+    verifier.update(dataBuffer);
+    let derSig = sigBuffer;
+    if (keyAlgorithm.includes("ECDSA") && sigBuffer.length === 64) {
+      derSig = convertP1363ToDer(sigBuffer);
+    }
+    let isValid = verifier.verify(pem, derSig);
+    if (!isValid && derSig !== sigBuffer) {
+      const retryVerifier = crypto.createVerify("SHA256");
+      retryVerifier.update(dataBuffer);
+      isValid = retryVerifier.verify(pem, sigBuffer);
+    }
+    return isValid;
+  } catch (err) {
+    console.warn("[verifyDeviceSignature] Error:", err);
+    return false;
+  }
+}
+
+async function getActiveDeviceForStaff(cleanCode: string) {
+  const code = cleanCode.trim().toUpperCase();
+  const supabaseClient = getSupabaseClient();
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient
+      .from("devices")
+      .select("*")
+      .ilike("staff_code", code)
+      .eq("status", "Active")
+      .order("registered_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data) {
+      let pubKey = data.public_key;
+      let keyAlgo = data.key_algorithm || "ECDSA_P256";
+      let keyId = data.key_id || data.id;
+
+      if (!pubKey) {
+        try {
+          const { data: eventRow } = await supabaseClient
+            .from("security_events")
+            .select("device")
+            .ilike("staff", code)
+            .like("event", "DEVICE_REGISTERED|%")
+            .order("time", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (eventRow?.device) {
+            const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
+            if (devMeta?.publicKey) {
+              pubKey = devMeta.publicKey;
+              if (devMeta.keyAlgorithm) keyAlgo = devMeta.keyAlgorithm;
+              if (devMeta.keyId) keyId = devMeta.keyId;
+            }
+          }
+        } catch {}
+      }
+
+      return {
+        id: data.id,
+        staff_id: data.staff_id,
+        staff_code: data.staff_code,
+        staff_name: data.staff_name,
+        public_key: pubKey,
+        key_id: keyId,
+        key_algorithm: keyAlgo,
+        platform: data.platform || "android",
+        model: data.model || "Mobile Device",
+        os: data.os || "Android",
+        status: data.status || "Active",
+        registered_at: data.registered_at,
+        last_verified_at: data.last_verified_at || data.registered_at,
+        revocation_reason: data.revocation_reason,
+        revoked_at: data.revoked_at,
+      };
+    }
+  } catch (e) {
+    console.warn("[getActiveDeviceForStaff] Error:", e);
+  }
+  return null;
+}
+
+async function updateDeviceLastVerified(deviceId: string): Promise<void> {
+  const now = new Date().toISOString();
+  const supabaseClient = getSupabaseClient();
+  if (supabaseClient) {
+    try {
+      await supabaseClient.from("devices").update({ last_verified_at: now }).eq("id", deviceId);
+    } catch {}
+  }
+}
+
 
 const VERIFIED_SONA_EGRESS_IPS = ["111.92.42.18", "115.247.87.98"];
 const TOKEN_SECRET =

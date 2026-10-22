@@ -6,7 +6,70 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import { revokeDevice } from "../../../src/server/device-binding.ts";
+async function revokeDevice(params: {
+  deviceId: string;
+  reason: string;
+  adminUsername: string;
+}): Promise<{ success: boolean; error?: string; revokedDevice?: any }> {
+  const { deviceId, reason, adminUsername } = params;
+  const now = new Date().toISOString();
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { success: false, error: "Database client unavailable" };
+  }
+
+  try {
+    const { data: targetDevice, error: fetchErr } = await supabase
+      .from("devices")
+      .select("*")
+      .eq("id", deviceId)
+      .maybeSingle();
+
+    if (fetchErr || !targetDevice) {
+      return { success: false, error: "No matching registered device found to revoke." };
+    }
+
+    const { error: updateErr } = await supabase
+      .from("devices")
+      .update({
+        status: "Blocked",
+      })
+      .eq("id", deviceId);
+
+    if (updateErr) {
+      return { success: false, error: updateErr.message };
+    }
+
+    await supabase.from("security_events").insert({
+      time: now,
+      staff: targetDevice.staff_code,
+      event: `DEVICE_REVOKED|${deviceId}`,
+      device: JSON.stringify({
+        deviceId,
+        reason,
+        revokedBy: adminUsername,
+        revokedAt: now,
+      }),
+      location: "Admin Console",
+      result: "Blocked",
+      severity: "Medium",
+    });
+
+    return {
+      success: true,
+      revokedDevice: {
+        ...targetDevice,
+        status: "Blocked",
+        revoked_at: now,
+        revocation_reason: reason,
+        revoked_by: adminUsername,
+      },
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Failed to revoke device" };
+  }
+}
+
 
 const ADMIN_TOKEN_SECRET =
   (typeof process !== "undefined" &&
