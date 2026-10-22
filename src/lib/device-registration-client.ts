@@ -287,9 +287,9 @@ export async function registerCurrentDevice(
   }
 
   // 3. Submit registration to server
-  registrationPayload.staff_code = cleanStaffId;
-  if (password) registrationPayload.password = password;
-  registrationPayload.action = "register";
+  registrationPayload["staff_code"] = cleanStaffId;
+  if (password) registrationPayload["password"] = password;
+  registrationPayload["action"] = "register";
 
   const regRes = await fetch("/api/device/register", {
     method: "POST",

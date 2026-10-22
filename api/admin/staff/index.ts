@@ -826,11 +826,15 @@ export default async function handler(req: any, res?: any) {
       if (!deviceId || !reason) {
         return sendJsonResponse(res, 400, { success: false, error: "deviceId and reason are required." });
       }
-      const revokeRes = await revokeDevice(deviceId, reason, "Moulishwaran S");
+      const revokeRes = await revokeDevice({
+        deviceId,
+        reason,
+        adminUsername: "moulish",
+      });
       if (!revokeRes.success) {
-        return sendJsonResponse(res, revokeRes.statusCode || 400, { success: false, error: revokeRes.error });
+        return sendJsonResponse(res, 400, { success: false, error: revokeRes.error });
       }
-      return sendJsonResponse(res, 200, { success: true, message: "Device revoked successfully.", device: revokeRes.device });
+      return sendJsonResponse(res, 200, { success: true, message: "Device revoked successfully.", device: revokeRes.revokedDevice });
     }
 
     return sendJsonResponse(res, 404, { success: false, error: `Route not found: ${pathname}` });

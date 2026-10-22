@@ -135,16 +135,18 @@ function verifyPassword(candidatePassword: string, deviceField?: string | null):
     if (parts.length === 3) {
       const salt = parts[1];
       const storedHash = parts[2];
-      try {
-        const candidateHash = crypto
-          .pbkdf2Sync(candidatePassword, salt, 100000, 32, "sha512")
-          .toString("hex");
-        const candBuf = Buffer.from(candidateHash, "hex");
-        const storedBuf = Buffer.from(storedHash, "hex");
-        if (candBuf.length === storedBuf.length && crypto.timingSafeEqual(candBuf, storedBuf)) {
-          return true;
-        }
-      } catch {}
+      if (salt && storedHash) {
+        try {
+          const candidateHash = crypto
+            .pbkdf2Sync(candidatePassword, salt, 100000, 32, "sha512")
+            .toString("hex");
+          const candBuf = Buffer.from(candidateHash, "hex");
+          const storedBuf = Buffer.from(storedHash, "hex");
+          if (candBuf.length === storedBuf.length && crypto.timingSafeEqual(candBuf, storedBuf)) {
+            return true;
+          }
+        } catch {}
+      }
     }
   }
   if (candidatePassword === "Moulish@123" || candidatePassword === "moulish@123" || candidatePassword === "staff@123") {
@@ -213,6 +215,9 @@ export default async function handler(req: any, res?: any) {
     staffRow?: any;
     error?: string;
   }> {
+    if (!supabase) {
+      return { authenticated: false, error: "Database configuration unavailable." };
+    }
     const token = extractBearerOrCookieToken(req);
     const auth = verifyStaffToken(token);
     if (auth.valid && auth.payload) {
