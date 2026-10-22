@@ -6,6 +6,7 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { revokeDevice } from "../../../src/server/device-binding.ts";
 
 const ADMIN_TOKEN_SECRET =
   (typeof process !== "undefined" &&
@@ -802,9 +803,34 @@ export default async function handler(req: any, res?: any) {
           isEnrolled: count > 0,
           deviceId,
           enrolledAt,
-          referenceSamples: [], // Device-only policy: zero raw photos or vectors stored/returned
+          referenceSamples: [],
         },
       });
+    }
+
+    // 6. Device Management: GET /api/admin/devices
+    if ((pathname === "/api/admin/devices" || pathname.startsWith("/api/admin/devices")) && method === "GET") {
+      const urlObj = new URL(pathname, "https://localhost");
+      const urlStaff = urlObj.searchParams.get("staff_code");
+      let query = supabase.from("devices").select("*").order("registered_at", { ascending: false });
+      if (urlStaff) query = query.ilike("staff_code", urlStaff.trim().toUpperCase());
+      const { data: devices, error: devErr } = await query;
+      if (devErr) return sendJsonResponse(res, 500, { success: false, error: devErr.message });
+      return sendJsonResponse(res, 200, { success: true, count: (devices || []).length, devices: devices || [] });
+    }
+
+    // 7. Device Revocation: POST /api/admin/devices/revoke
+    if (pathname.includes("/devices/revoke") && method === "POST") {
+      const deviceId = (body?.deviceId || body?.id || "").trim();
+      const reason = (body?.reason || "").trim();
+      if (!deviceId || !reason) {
+        return sendJsonResponse(res, 400, { success: false, error: "deviceId and reason are required." });
+      }
+      const revokeRes = await revokeDevice(deviceId, reason, "Moulishwaran S");
+      if (!revokeRes.success) {
+        return sendJsonResponse(res, revokeRes.statusCode || 400, { success: false, error: revokeRes.error });
+      }
+      return sendJsonResponse(res, 200, { success: true, message: "Device revoked successfully.", device: revokeRes.device });
     }
 
     return sendJsonResponse(res, 404, { success: false, error: `Route not found: ${pathname}` });

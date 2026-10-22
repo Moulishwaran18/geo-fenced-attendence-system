@@ -181,6 +181,7 @@ export async function getOrCreateWebCryptoKeyPair(staffId: string): Promise<{
 export async function registerCurrentDevice(
   staffId: string,
   sessionToken?: string,
+  password?: string,
 ): Promise<DeviceRegistrationResult> {
   const cleanStaffId = staffId.trim().toUpperCase();
   const headers: Record<string, string> = {
@@ -192,10 +193,14 @@ export async function registerCurrentDevice(
   }
 
   // 1. Request fresh challenge from backend
+  const challengeBody: any = { staff_code: cleanStaffId, action: "challenge" };
+  if (password) challengeBody.password = password;
+
   const challengeRes = await fetch("/api/device/challenge", {
     method: "POST",
     headers,
     credentials: "include",
+    body: JSON.stringify(challengeBody),
   });
 
   const challengeJson = await challengeRes.json();
@@ -282,6 +287,10 @@ export async function registerCurrentDevice(
   }
 
   // 3. Submit registration to server
+  registrationPayload.staff_code = cleanStaffId;
+  if (password) registrationPayload.password = password;
+  registrationPayload.action = "register";
+
   const regRes = await fetch("/api/device/register", {
     method: "POST",
     headers,

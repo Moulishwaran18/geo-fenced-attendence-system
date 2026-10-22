@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getDeviceLoginPayload,
   signLoginChallenge,
+  registerCurrentDevice,
 } from "./device-registration-client";
 
 export interface StaffSession {
@@ -209,6 +210,32 @@ export async function loginStaff(
 
     let data = await res.json().catch(() => ({}));
 
+    // If account has no registered device yet, perform initial secure device binding from this phone
+    if (res.status === 403 && (data?.code === "DEVICE_REGISTRATION_REQUIRED" || data?.requiresDeviceRegistration)) {
+      try {
+        const regRes = await registerCurrentDevice(cleanId, undefined, password);
+        if (regRes.success) {
+          const freshDevicePayload = await getDeviceLoginPayload(cleanId);
+          res = await fetch("/api/staff/login", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            credentials: "include",
+            body: JSON.stringify({
+              staff_code: cleanId,
+              password,
+              ...(freshDevicePayload || {}),
+            }),
+            signal: controller.signal,
+          });
+          data = await res.json().catch(() => ({}));
+        }
+      } catch (regErr) {
+        console.warn("[staff-auth] Initial device binding attempt notice:", regErr);
+      }
+    }
+
     // If server requests single-use challenge proof
     if (res.status === 403 && data?.requiresDeviceProof && data?.challenge && data?.challengeToken) {
       try {
@@ -246,6 +273,15 @@ export async function loginStaff(
           error:
             data.message ||
             `Login rejected: Faculty account '${cleanId}' is bound to another phone. Only your registered phone is authorized to log in.`,
+        };
+      }
+      if (data?.error === "DEVICE_REGISTRATION_REQUIRED" || data?.code === "DEVICE_REGISTRATION_REQUIRED") {
+        return {
+          success: false,
+          code: "DEVICE_REGISTRATION_REQUIRED",
+          error:
+            data.message ||
+            `Login rejected: Faculty account '${cleanId}' has no registered device binding. Please complete initial device registration from your primary authorized phone.`,
         };
       }
       if (data?.error === "DEVICE_REVOKED") {

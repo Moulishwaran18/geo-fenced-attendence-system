@@ -1,6 +1,22 @@
 {
   "rewrites": [
     {
+      "source": "/api/staff/session",
+      "destination": "/api/staff/login"
+    },
+    {
+      "source": "/api/device/:subpath*",
+      "destination": "/api/device"
+    },
+    {
+      "source": "/api/admin/devices/:subpath*",
+      "destination": "/api/admin/staff"
+    },
+    {
+      "source": "/api/admin/devices",
+      "destination": "/api/admin/staff"
+    },
+    {
       "source": "/api/admin/logout",
       "destination": "/api/admin/staff"
     },
