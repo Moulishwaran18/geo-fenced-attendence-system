@@ -34,7 +34,8 @@
     "test:locked-face-replacement": "node --env-file=.env scripts/test-locked-face-replacement-regression.js",
     "test:head-liveness": "npx tsx scripts/test-head-movement-liveness.js",
     "test:face-parity": "npx tsx scripts/test-face-recognition-parity.js",
-    "test:face-layout": "node scripts/test-face-dialog-responsive-layout.js"
+    "test:face-layout": "node scripts/test-face-dialog-responsive-layout.js",
+    "test:reenroll-modal": "node scripts/test-reenroll-modal-responsive-layout.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

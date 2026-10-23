@@ -33,14 +33,15 @@ export interface DialogContentProps
   extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   hideCloseButton?: boolean;
   fullScreen?: boolean;
+  overlayClassName?: string;
 }
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, children, hideCloseButton = false, fullScreen = false, ...props }, ref) => (
+>(({ className, children, hideCloseButton = false, fullScreen = false, overlayClassName, ...props }, ref) => (
   <DialogPortal>
-    <DialogOverlay className={fullScreen ? "fixed inset-0 z-50 bg-black/95 backdrop-blur-sm" : undefined} />
+    <DialogOverlay className={cn(fullScreen ? "fixed inset-0 z-50 bg-black/95 backdrop-blur-sm" : undefined, overlayClassName)} />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(

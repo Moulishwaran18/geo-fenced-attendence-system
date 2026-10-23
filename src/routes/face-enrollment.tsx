@@ -15,6 +15,7 @@ import {
   Smartphone,
   Trash2,
   UploadCloud,
+  X,
   XCircle,
   Image as ImageIcon,
 } from "lucide-react";
@@ -168,6 +169,20 @@ function StaffFaceEnrollmentPage() {
   const [requestReason, setRequestReason] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [requestSubmitError, setRequestSubmitError] = useState<string | null>(null);
+
+  // Prevent background scroll and touch drift when request modal is open on mobile
+  useEffect(() => {
+    if (requestModalOpen) {
+      const origOverflow = document.body.style.overflow;
+      const origTouchAction = document.body.style.touchAction;
+      document.body.style.overflow = "hidden";
+      document.body.style.touchAction = "none";
+      return () => {
+        document.body.style.overflow = origOverflow;
+        document.body.style.touchAction = origTouchAction;
+      };
+    }
+  }, [requestModalOpen]);
 
   // Reusable on-device model loader with full error capture and progress reporting
   const loadNeuralModels = useCallback(async (): Promise<boolean> => {
@@ -2280,7 +2295,7 @@ function StaffFaceEnrollmentPage() {
         )}
       </div>
 
-      {/* Request Face Change Modal Dialog */}
+      {/* Request Face Change Full-Screen Modal Overlay */}
       <Dialog
         open={requestModalOpen}
         onOpenChange={(open) => {
@@ -2290,84 +2305,124 @@ function StaffFaceEnrollmentPage() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <ScanFace className="size-5 text-primary" />
-              Request Face Re-enrollment
-            </DialogTitle>
-            <DialogDescription>
-              To maintain campus security, face biometric profiles are permanently locked on the device.
-              Please provide the institutional justification for re-enrolling your face. Once approved by an administrator,
-              you will be authorized to capture new reference photos and save your registration directly.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-
-            {requestSubmitError && (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2.5">
-                <AlertCircle className="size-4 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="font-medium">Submission Failed</p>
-                  <p className="mt-0.5 text-[11px] leading-relaxed">{requestSubmitError}</p>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label htmlFor="reason" className="text-xs font-medium text-foreground">
-                  Reason for Change Request <span className="text-destructive">*</span>
-                </label>
-                <span
-                  className={`text-[10px] ${
-                    requestReason.trim().length > 0 && (requestReason.trim().length < 5 || requestReason.trim().length > 250)
-                      ? "text-amber-600 dark:text-amber-400 font-medium"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  {requestReason.trim().length}/250 characters (min 5)
-                </span>
-              </div>
-              <Textarea
-                id="reason"
-                placeholder="e.g. Appearance changed, new spectacles, or camera quality upgrade."
-                value={requestReason}
-                onChange={(e) => {
-                  setRequestReason(e.target.value);
-                  if (requestSubmitError) setRequestSubmitError(null);
-                }}
-                rows={4}
-                disabled={isSubmittingRequest}
-              />
-              <p className="text-[11px] text-muted-foreground">
-                This request will be reviewed by college administration. If approved, you will receive single-use authorization
-                to enroll fresh samples on your device.
-              </p>
-            </div>
-          </div>
-
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="ghost"
-              onClick={() => {
+        <DialogContent
+          fullScreen={true}
+          hideCloseButton={true}
+          overlayClassName="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex flex-col w-full h-full h-[100dvh] bg-background/95 sm:bg-transparent text-foreground border-none shadow-none p-0 overflow-y-auto overflow-x-hidden m-0 rounded-none [transform:none]"
+        >
+          <div
+            className="w-full min-h-[100dvh] flex flex-col justify-center items-center p-3.5 sm:p-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] box-border min-w-0"
+            onClick={(e) => {
+              // Click outside card on desktop closes the modal
+              if (e.target === e.currentTarget && !isSubmittingRequest) {
                 setRequestModalOpen(false);
                 setRequestSubmitError(null);
-              }}
-              disabled={isSubmittingRequest}
+              }
+            }}
+          >
+            <div
+              className="w-full max-w-lg my-auto rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl relative space-y-4"
+              onClick={(e) => e.stopPropagation()}
             >
-              Cancel
-            </Button>
-            <Button
-              id="submit-face-change-request-btn"
-              onClick={handleSubmitChangeRequest}
-              disabled={isSubmittingRequest || requestReason.trim().length < 5 || requestReason.trim().length > 250}
-            >
-              {isSubmittingRequest && <Loader2 className="mr-2 size-4 animate-spin" />}
-              {isSubmittingRequest ? "Submitting Request…" : "Submit Request to Administrator"}
-            </Button>
-          </DialogFooter>
+              <DialogHeader className="space-y-2 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <DialogTitle className="flex items-center gap-2 text-base sm:text-lg font-semibold text-foreground">
+                    <ScanFace className="size-5 text-primary shrink-0" />
+                    <span>Request Face Re-enrollment</span>
+                  </DialogTitle>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRequestModalOpen(false);
+                      setRequestSubmitError(null);
+                    }}
+                    disabled={isSubmittingRequest}
+                    className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring shrink-0 -mr-1"
+                    aria-label="Close dialog"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+                <DialogDescription className="text-xs sm:text-sm text-muted-foreground leading-relaxed text-left">
+                  To maintain campus security, face biometric profiles are permanently locked on the device.
+                  Please provide the institutional justification for re-enrolling your face. Once approved by an administrator,
+                  you will be authorized to capture new reference photos and save your registration directly.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4 py-1">
+                {requestSubmitError && (
+                  <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive flex items-start gap-2.5">
+                    <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium">Submission Failed</p>
+                      <p className="mt-0.5 text-[11px] leading-relaxed break-words">{requestSubmitError}</p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="reason" className="text-xs font-semibold text-foreground">
+                      Reason for Change Request <span className="text-destructive">*</span>
+                    </label>
+                    <span
+                      className={`text-[10px] shrink-0 ${
+                        requestReason.trim().length > 0 &&
+                        (requestReason.trim().length < 5 || requestReason.trim().length > 250)
+                          ? "text-amber-600 dark:text-amber-400 font-medium"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {requestReason.trim().length}/250 characters (min 5)
+                    </span>
+                  </div>
+                  <Textarea
+                    id="reason"
+                    placeholder="e.g. Appearance changed, new spectacles, or camera quality upgrade."
+                    value={requestReason}
+                    onChange={(e) => {
+                      setRequestReason(e.target.value);
+                      if (requestSubmitError) setRequestSubmitError(null);
+                    }}
+                    rows={4}
+                    disabled={isSubmittingRequest}
+                    className="resize-none text-sm w-full"
+                  />
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    This request will be reviewed by college administration. If approved, you will receive single-use authorization
+                    to enroll fresh samples on your device.
+                  </p>
+                </div>
+              </div>
+
+              <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setRequestModalOpen(false);
+                    setRequestSubmitError(null);
+                  }}
+                  disabled={isSubmittingRequest}
+                  className="w-full sm:w-auto"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  id="submit-face-change-request-btn"
+                  type="button"
+                  onClick={handleSubmitChangeRequest}
+                  disabled={isSubmittingRequest || requestReason.trim().length < 5 || requestReason.trim().length > 250}
+                  className="w-full sm:w-auto bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  {isSubmittingRequest && <Loader2 className="mr-2 size-4 animate-spin" />}
+                  {isSubmittingRequest ? "Submitting Request…" : "Submit Request to Administrator"}
+                </Button>
+              </DialogFooter>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </AppShell>
