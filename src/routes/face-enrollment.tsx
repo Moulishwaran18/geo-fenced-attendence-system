@@ -172,16 +172,15 @@ function StaffFaceEnrollmentPage() {
 
   // Prevent background scroll and touch drift when request modal is open on mobile
   useEffect(() => {
-    if (requestModalOpen) {
-      const origOverflow = document.body.style.overflow;
-      const origTouchAction = document.body.style.touchAction;
-      document.body.style.overflow = "hidden";
-      document.body.style.touchAction = "none";
-      return () => {
-        document.body.style.overflow = origOverflow;
-        document.body.style.touchAction = origTouchAction;
-      };
-    }
+    if (!requestModalOpen) return undefined;
+    const origOverflow = document.body.style.overflow;
+    const origTouchAction = document.body.style.touchAction;
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+    return () => {
+      document.body.style.overflow = origOverflow;
+      document.body.style.touchAction = origTouchAction;
+    };
   }, [requestModalOpen]);
 
   // Reusable on-device model loader with full error capture and progress reporting
