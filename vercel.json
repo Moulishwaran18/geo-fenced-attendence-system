@@ -17,8 +17,12 @@
       "destination": "/api/admin/staff"
     },
     {
+      "source": "/api/admin/session",
+      "destination": "/api/admin/session"
+    },
+    {
       "source": "/api/admin/logout",
-      "destination": "/api/admin/staff"
+      "destination": "/api/admin/logout"
     },
     {
       "source": "/api/admin/db-diagnostic",

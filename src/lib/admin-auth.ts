@@ -82,6 +82,38 @@ export function getCachedAdmin(): AuthenticatedAdmin | null {
 }
 
 /**
+ * Decode and validate administrator token structure and expiry on client.
+ */
+export function parseAdminToken(token?: string | null): AuthenticatedAdmin | null {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.trim().split(".");
+  if (parts.length !== 2 || !parts[0]) return null;
+  try {
+    let base64 = parts[0].replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4 !== 0) {
+      base64 += "=";
+    }
+    const jsonStr = decodeURIComponent(
+      Array.prototype.map
+        .call(atob(base64), (c: string) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join(""),
+    );
+    const payload = JSON.parse(jsonStr);
+    if (payload.role !== "admin" || payload.username !== "moulish") return null;
+    if (payload.expiresAt && Date.now() > payload.expiresAt) return null;
+    return {
+      id: payload.id || "adm-moulish-001",
+      username: payload.username || "moulish",
+      name: payload.name || "Moulishwaran S",
+      email: payload.email || "moulish@sonatech.ac.in",
+      role: "admin",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get HTTP headers for authenticated administrator API requests.
  */
 export function getAdminAuthHeaders(): Record<string, string> {
@@ -208,6 +240,13 @@ export async function verifyAdminSession(): Promise<{
     return { authenticated: false, error: "No token" };
   }
 
+  // Pre-validate token structure and expiration client-side
+  const parsedAdmin = parseAdminToken(token);
+  if (!parsedAdmin) {
+    clearAdminToken();
+    return { authenticated: false, error: "Session token expired or malformed" };
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -227,15 +266,20 @@ export async function verifyAdminSession(): Promise<{
       return { authenticated: true, admin: data.admin };
     }
 
-    clearAdminToken();
-    return { authenticated: false, error: data.error || "Session invalid or expired." };
-  } catch (err: any) {
-    // If network error, rely on cached token if present
-    const cached = getCachedAdmin();
-    if (cached) {
-      return { authenticated: true, admin: cached };
+    if (res.status === 401) {
+      // Server strictly rejected session (revoked, expired, invalid signature)
+      clearAdminToken();
+      return { authenticated: false, error: data.error || "Session invalid or expired." };
     }
-    return { authenticated: false, error: err?.message || "Network error" };
+
+    // In case of non-401 server response (e.g. transient 5xx or cold start),
+    // retain authenticated session with cached admin data
+    const cached = getCachedAdmin() || parsedAdmin;
+    return { authenticated: true, admin: cached };
+  } catch (err: any) {
+    // If network outage, rely on cached/parsed admin if token is unexpired
+    const cached = getCachedAdmin() || parsedAdmin;
+    return { authenticated: true, admin: cached };
   } finally {
     clearTimeout(timeoutId);
   }

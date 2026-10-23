@@ -20,6 +20,7 @@
     "test:android-location": "node scripts/test-native-android-location.js",
     "db:provision-admin": "node --env-file=.env scripts/provision-admin.js",
     "test:admin": "node --env-file=.env scripts/test-admin-auth.js",
+    "test:admin-session": "npx tsx scripts/test-api-admin-session-direct.js",
     "test:staff-auth": "node --env-file=.env scripts/test-staff-self-registration.js",
     "test:staff-face-lock": "node --env-file=.env scripts/test-staff-face-lock-workflow.js",
     "test:staff-face-local": "node scripts/test-staff-face-local-enrollment.js",
