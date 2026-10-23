@@ -1,11 +1,10 @@
 /**
- * Direct Unit & Integration Test for api/admin/session.ts and api/admin/logout.ts
+ * Direct Unit & Integration Test for Administrator Session & Logout via api/admin/staff/index.ts
  */
 
 import assert from "assert";
 import crypto from "node:crypto";
-import sessionHandler from "../api/admin/session.ts";
-import logoutHandler from "../api/admin/logout.ts";
+import staffApiHandler from "../api/admin/staff/index.ts";
 import loginHandler from "../api/admin/login.ts";
 
 function createMockReqRes(options = {}) {
@@ -59,11 +58,12 @@ function createMockReqRes(options = {}) {
 }
 
 async function runTests() {
-  console.log("=== Testing api/admin/session.ts & api/admin/logout.ts ===");
+  console.log("=== Testing Administrator Session & Logout Handlers ===");
 
   // 1. Generate valid token via loginHandler
   const loginMock = createMockReqRes({
     method: "POST",
+    url: "/api/admin/login",
     body: { username: "moulish", password: "moulish@123" },
   });
   await loginHandler(loginMock.req, loginMock.res);
@@ -76,9 +76,10 @@ async function runTests() {
   // 2. Test GET /api/admin/session with Bearer token
   const sessBearer = createMockReqRes({
     method: "GET",
+    url: "/api/admin/session",
     headers: { authorization: `Bearer ${validToken}` },
   });
-  await sessionHandler(sessBearer.req, sessBearer.res);
+  await staffApiHandler(sessBearer.req, sessBearer.res);
   assert.strictEqual(sessBearer.getStatus(), 200);
   const bearerData = sessBearer.getData();
   assert.strictEqual(bearerData.authenticated, true);
@@ -89,9 +90,10 @@ async function runTests() {
   // 3. Test GET /api/admin/session with Cookie
   const sessCookie = createMockReqRes({
     method: "GET",
+    url: "/api/admin/session",
     headers: { cookie: `admin_session=${validToken}` },
   });
-  await sessionHandler(sessCookie.req, sessCookie.res);
+  await staffApiHandler(sessCookie.req, sessCookie.res);
   assert.strictEqual(sessCookie.getStatus(), 200);
   const cookieData = sessCookie.getData();
   assert.strictEqual(cookieData.authenticated, true);
@@ -99,8 +101,11 @@ async function runTests() {
   console.log("✓ Session verified via Cookie: admin_session");
 
   // 4. Test missing token -> 401 TOKEN_MISSING
-  const sessMissing = createMockReqRes({ method: "GET" });
-  await sessionHandler(sessMissing.req, sessMissing.res);
+  const sessMissing = createMockReqRes({
+    method: "GET",
+    url: "/api/admin/session",
+  });
+  await staffApiHandler(sessMissing.req, sessMissing.res);
   assert.strictEqual(sessMissing.getStatus(), 401);
   assert.strictEqual(sessMissing.getData().code, "TOKEN_MISSING");
   console.log("✓ Missing token rejected with 401 TOKEN_MISSING");
@@ -109,9 +114,10 @@ async function runTests() {
   const tamperedToken = validToken.slice(0, -5) + "abcde";
   const sessTampered = createMockReqRes({
     method: "GET",
+    url: "/api/admin/session",
     headers: { authorization: `Bearer ${tamperedToken}` },
   });
-  await sessionHandler(sessTampered.req, sessTampered.res);
+  await staffApiHandler(sessTampered.req, sessTampered.res);
   assert.strictEqual(sessTampered.getStatus(), 401);
   assert.strictEqual(sessTampered.getData().code, "SIGNATURE_INVALID");
   console.log("✓ Tampered token rejected with 401 SIGNATURE_INVALID");
@@ -124,7 +130,7 @@ async function runTests() {
     email: "moulish@sonatech.ac.in",
     role: "admin",
     issuedAt: Date.now() - 100000,
-    expiresAt: Date.now() - 1000, // already expired
+    expiresAt: Date.now() - 1000,
     nonce: "expired-test-nonce",
   };
   const secret = "campusattend-admin-sec-key-moulish-2026-auth-token";
@@ -134,25 +140,30 @@ async function runTests() {
 
   const sessExpired = createMockReqRes({
     method: "GET",
+    url: "/api/admin/session",
     headers: { authorization: `Bearer ${expiredToken}` },
   });
-  await sessionHandler(sessExpired.req, sessExpired.res);
+  await staffApiHandler(sessExpired.req, sessExpired.res);
   assert.strictEqual(sessExpired.getStatus(), 401);
   assert.strictEqual(sessExpired.getData().code, "TOKEN_EXPIRED");
   console.log("✓ Expired token rejected with 401 TOKEN_EXPIRED");
 
   // 7. Test OPTIONS -> 204
-  const sessOptions = createMockReqRes({ method: "OPTIONS" });
-  await sessionHandler(sessOptions.req, sessOptions.res);
+  const sessOptions = createMockReqRes({
+    method: "OPTIONS",
+    url: "/api/admin/session",
+  });
+  await staffApiHandler(sessOptions.req, sessOptions.res);
   assert.strictEqual(sessOptions.getStatus(), 204);
   console.log("✓ OPTIONS handled with 204");
 
   // 8. Test POST /api/admin/logout
   const logoutMock = createMockReqRes({
     method: "POST",
+    url: "/api/admin/logout",
     headers: { authorization: `Bearer ${validToken}` },
   });
-  await logoutHandler(logoutMock.req, logoutMock.res);
+  await staffApiHandler(logoutMock.req, logoutMock.res);
   assert.strictEqual(logoutMock.getStatus(), 200);
   assert.strictEqual(logoutMock.getData().success, true);
   assert.ok(logoutMock.getHeaders()["set-cookie"].includes("Max-Age=0"), "Must clear cookie");
@@ -161,9 +172,10 @@ async function runTests() {
   // 9. Test logged out token on session check -> 401 TOKEN_REVOKED
   const sessRevoked = createMockReqRes({
     method: "GET",
+    url: "/api/admin/session",
     headers: { authorization: `Bearer ${validToken}` },
   });
-  await sessionHandler(sessRevoked.req, sessRevoked.res);
+  await staffApiHandler(sessRevoked.req, sessRevoked.res);
   assert.strictEqual(sessRevoked.getStatus(), 401);
   assert.strictEqual(sessRevoked.getData().code, "TOKEN_REVOKED");
   console.log("✓ Logged-out token rejected with 401 TOKEN_REVOKED");

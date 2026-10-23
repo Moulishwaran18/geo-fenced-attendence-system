@@ -18,11 +18,11 @@
     },
     {
       "source": "/api/admin/session",
-      "destination": "/api/admin/session"
+      "destination": "/api/admin/staff"
     },
     {
       "source": "/api/admin/logout",
-      "destination": "/api/admin/logout"
+      "destination": "/api/admin/staff"
     },
     {
       "source": "/api/admin/db-diagnostic",
