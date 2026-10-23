@@ -836,11 +836,10 @@ function MarkAttendancePage() {
       {status === "success" && receipt ? (
         <SuccessPanel
           receipt={receipt}
-          staffName={faceResult?.staffName}
+          staffCode={receipt.staffCode || loggedInStaff?.staffId || "SCT-001"}
+          staffName={receipt.staffName || loggedInStaff?.name}
           onReset={() => {
             setStatus("idle");
-            setFace(null);
-            setFaceResult(null);
           }}
         />
       ) : (
@@ -1366,6 +1365,7 @@ function MarkAttendancePage() {
 
                 {/* Submission CTA Button */}
                 <Button
+                  id="mark-attendance-btn"
                   size="lg"
                   className="w-full"
                   disabled={
@@ -1465,7 +1465,7 @@ function MarkAttendancePage() {
                     </>
                   ) : (
                     <>
-                      <CheckCircle2 className="mr-2 size-5" /> Confirm &amp; Mark Attendance
+                      <CheckCircle2 className="mr-2 size-5" /> Mark Attendance
                     </>
                   )}
                 </Button>
@@ -1492,30 +1492,31 @@ function MarkAttendancePage() {
 
 function SuccessPanel({
   receipt,
+  staffCode,
   staffName,
   onReset,
 }: {
   receipt: AttendanceReceipt;
+  staffCode?: string | undefined;
   staffName?: string | undefined;
   onReset: () => void;
 }) {
+  const displayFacultyId = receipt.staffCode || staffCode || "SCT-001";
   return (
     <Section>
-      <div className="flex flex-col items-center px-6 py-12 text-center">
+      <div className="flex flex-col items-center px-6 py-12 text-center" id="attendance-success-screen">
         <span className="grid size-20 place-items-center rounded-full bg-success-soft text-success">
           <CheckCircle2 className="size-11" aria-hidden />
         </span>
-        <h2 className="mt-5 text-2xl font-semibold tracking-tight">Attendance Recorded</h2>
-        {staffName && (
-          <p className="mt-1 text-lg font-medium text-foreground">Welcome, {staffName}</p>
-        )}
+        <h2 className="mt-5 text-2xl font-semibold tracking-tight text-foreground">Attendance Recorded</h2>
+        <p className="mt-1 text-lg font-medium text-foreground">Welcome, {displayFacultyId}</p>
         <p className="mt-1 text-3xl font-semibold tabular-nums text-success">{receipt.time}</p>
         <p className="text-sm text-muted-foreground">{receipt.date}</p>
 
         <ul className="mt-7 w-full max-w-md space-y-2 text-left">
           {[
             { icon: MapPin, label: "GPS Geofence polygon verified (Inside Campus)" },
-            { icon: ScanFace, label: staffName ? `Identity verified — ${staffName}` : "Identity verified" },
+            { icon: ScanFace, label: `Identity verified — ${displayFacultyId}` },
             { icon: Smartphone, label: "Device verified" },
             { icon: CheckCircle2, label: "Attendance successfully recorded" },
           ].map((i) => (
@@ -1523,21 +1524,21 @@ function SuccessPanel({
               key={i.label}
               className="flex items-center gap-3 rounded-lg border border-success/20 bg-success-soft px-4 py-2.5 text-sm text-success"
             >
-              <i.icon className="size-4" aria-hidden />
-              {i.label}
+              <i.icon className="size-4 shrink-0" aria-hidden />
+              <span>{i.label}</span>
             </li>
           ))}
         </ul>
 
-        <p className="mt-6 rounded-lg bg-muted px-4 py-2 font-mono text-xs text-muted-foreground">
+        <p className="mt-6 rounded-lg bg-muted px-4 py-2 font-mono text-xs text-muted-foreground" id="attendance-record-id">
           Attendance ID: {receipt.attendanceId}
         </p>
 
         <div className="mt-6 flex flex-wrap justify-center gap-2">
-          <Button asChild>
+          <Button asChild id="back-to-dashboard-btn">
             <Link to="/dashboard">Back to dashboard</Link>
           </Button>
-          <Button variant="outline" onClick={onReset}>
+          <Button variant="outline" onClick={onReset} id="view-verification-panel-btn">
             View verification panel
           </Button>
         </div>

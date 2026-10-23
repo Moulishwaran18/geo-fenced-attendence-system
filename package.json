@@ -38,8 +38,10 @@
     "test:face-layout": "node scripts/test-face-dialog-responsive-layout.js",
     "test:reenroll-modal": "node scripts/test-reenroll-modal-responsive-layout.js",
     "test:admin-approval-layout": "node scripts/test-admin-approval-dialog-layout.js",
+    "test:attendance-workflow": "node --env-file=.env scripts/test-attendance-success-and-supabase.js",
     "verify:reenroll-deployment": "node scripts/verify-live-deployment-reenroll.js",
-    "verify:admin-deployment": "node scripts/verify-live-deployment-session.js"
+    "verify:admin-deployment": "node scripts/verify-live-deployment-session.js",
+    "verify:attendance-deployment": "node scripts/verify-live-deployment-attendance.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

@@ -111,7 +111,7 @@ async function getActiveDeviceForStaff(cleanCode: string) {
             .select("device")
             .ilike("staff", code)
             .like("event", "DEVICE_REGISTERED|%")
-            .order("time", { ascending: false })
+            .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle();
           if (eventRow?.device) {
@@ -1393,7 +1393,10 @@ export default async function handler(req: any, res?: any) {
       receipt: {
         attendanceId: existingRecord.id,
         time: existingRecord.time,
-        date: existingDisplayDate,
+        date: existingDisplayDate.replace(/-/g, " "),
+        staffCode: existingRecord.staff_code,
+        staffName: existingRecord.staff_name,
+        department: existingRecord.department,
       },
       verifiedFactors: {
         wifi: true,
@@ -1445,7 +1448,10 @@ export default async function handler(req: any, res?: any) {
     receipt: {
       attendanceId: inserted.id,
       time: inserted.time || timeStr,
-      date: displayDateStr,
+      date: displayDateStr.replace(/-/g, " "),
+      staffCode: inserted.staff_code,
+      staffName: inserted.staff_name,
+      department: inserted.department,
     },
     verifiedFactors: {
       wifi: true,

@@ -190,6 +190,9 @@ export interface AttendanceReceipt {
   attendanceId: string;
   time: string;
   date: string;
+  staffCode?: string | undefined;
+  staffName?: string | undefined;
+  department?: string | undefined;
 }
 
 export interface MarkAttendanceParams {
@@ -270,6 +273,9 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
       attendanceId: data.receipt.attendanceId,
       time: data.receipt.time,
       date: data.receipt.date,
+      staffCode: data.receipt.staffCode || data.staffCode || params?.staffCode,
+      staffName: data.receipt.staffName || data.staffName || params?.staffName,
+      department: data.receipt.department || data.department || params?.department,
     };
 
     if (typeof window !== "undefined") {
