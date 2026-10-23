@@ -37,6 +37,7 @@
     "test:face-parity": "npx tsx scripts/test-face-recognition-parity.js",
     "test:face-layout": "node scripts/test-face-dialog-responsive-layout.js",
     "test:reenroll-modal": "node scripts/test-reenroll-modal-responsive-layout.js",
+    "test:admin-approval-layout": "node scripts/test-admin-approval-dialog-layout.js",
     "verify:reenroll-deployment": "node scripts/verify-live-deployment-reenroll.js",
     "verify:admin-deployment": "node scripts/verify-live-deployment-session.js"
   },

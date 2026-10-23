@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   UserCheck,
   UserX,
+  X,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -84,6 +85,19 @@ function AdminFaceRequestsPage() {
   useEffect(() => {
     void fetchRequests();
   }, [fetchRequests]);
+
+  // Prevent background scroll and touch drift when decision dialog is open on mobile
+  useEffect(() => {
+    if (!dialogAction || !activeReq) return undefined;
+    const origOverflow = document.body.style.overflow;
+    const origTouchAction = document.body.style.touchAction;
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+    return () => {
+      document.body.style.overflow = origOverflow;
+      document.body.style.touchAction = origTouchAction;
+    };
+  }, [dialogAction, activeReq]);
 
   const handleDecision = async () => {
     if (!activeReq || !dialogAction) return;
@@ -355,100 +369,161 @@ function AdminFaceRequestsPage() {
         )}
       </div>
 
-      {/* Decision Confirmation Dialog */}
+      {/* Decision Confirmation Full-Screen Modal Overlay */}
       <Dialog
         open={Boolean(dialogAction && activeReq)}
         onOpenChange={(open) => {
-          if (!open) {
+          if (!open && !submitting) {
             setDialogAction(null);
             setActiveReq(null);
+            setAdminNote("");
           }
         }}
       >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              {dialogAction === "approve" ? (
-                <>
-                  <UserCheck className="size-5 text-emerald-600" />
-                  {activeReq?.requestType === "initial"
-                    ? "Approve Initial Face Registration"
-                    : "Approve Face Re-enrollment"}
-                </>
-              ) : (
-                <>
-                  <UserX className="size-5 text-destructive" />
-                  Reject {activeReq?.requestType === "initial" ? "Face Registration" : "Face Re-enrollment"}
-                </>
-              )}
-            </DialogTitle>
-            <DialogDescription>
-              {dialogAction === "approve" ? (
-                <>
-                  Approving this request authorizes <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}) to capture and save replacement face images on their registered device (<strong>{activeReq?.maskedDeviceId || activeReq?.deviceId}</strong>).
-                  <br />
-                  <span className="text-muted-foreground mt-1 inline-block">
-                    A single-use 24-hour authorization will be issued. Existing active templates remain in use until the staff member completes and saves the new registration.
-                  </span>
-                </>
-              ) : (
-                <>
-                  Rejecting this request will decline face re-enrollment for <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}). The staff member&apos;s existing face registration remains completely unchanged.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent
+          fullScreen={true}
+          hideCloseButton={true}
+          overlayClassName="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex flex-col w-full h-full h-[100dvh] bg-background/95 sm:bg-transparent text-foreground border-none shadow-none p-0 overflow-y-auto overflow-x-hidden m-0 rounded-none [transform:none]"
+        >
+          <div
+            className="w-full min-h-[100dvh] flex flex-col justify-center items-center p-3.5 sm:p-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] box-border min-w-0"
+            onClick={(e) => {
+              // Click outside card on desktop closes the modal
+              if (e.target === e.currentTarget && !submitting) {
+                setDialogAction(null);
+                setActiveReq(null);
+                setAdminNote("");
+              }
+            }}
+          >
+            <div
+              className="w-full max-w-lg my-auto rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-2xl relative space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DialogHeader className="space-y-2 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <DialogTitle className="flex items-center gap-2 text-base sm:text-lg font-semibold text-foreground">
+                    {dialogAction === "approve" ? (
+                      <>
+                        <UserCheck className="size-5 text-emerald-600 shrink-0" />
+                        <span>
+                          {activeReq?.requestType === "initial"
+                            ? "Approve Initial Face Registration"
+                            : "Approve Face Re-enrollment"}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <UserX className="size-5 text-destructive shrink-0" />
+                        <span>
+                          Reject {activeReq?.requestType === "initial" ? "Face Registration" : "Face Re-enrollment"}
+                        </span>
+                      </>
+                    )}
+                  </DialogTitle>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!submitting) {
+                        setDialogAction(null);
+                        setActiveReq(null);
+                        setAdminNote("");
+                      }
+                    }}
+                    disabled={submitting}
+                    className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring shrink-0 -mr-1"
+                    aria-label="Close dialog"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+                <DialogDescription className="text-xs sm:text-sm text-muted-foreground leading-relaxed text-left">
+                  {dialogAction === "approve" ? (
+                    <>
+                      Approving this request authorizes <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}) to capture and save replacement face images on their registered device (<strong>{activeReq?.maskedDeviceId || activeReq?.deviceId}</strong>).
+                      <br />
+                      <span className="text-muted-foreground mt-1 inline-block">
+                        A single-use 24-hour authorization will be issued. Existing active templates remain in use until the staff member completes and saves the new registration.
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      Rejecting this request will decline face re-enrollment for <strong>{activeReq?.staff_name}</strong> ({activeReq?.staff_code}). The staff member&apos;s existing face registration remains completely unchanged.
+                    </>
+                  )}
+                </DialogDescription>
+              </DialogHeader>
 
-          <div className="space-y-4 py-2">
-            <div className="rounded-lg bg-muted/50 p-3 text-xs">
-              <p>
-                <strong>Staff Reason:</strong> {activeReq?.reason}
-              </p>
-              {activeReq?.maskedDigest && (
-                <p className="mt-1 font-mono text-[11px] text-purple-700 dark:text-purple-300">
-                  <strong>Staged Digest:</strong> {activeReq.maskedDigest}
-                </p>
-              )}
-            </div>
+              <div className="space-y-4 py-2">
+                <div className="rounded-lg bg-muted/50 p-3 text-xs space-y-1">
+                  <p>
+                    <strong className="text-foreground">Staff Reason:</strong> <span className="text-muted-foreground">{activeReq?.reason}</span>
+                  </p>
+                  <p>
+                    <strong className="text-foreground">Staff Code:</strong> <span className="font-mono text-muted-foreground">{activeReq?.staff_code}</span> · <strong className="text-foreground">Department:</strong> <span className="text-muted-foreground">{activeReq?.department}</span>
+                  </p>
+                  {activeReq?.maskedDigest && (
+                    <p className="font-mono text-[11px] text-purple-700 dark:text-purple-300">
+                      <strong>Staged Digest:</strong> {activeReq.maskedDigest}
+                    </p>
+                  )}
+                </div>
 
-            <div className="space-y-1.5">
-              <label htmlFor="adminNote" className="text-xs font-medium text-foreground">
-                Administrative Note (Optional)
-              </label>
-              <Textarea
-                id="adminNote"
-                placeholder={
-                  dialogAction === "approve"
-                    ? "e.g. Identity verified. Authorized to replace face registration."
-                    : "e.g. Current reference photos are sufficiently clear."
-                }
-                value={adminNote}
-                onChange={(e) => setAdminNote(e.target.value)}
-                rows={3}
-              />
+                <div className="space-y-1.5">
+                  <label htmlFor="adminNote" className="text-xs font-medium text-foreground">
+                    Administrative Note (Optional)
+                  </label>
+                  <Textarea
+                    id="adminNote"
+                    placeholder={
+                      dialogAction === "approve"
+                        ? "e.g. Identity verified. Authorized to replace face registration."
+                        : "e.g. Current reference photos are sufficiently clear."
+                    }
+                    value={adminNote}
+                    onChange={(e) => setAdminNote(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+              </div>
+
+              <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setDialogAction(null);
+                    setActiveReq(null);
+                    setAdminNote("");
+                  }}
+                  disabled={submitting}
+                  className="w-full sm:w-auto"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  id="admin-decision-confirm-btn"
+                  variant={dialogAction === "approve" ? "default" : "destructive"}
+                  onClick={handleDecision}
+                  disabled={submitting}
+                  className={`w-full sm:w-auto ${dialogAction === "approve" ? "bg-emerald-600 hover:bg-emerald-700 text-white" : ""}`}
+                >
+                  {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+                  {submitting
+                    ? "Processing…"
+                    : dialogAction === "approve"
+                    ? activeReq?.requestType === "permission_request" || activeReq?.stage === 1
+                      ? "Grant Preparation Permission"
+                      : activeReq?.requestType === "initial"
+                      ? "Approve Initial Registration"
+                      : "Grant Re-enrollment Permission"
+                    : "Confirm Rejection"}
+                </Button>
+              </DialogFooter>
             </div>
           </div>
-
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="ghost" onClick={() => setDialogAction(null)} disabled={submitting}>
-              Cancel
-            </Button>
-            <Button
-              variant={dialogAction === "approve" ? "default" : "destructive"}
-              onClick={handleDecision}
-              disabled={submitting}
-              className={dialogAction === "approve" ? "bg-emerald-600 hover:bg-emerald-700 text-white" : ""}
-            >
-              {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-              {submitting
-                ? "Processing…"
-                : dialogAction === "approve"
-                ? activeReq?.requestType === "permission_request" || activeReq?.stage === 1
-                  ? "Grant Preparation Permission"
-                  : "Authorize Face Replacement"
-                : "Confirm Rejection"}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </AppShell>
