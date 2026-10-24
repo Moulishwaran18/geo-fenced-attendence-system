@@ -77,12 +77,18 @@ const ADMIN_TOKEN_SECRET =
   "campusattend-admin-sec-key-moulish-2026-auth-token";
 
 // Helper to mock request/response
-function callApi(handler, method, url, headers, body) {
+function callApi(
+  handler: any,
+  method: string,
+  url: string,
+  headers: Record<string, string | undefined>,
+  body: any
+): Promise<{ status: number; data: any }> {
   return new Promise(async (resolve) => {
     let statusCode = 200;
-    let resData = null;
+    let resData: any = null;
 
-    const req = {
+    const req: any = {
       method,
       url,
       headers: { ...headers },
@@ -90,20 +96,20 @@ function callApi(handler, method, url, headers, body) {
       json: async () => body,
     };
 
-    const res = {
+    const res: any = {
       statusCode: 200,
       setHeader: () => {},
-      status: (c) => {
+      status: (c: number) => {
         statusCode = c;
         res.statusCode = c;
         return res;
       },
-      json: (p) => {
+      json: (p: any) => {
         resData = p;
         resolve({ status: statusCode, data: resData });
         return res;
       },
-      end: (s) => {
+      end: (s: any) => {
         if (s && !resData) {
           try { resData = JSON.parse(s); } catch { resData = s; }
         }
@@ -113,14 +119,14 @@ function callApi(handler, method, url, headers, body) {
 
     try {
       await handler(req, res);
-    } catch (e) {
-      resolve({ status: 500, data: { error: e.message } });
+    } catch (e: any) {
+      resolve({ status: 500, data: { error: e?.message || String(e) } });
     }
   });
 }
 
 // Token creation helpers
-function mintStaffToken(staffCode, ttlMs = 3600_000) {
+function mintStaffToken(staffCode: string, ttlMs = 3600_000) {
   const payload = {
     staffId: staffCode.toUpperCase(),
     sub: staffCode.toUpperCase(),
@@ -162,7 +168,7 @@ function mintNetworkToken(ssid = "SONA-WIFI-FACULTY", valid = true, ttlMs = 120_
 }
 
 // ECDSA signing helper
-function signPayload(privateKey, canonicalString) {
+function signPayload(privateKey: crypto.KeyLike | crypto.SignKeyObjectInput | crypto.SignPrivateKeyInput, canonicalString: string) {
   const sign = crypto.createSign("SHA256");
   sign.update(canonicalString);
   return sign.sign(privateKey, "base64");
@@ -171,7 +177,7 @@ function signPayload(privateKey, canonicalString) {
 let passedCount = 0;
 let failedCount = 0;
 
-function assert(condition, title, details) {
+function assert(condition: any, title: string, details?: any) {
   if (condition) {
     passedCount++;
     console.log(`  ✓ PASS: ${title}`);

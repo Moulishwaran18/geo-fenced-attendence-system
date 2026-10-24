@@ -460,10 +460,11 @@ async function verifyAndConsumeServerChallenge(
   }
 
   const parts = challengeToken.trim().split(".");
-  if (parts.length !== 2) {
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
     return { valid: false, error: "INVALID_CHALLENGE_FORMAT", message: "Challenge token format is malformed." };
   }
-  const [payloadB64, signature] = parts;
+  const payloadB64 = parts[0];
+  const signature = parts[1];
 
   // 1. Validate HMAC signature
   try {
