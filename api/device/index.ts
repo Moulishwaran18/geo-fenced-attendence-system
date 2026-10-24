@@ -148,9 +148,6 @@ function verifyPassword(candidatePassword: string, deviceField?: string | null):
       }
     }
   }
-  if (candidatePassword === "Moulish@123" || candidatePassword === "moulish@123" || candidatePassword === "staff@123") {
-    return true;
-  }
   return false;
 }
 

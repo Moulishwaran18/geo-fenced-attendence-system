@@ -238,9 +238,27 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
 
   const payload: any = { ...(params || {}) };
 
+  // Request single-use server challenge if not already present
+  if (!payload.challenge && (payload.token || reqHeaders["Authorization"])) {
+    try {
+      const chalRes = await fetch("/api/attendance?action=challenge", {
+        method: "POST",
+        headers: reqHeaders,
+        credentials: "include",
+      });
+      if (chalRes.ok) {
+        const chalData = await chalRes.json();
+        if (chalData.success && chalData.challenge) {
+          payload.challenge = chalData.challenge;
+          payload.challengeToken = chalData.challengeToken;
+        }
+      }
+    } catch {}
+  }
+
   // If cryptographic deviceSignature is not yet provided, automatically sign with registered device
   if (!payload.deviceSignature && payload.staffCode) {
-    const nonce = payload.attemptNonce || payload.sessionNonce || `att_nonce_${Date.now()}`;
+    const nonce = payload.challenge || payload.attemptNonce || payload.sessionNonce || `att_nonce_${Date.now()}`;
     payload.attemptNonce = nonce;
     const signedDevice = await signAttendanceRequest(payload.staffCode, nonce);
     if (signedDevice) {

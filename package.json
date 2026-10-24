@@ -41,7 +41,8 @@
     "test:attendance-workflow": "node --env-file=.env scripts/test-attendance-success-and-supabase.js",
     "verify:reenroll-deployment": "node scripts/verify-live-deployment-reenroll.js",
     "verify:admin-deployment": "node scripts/verify-live-deployment-session.js",
-    "verify:attendance-deployment": "node scripts/verify-live-deployment-attendance.js"
+    "verify:attendance-deployment": "node scripts/verify-live-deployment-attendance.js",
+    "test:security-hardening": "npx tsx scripts/test-critical-security-hardening.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
