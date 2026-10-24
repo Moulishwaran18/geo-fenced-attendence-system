@@ -221,6 +221,39 @@ export default defineConfig({
       strictPort: true,
     },
     plugins: [basicSsl(), apiMiddlewarePlugin()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            // Isolate ONNX Runtime Web assembly / JS engine
+            if (id.includes("onnxruntime-web")) {
+              return "vendor-onnx";
+            }
+            // Isolate TensorFlow core
+            if (id.includes("@tensorflow")) {
+              return "vendor-tensorflow";
+            }
+            // Isolate Face-API neural network models/weights
+            if (id.includes("face-api.js")) {
+              return "vendor-face-api";
+            }
+            // Isolate charting and visualization dependencies
+            if (
+              id.includes("recharts") ||
+              id.includes("/d3-") ||
+              id.includes("\\d3-") ||
+              id.includes("d3-scale") ||
+              id.includes("d3-shape") ||
+              id.includes("d3-array")
+            ) {
+              return "vendor-charts";
+            }
+            return undefined;
+          },
+        },
+      },
+      chunkSizeWarningLimit: 700,
+    },
   },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
