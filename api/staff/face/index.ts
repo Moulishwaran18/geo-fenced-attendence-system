@@ -20,7 +20,12 @@ import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 async function getActiveDeviceForStaff(cleanCode: string) {
   const code = cleanCode.trim().toUpperCase();
-  const supabaseClient = getSupabaseClient();
+  let supabaseClient: any = null;
+  try {
+    supabaseClient = getSupabaseClient();
+  } catch {
+    return null;
+  }
   if (!supabaseClient) return null;
   try {
     const { data, error } = await supabaseClient
@@ -63,21 +68,40 @@ const STAFF_TOKEN_SECRET =
       process.env["CAMPUS_ADMIN_SECRET"])) ||
   "campusattend-staff-auth-session-sec-key-2026";
 
-function getSupabaseClient(req?: any) {
+export function getSupabaseClient(req?: any) {
   if (req?.supabaseClient) return req.supabaseClient;
   const url =
     (typeof process !== "undefined" &&
       (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
     "https://qvjcxoznvhoagclbyhad.supabase.co";
+
+  const isProd =
+    typeof process !== "undefined" &&
+    (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
+
+  const serviceRoleKey =
+    typeof process !== "undefined" && process.env["SUPABASE_SERVICE_ROLE_KEY"]
+      ? process.env["SUPABASE_SERVICE_ROLE_KEY"].trim()
+      : undefined;
+
+  // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
+  if (isProd) {
+    if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
+      console.error("[StaffFaceGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for staff face operations in production.");
+    }
+    return createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+  }
+
+  // Non-production fallback (test / local developer mode):
   const key =
+    serviceRoleKey ||
     (typeof process !== "undefined" &&
-      (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
-        process.env["SUPABASE_ANON_KEY"] ||
-        process.env["VITE_SUPABASE_ANON_KEY"] ||
-        process.env["VITE_SUPABASE_PUBLISHABLE_KEY"])) ||
-    "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+      (process.env["SUPABASE_ANON_KEY"] || process.env["VITE_SUPABASE_ANON_KEY"])) ||
+    undefined;
+
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
 function sendJsonResponse(res: any, status: number, payload: any) {
@@ -185,11 +209,22 @@ export default async function handler(req: any, res?: any) {
     return sendJsonResponse(res, 204, {});
   }
 
-  const supabase = getSupabaseClient(req);
+  let supabase: any = null;
+  try {
+    supabase = getSupabaseClient(req);
+  } catch (err: any) {
+    return sendJsonResponse(res, 503, {
+      success: false,
+      error: "SERVER_CONFIG_FAULT",
+      message: err?.message || "Server database configuration fault.",
+    });
+  }
+
   if (!supabase) {
     return sendJsonResponse(res, 500, {
       success: false,
-      error: "Database configuration unavailable on server.",
+      error: "DATABASE_UNAVAILABLE",
+      message: "Database configuration unavailable on server.",
     });
   }
 

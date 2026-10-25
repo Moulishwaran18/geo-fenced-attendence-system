@@ -67,15 +67,34 @@ function getSupabase(): SupabaseClient | null {
     (typeof process !== "undefined" &&
       (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
     "https://qvjcxoznvhoagclbyhad.supabase.co";
+
+  const isProd =
+    typeof process !== "undefined" &&
+    (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
+
+  const serviceRoleKey =
+    typeof process !== "undefined" && process.env["SUPABASE_SERVICE_ROLE_KEY"]
+      ? process.env["SUPABASE_SERVICE_ROLE_KEY"].trim()
+      : undefined;
+
+  // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
+  if (isProd) {
+    if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
+      console.error("[DeviceBinding] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for cryptographic device binding operations in production.");
+    }
+    return createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+  }
+
+  // Non-production fallback (test / local developer mode):
   const key =
+    serviceRoleKey ||
     (typeof process !== "undefined" &&
-      (process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
-        process.env["SUPABASE_ANON_KEY"] ||
-        process.env["VITE_SUPABASE_ANON_KEY"] ||
-        process.env["VITE_SUPABASE_PUBLISHABLE_KEY"])) ||
-    "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+      (process.env["SUPABASE_ANON_KEY"] || process.env["VITE_SUPABASE_ANON_KEY"])) ||
+    undefined;
+
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
 // -----------------------------------------------------------------------------

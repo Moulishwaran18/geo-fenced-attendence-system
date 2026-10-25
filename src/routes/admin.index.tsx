@@ -54,16 +54,37 @@ function AdminDashboard() {
           day: "2-digit",
         }).format(new Date());
 
-        // 1. Fetch registered staff count & departments
-        const { data: staffList } = await supabase
-          .from("staff")
-          .select("id, staff_code, name, department, active")
-          .eq("active", true);
+        // 1. Fetch registered staff count & departments via authenticated admin API
+        let staffList: Array<{ id: string; staff_code: string; name: string; department: string; active: boolean }> = [];
+        try {
+          const headers = { Accept: "application/json", ...getAdminAuthHeaders() };
+          const resStaff = await fetch("/api/admin/staff", { headers, credentials: "include" });
+          if (resStaff.ok) {
+            const staffJson = await resStaff.json();
+            if (staffJson.success && Array.isArray(staffJson.data)) {
+              staffList = staffJson.data;
+            }
+          }
+        } catch (err) {
+          console.warn("[AdminDashboard] /api/admin/staff notice:", err);
+        }
+
+        // Scoped fallback to public staff_directory view if needed
+        if (staffList.length === 0) {
+          try {
+            const { data } = await supabase
+              .from("staff_directory")
+              .select("staff_code, name, department");
+            if (data) {
+              staffList = data.map((d: any) => ({ ...d, id: d.staff_code, active: true }));
+            }
+          } catch {}
+        }
 
         const count = staffList ? staffList.length : 0;
         setTotalStaff(count);
 
-        // 2. Fetch today's real attendance records
+        // 2. Fetch today's real attendance records via serverless API
         let records: any[] = [];
         try {
           const headers = { Accept: "application/json", ...getAdminAuthHeaders() };
@@ -77,15 +98,8 @@ function AdminDashboard() {
               records = json.records;
             }
           }
-        } catch {}
-
-        if (records.length === 0) {
-          const { data: dbData } = await supabase
-            .from("attendance_records")
-            .select("*")
-            .eq("date", todayIST)
-            .order("created_at", { ascending: false });
-          if (dbData) records = dbData;
+        } catch (err) {
+          console.warn("[AdminDashboard] /api/attendance notice:", err);
         }
 
         const mapped = records.map((r: any) => ({
@@ -124,12 +138,23 @@ function AdminDashboard() {
         }));
         setDeptStats(calculatedDepts);
 
-        // 4. Past 7 days attendance overview
-        const { data: past7Records } = await supabase
-          .from("attendance_records")
-          .select("date, day, status")
-          .order("date", { ascending: false })
-          .limit(300);
+        // 4. Past 7 days attendance overview via authenticated serverless endpoint
+        let past7Records: any[] = [];
+        try {
+          const headers = { Accept: "application/json", ...getAdminAuthHeaders() };
+          const res7 = await fetch(`/api/attendance?limit=300`, {
+            headers,
+            credentials: "include",
+          });
+          if (res7.ok) {
+            const json7 = await res7.json();
+            if (json7.success && Array.isArray(json7.records)) {
+              past7Records = json7.records;
+            }
+          }
+        } catch (err) {
+          console.warn("[AdminDashboard] Weekly attendance fetch notice:", err);
+        }
 
         const daysList: { day: string; present: number; absent: number }[] = [];
         for (let i = 6; i >= 0; i--) {
@@ -142,8 +167,8 @@ function AdminDashboard() {
             day: "2-digit",
           }).format(d);
           const dayName = d.toLocaleDateString("en-US", { weekday: "short", timeZone: "Asia/Kolkata" });
-          const dayRows = (past7Records || []).filter((r) => r.date === dStr);
-          const pres = dayRows.filter((r) => r.status === "Present" || r.status === "Late").length;
+          const dayRows = (past7Records || []).filter((r: any) => r.date === dStr);
+          const pres = dayRows.filter((r: any) => r.status === "Present" || r.status === "Late").length;
           const abs = Math.max(0, count - pres);
           daysList.push({ day: dayName, present: pres, absent: abs });
         }

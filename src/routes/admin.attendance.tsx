@@ -80,18 +80,20 @@ function AdminAttendancePage() {
         console.warn("[AdminAttendance] /api/attendance notice:", e);
       }
 
-      // 2. Direct Supabase fallback
+      // 2. Direct Supabase fallback (graceful fail-safe)
       if (!fetched) {
-        const { data, error } = await supabase
-          .from("attendance_records")
-          .select("*")
-          .order("date", { ascending: false })
-          .order("created_at", { ascending: false })
-          .limit(200);
+        try {
+          const { data, error } = await supabase
+            .from("attendance_records")
+            .select("*")
+            .order("date", { ascending: false })
+            .order("created_at", { ascending: false })
+            .limit(200);
 
-        if (!error && data) {
-          fetched = data;
-        }
+          if (!error && data) {
+            fetched = data;
+          }
+        } catch {}
       }
 
       if (fetched && fetched.length > 0) {

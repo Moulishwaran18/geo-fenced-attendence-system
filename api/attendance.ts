@@ -61,14 +61,34 @@ function getSupabaseClient() {
     process.env["SUPABASE_URL"] ||
     process.env["VITE_SUPABASE_URL"] ||
     "https://qvjcxoznvhoagclbyhad.supabase.co";
+
+  const isProd =
+    typeof process !== "undefined" &&
+    (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
+
+  const serviceRoleKey =
+    typeof process !== "undefined" && process.env["SUPABASE_SERVICE_ROLE_KEY"]
+      ? process.env["SUPABASE_SERVICE_ROLE_KEY"].trim()
+      : undefined;
+
+  // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
+  if (isProd) {
+    if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
+      console.error("[AttendanceGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for attendance operations in production.");
+    }
+    return createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+  }
+
+  // Non-production fallback (test / local developer mode):
   const key =
-    process.env["SUPABASE_SERVICE_ROLE_KEY"] ||
-    process.env["SUPABASE_ANON_KEY"] ||
-    process.env["VITE_SUPABASE_ANON_KEY"] ||
-    process.env["VITE_SUPABASE_PUBLISHABLE_KEY"] ||
-    "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+    serviceRoleKey ||
+    (typeof process !== "undefined" &&
+      (process.env["SUPABASE_ANON_KEY"] || process.env["VITE_SUPABASE_ANON_KEY"])) ||
+    undefined;
+
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +118,137 @@ const CHALLENGE_SECRET =
   process.env["DEVICE_CHALLENGE_SECRET"] ||
   process.env["DEVICE_AUTH_SECRET"] ||
   "campusattend-device-challenge-sec-key-2026";
+
+/**
+ * Loads the active dedicated HMAC signing secret for attendance record integrity.
+ * Strictly enforces dedicated secret configuration in production and fails closed
+ * if missing or insufficient in entropy (< 32 characters / 256 bits).
+ * Removes all hard-coded fallbacks in production.
+ */
+export function getRecordHmacSecret(): string | null {
+  const secret = process.env["RECORD_HMAC_SECRET"]?.trim();
+  const isProduction =
+    process.env["NODE_ENV"] === "production" ||
+    process.env["VERCEL_ENV"] === "production";
+
+  if (secret) {
+    if (isProduction && secret.length < 32) {
+      console.error("[HMAC] CRITICAL: RECORD_HMAC_SECRET in production must be at least 32 characters (256-bit entropy).");
+      return null;
+    }
+    return secret;
+  }
+
+  if (isProduction) {
+    console.error("[HMAC] CRITICAL: Dedicated RECORD_HMAC_SECRET is missing in production. Fails closed.");
+    return null;
+  }
+
+  // Non-production test fallback: strictly isolated to test/development environments
+  if (process.env["NODE_ENV"] === "test" || process.env["TEST_MODE"] === "1") {
+    return process.env["RECORD_HMAC_TEST_KEY"] || "campusattend-test-isolated-hmac-secret-key-32bytes";
+  }
+
+  return null;
+}
+
+/**
+ * Returns all active and historical HMAC secrets to support seamless key rotation.
+ * Previous keys can be specified via comma-separated RECORD_HMAC_PREVIOUS_SECRETS.
+ */
+export function getAllHmacSecrets(): string[] {
+  const active = getRecordHmacSecret();
+  const secrets: string[] = [];
+  if (active) secrets.push(active);
+
+  const prevEnv = process.env["RECORD_HMAC_PREVIOUS_SECRETS"] || "";
+  if (prevEnv.trim()) {
+    const isProduction =
+      process.env["NODE_ENV"] === "production" ||
+      process.env["VERCEL_ENV"] === "production";
+    const prevList = prevEnv.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    for (const p of prevList) {
+      if (isProduction && p.length < 32) {
+        console.warn("[HMAC] Warning: Previous secret in RECORD_HMAC_PREVIOUS_SECRETS is under 32 characters, skipping.");
+        continue;
+      }
+      if (!secrets.includes(p)) {
+        secrets.push(p);
+      }
+    }
+  }
+
+  return secrets;
+}
+
+/**
+ * Deterministic canonical record serialization for HMAC-SHA256 integrity verification.
+ * Strictly binds immutable record attributes: version, staffCode, date, time, status, deviceId.
+ */
+export function buildCanonicalRecordString(record: {
+  staff_code: string;
+  date: string;
+  time: string;
+  status: string;
+  device_id: string;
+}): string {
+  const staff = String(record.staff_code || "").trim().toUpperCase();
+  const date = String(record.date || "").trim();
+  const time = String(record.time || "").trim();
+  const status = String(record.status || "Present").trim();
+  const device = String(record.device_id || "").trim();
+  return `v1:${staff}:${date}:${time}:${status}:${device}`;
+}
+
+export function computeRecordHmac(record: {
+  staff_code: string;
+  date: string;
+  time: string;
+  status: string;
+  device_id: string;
+}): string {
+  const secret = getRecordHmacSecret();
+  if (!secret) {
+    throw new Error("RECORD_HMAC_SECRET_MISSING: Cannot compute record HMAC without valid RECORD_HMAC_SECRET");
+  }
+  const canonical = buildCanonicalRecordString(record);
+  return crypto.createHmac("sha256", secret).update(canonical).digest("hex");
+}
+
+export function verifyRecordHmac(record: {
+  staff_code: string;
+  date: string;
+  time: string;
+  status: string;
+  device_id: string;
+  record_hash?: string | null;
+  tamper_status?: string | null;
+}): { verified: boolean; status: "VERIFIED" | "UNVERIFIED_HISTORICAL" | "TAMPERED" } {
+  if (!record.record_hash || record.tamper_status === "UNVERIFIED_HISTORICAL") {
+    return { verified: false, status: "UNVERIFIED_HISTORICAL" };
+  }
+
+  const secrets = getAllHmacSecrets();
+  if (secrets.length === 0) {
+    // If no valid secret is configured, fail closed: never mark VERIFIED
+    return { verified: false, status: "TAMPERED" };
+  }
+
+  const canonical = buildCanonicalRecordString(record);
+
+  for (const secret of secrets) {
+    const expected = crypto.createHmac("sha256", secret).update(canonical).digest("hex");
+    try {
+      const a = Buffer.from(record.record_hash, "hex");
+      const b = Buffer.from(expected, "hex");
+      if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+        return { verified: true, status: "VERIFIED" };
+      }
+    } catch {}
+  }
+
+  return { verified: false, status: "TAMPERED" };
+}
 
 // ---------------------------------------------------------------------------
 // Rate Limiter (Sliding Window in Memory)
@@ -661,7 +812,8 @@ async function handleGetAttendance(req: any, res?: any) {
   const filterDate = (parsedUrl.searchParams.get("date") || "").trim();
   const filterStatus = (parsedUrl.searchParams.get("status") || "").trim();
   const filterDept = (parsedUrl.searchParams.get("department") || "").trim();
-  const limit = Math.min(200, Math.max(1, parseInt(parsedUrl.searchParams.get("limit") || "100", 10)));
+  const maxLimit = adminCheck.valid ? 500 : 200;
+  const limit = Math.min(maxLimit, Math.max(1, parseInt(parsedUrl.searchParams.get("limit") || "100", 10)));
 
   let targetStaffCode: string | null = null;
   if (adminCheck.valid) {
@@ -696,10 +848,14 @@ async function handleGetAttendance(req: any, res?: any) {
       q += ` ORDER BY date DESC, created_at DESC LIMIT $${params.length}`;
 
       const dbRes = await pool.query(q, params);
+      const enriched = dbRes.rows.map((r: any) => ({
+        ...r,
+        tamper_status: verifyRecordHmac(r).status,
+      }));
       return sendJsonResponse(res, 200, {
         success: true,
-        count: dbRes.rows.length,
-        records: dbRes.rows,
+        count: enriched.length,
+        records: enriched,
       });
     } catch {}
   }
@@ -720,10 +876,15 @@ async function handleGetAttendance(req: any, res?: any) {
     return sendJsonResponse(res, 500, { success: false, error: "QUERY_FAILED", message: error.message });
   }
 
+  const enrichedData = (data || []).map((r: any) => ({
+    ...r,
+    tamper_status: verifyRecordHmac(r).status,
+  }));
+
   return sendJsonResponse(res, 200, {
     success: true,
-    count: (data || []).length,
-    records: data || [],
+    count: enrichedData.length,
+    records: enrichedData,
   });
 }
 
@@ -849,9 +1010,17 @@ async function handleCorrectionRequest(req: any, res: any, body: any) {
     });
   }
 
-  // 2. Compute audit hash
-  const auditString = `${attendanceId}|${originalRecord.status}|${correctedStatus}|${adminUsername}|${Date.now()}`;
-  const auditHash = crypto.createHash("sha256").update(auditString).digest("hex");
+  // 2. Compute audit HMAC
+  const hmacSecret = getRecordHmacSecret();
+  if (!hmacSecret) {
+    return sendJsonResponse(res, 503, {
+      success: false,
+      error: "INTEGRITY_SECRET_UNAVAILABLE",
+      message: "Attendance correction service unavailable due to unconfigured integrity secret. Contact administrator.",
+    });
+  }
+  const auditString = `corr:v1:${attendanceId}:${originalRecord.status}:${correctedStatus}:${adminUsername}:${Date.now()}`;
+  const auditHash = crypto.createHmac("sha256", hmacSecret).update(auditString).digest("hex");
 
   // 3. Insert into public.attendance_corrections (leaving original record untouched)
   let correctionRecordId: string | null = null;
@@ -1266,9 +1435,24 @@ export default async function handler(req: any, res?: any) {
     } catch {}
   }
 
-  // 3. Compute tamper-evident record hash
-  const recordHashString = `${canonicalStaffCode}|${istDateStr}|${timeStr}|Present|${activeDevice.id}|${latitude}|${longitude}|${now.toISOString()}`;
-  const recordHash = crypto.createHash("sha256").update(recordHashString).digest("hex");
+  // 3. Compute tamper-evident record HMAC
+  let recordHash: string;
+  try {
+    recordHash = computeRecordHmac({
+      staff_code: canonicalStaffCode,
+      date: istDateStr,
+      time: timeStr,
+      status: "Present",
+      device_id: activeDevice.id,
+    });
+  } catch (err: any) {
+    console.error("[attendance] Fatal HMAC integrity error:", err?.message || err);
+    return sendJsonResponse(res, 503, {
+      success: false,
+      error: "INTEGRITY_GATEWAY_UNAVAILABLE",
+      message: "Attendance service cannot mark records without a configured integrity secret. Contact administrator.",
+    });
+  }
 
   // 4. Atomic Insert into public.attendance_records
   let insertedId: string | null = null;

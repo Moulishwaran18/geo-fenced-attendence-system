@@ -154,24 +154,25 @@ export function useAttendance(targetStaffCode?: string) {
         }
       }
 
-      // 2. Direct Supabase Query Fallback
+      // 2. Direct Supabase Query Fallback (graceful fail-safe)
       if (!rawRows) {
-        let sbQuery = supabase
-          .from("attendance_records")
-          .select("*")
-          .order("date", { ascending: false })
-          .order("created_at", { ascending: false });
+        try {
+          let sbQuery = supabase
+            .from("attendance_records")
+            .select("*")
+            .order("date", { ascending: false })
+            .order("created_at", { ascending: false });
 
-        if (effectiveStaffCode) {
-          sbQuery = sbQuery.ilike("staff_code", effectiveStaffCode);
-        }
+          if (effectiveStaffCode) {
+            sbQuery = sbQuery.ilike("staff_code", effectiveStaffCode);
+          }
 
-        const { data: sbData, error: sbError } = await sbQuery;
+          const { data: sbData, error: sbError } = await sbQuery;
 
-        if (sbError) {
-          throw new Error(sbError.message);
-        }
-        rawRows = sbData || [];
+          if (!sbError && sbData) {
+            rawRows = sbData;
+          }
+        } catch {}
       }
 
       if (rawRows) {
