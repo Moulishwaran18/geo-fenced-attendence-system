@@ -23,7 +23,7 @@ export type AttestationSecurityLevel = "StrongBox" | "TEE" | "AppAttest" | "WebA
 
 export interface DeviceRecord {
   id: string; // Key ID / Device ID (e.g., DEV_P256_...)
-  staff_id: string;
+  staff_id: string | null;
   staff_code: string;
   staff_name: string;
   public_key: string; // SPKI PEM or Base64 DER public key
@@ -303,6 +303,23 @@ export function normalizePublicKeyToPem(rawKey: string | Record<string, any>): s
 }
 
 /**
+ * Computes deterministic SHA-256 fingerprint over normalized public key bytes.
+ * Invariant across whitespace, line-wrapping, and PEM headers.
+ */
+export function getDeviceKeyFingerprint(rawKey: string | Record<string, any>): string {
+  try {
+    const pem = normalizePublicKeyToPem(rawKey);
+    const cleanB64 = pem
+      .replace(/-----BEGIN[^-]+-----/g, "")
+      .replace(/-----END[^-]+-----/g, "")
+      .replace(/\s+/g, "");
+    return crypto.createHash("sha256").update(cleanB64).digest("hex");
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Verifies that a cryptographic signature over data was produced by the specified public key.
  * Algorithm: ECDSA with SHA-256 (or RSA-SHA256).
  */
@@ -420,88 +437,380 @@ export function verifyPlatformAttestation(
     };
   }
 
-  // 3A. Android Keystore & Play Integrity
+  // 3A. Android Keystore & Key Attestation Certificate Chain
   if (platform === "android") {
-    let securityLevel: AttestationSecurityLevel = "TEE";
-    let isHardware = true;
-    let details = "Android Keystore Hardware-backed Key (TEE)";
+    const rawChain = evidence.attestationChain;
+    const chain: string[] = Array.isArray(rawChain)
+      ? rawChain
+      : typeof rawChain === "string" && rawChain.trim().length > 0
+        ? [rawChain]
+        : [];
 
-    // Prefer StrongBox when available
-    if (evidence.isStrongBox === true) {
-      securityLevel = "StrongBox";
-      details = "Android Keystore Dedicated Hardware Security Module (StrongBox)";
+    if (chain.length === 0) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "ATTESTATION_CHAIN_MISSING",
+        details: "Android device registration strictly requires an X.509 hardware key attestation certificate chain.",
+      };
     }
 
-    // Verify Key Attestation Certificate Chain if provided
-    if (evidence.attestationChain) {
-      const chain = Array.isArray(evidence.attestationChain)
-        ? evidence.attestationChain
-        : typeof evidence.attestationChain === "string"
-          ? [evidence.attestationChain]
-          : [];
+    if (chain.length < 2) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "INVALID_ATTESTATION_CHAIN_LENGTH",
+        details: "Android Key Attestation certificate chain must include at least 2 certificates (leaf and trusted root).",
+      };
+    }
 
-      if (chain.length > 0) {
-        try {
-          const leafCertB64 = chain[0]!;
-          const certDer = Buffer.from(leafCertB64.replace(/-----[^\n]+-----|\s+/g, ""), "base64");
-          // Android Key Attestation extension OID: 1.3.6.1.4.1.11129.2.1.17
-          // Search for challenge in ASN.1 structure
-          const challengeBuffer = Buffer.from(expectedChallenge, "utf-8");
-          const hasChallenge = certDer.includes(challengeBuffer);
-
-          if (!hasChallenge) {
-            // Check base64url decoded challenge bytes
-            const decodedChallenge = Buffer.from(expectedChallenge, "base64url");
-            if (!certDer.includes(decodedChallenge)) {
-              return {
-                valid: false,
-                securityLevel: "Software",
-                attestationType: "android_keystore_attestation",
-                isHardwareBacked: false,
-                error: "KEY_ATTESTATION_CHALLENGE_MISMATCH",
-                details: "Android Key Attestation certificate does not contain issued challenge nonce.",
-              };
-            }
-          }
-
-          details += " + Verifiable X.509 Key Attestation Chain";
-        } catch (e: any) {
-          console.warn("[device-binding] Android cert chain parsing notice:", e?.message);
+    // 1. Parse all certificates in chain
+    const certs: crypto.X509Certificate[] = [];
+    try {
+      for (let i = 0; i < chain.length; i++) {
+        let raw = chain[i]!.trim();
+        if (!raw.includes("-----BEGIN CERTIFICATE-----")) {
+          const clean = raw.replace(/\s+/g, "");
+          const formatted = clean.match(/.{1,64}/g)?.join("\n") || clean;
+          raw = `-----BEGIN CERTIFICATE-----\n${formatted}\n-----END CERTIFICATE-----`;
         }
+        certs.push(new crypto.X509Certificate(raw));
+      }
+    } catch (e: any) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "CERTIFICATE_PARSING_FAILED",
+        details: `Failed to parse X.509 certificate in chain: ${e?.message || e}`,
+      };
+    }
+
+    // 2. Validate certificate validity dates and revocation status
+    const now = Date.now();
+    for (let i = 0; i < certs.length; i++) {
+      const c = certs[i]!;
+      const validFrom = new Date(c.validFrom).getTime();
+      const validTo = new Date(c.validTo).getTime();
+      if (now < validFrom || now > validTo) {
+        return {
+          valid: false,
+          securityLevel: "Software",
+          attestationType: "android_keystore",
+          isHardwareBacked: false,
+          error: "CERTIFICATE_EXPIRED",
+          details: `Certificate at index ${i} is expired or not yet valid (${c.validFrom} to ${c.validTo}).`,
+        };
+      }
+
+      // Check Google Keymaster CRL revocation list
+      const serialHex = c.serialNumber.toLowerCase();
+      let serialDec = "";
+      try {
+        serialDec = BigInt("0x" + c.serialNumber).toString(10);
+      } catch {}
+
+      const KNOWN_REVOCATIONS = new Set([
+        "6681152659205225093",
+        "8350192447815228107",
+        "9408173275444922801",
+        "11244410301401252959",
+        "15346629759498347257",
+        "1228286566665971148",
+        "17471682139930361099",
+        "1545991490585406285",
+        "16799496319142405818",
+        "2621004353020741590",
+        "1051246719628187981",
+        "c35747a084470c3135aeefe2b8d40cd6",
+        "ee3ac673107ddf0831027a84c532bee4",
+        "1f4363f4acefdf83ae59202b934cead9",
+        "633d72164968d2b7ec1a927a14c8efbe",
+        "f3a6cc97099ae7311ca7d1c55625a9e2",
+        "c360da616de6583ae816cdefdda66221",
+        "1476c32be5b4788386062ca1d6a3ec01",
+        "c9b95f08cb46c66e778a996bb04eb063",
+        "2775678662643671941",
+        "10478051501886118140",
+        "15304424745846567057",
+        "2540354691047989632",
+      ]);
+
+      if (KNOWN_REVOCATIONS.has(serialHex) || (serialDec && KNOWN_REVOCATIONS.has(serialDec))) {
+        return {
+          valid: false,
+          securityLevel: "Software",
+          attestationType: "android_keystore",
+          isHardwareBacked: false,
+          error: "CERTIFICATE_REVOKED",
+          details: `Certificate at index ${i} (serial: ${c.serialNumber}) is revoked in Google Keymaster CRL.`,
+        };
       }
     }
 
-    // Evaluate Play Integrity Evidence if provided
-    if (evidence.playIntegrityToken) {
-      try {
-        const parts = evidence.playIntegrityToken.split(".");
-        if (parts.length >= 2) {
-          const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf-8"));
-          const verdicts = payload?.deviceIntegrity?.deviceRecognitionVerdict || [];
-          const appVerdict = payload?.appLicensing?.appLicensingVerdict;
+    // 3. Validate Basic Constraints across chain
+    const leafCert = certs[0]!;
+    if (leafCert.ca) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "LEAF_CANNOT_BE_CA",
+        details: "Leaf attestation certificate has CA:TRUE in Basic Constraints; leaf must be an end-entity certificate.",
+      };
+    }
 
-          if (verdicts.includes("MEETS_STRONG_INTEGRITY")) {
-            securityLevel = "StrongBox";
-            details += " + Play Integrity MEETS_STRONG_INTEGRITY";
-          } else if (verdicts.includes("MEETS_DEVICE_INTEGRITY")) {
-            details += " + Play Integrity MEETS_DEVICE_INTEGRITY";
-          }
+    for (let i = 1; i < certs.length; i++) {
+      if (!certs[i]!.ca) {
+        return {
+          valid: false,
+          securityLevel: "Software",
+          attestationType: "android_keystore",
+          isHardwareBacked: false,
+          error: "PARENT_CERTIFICATE_NOT_CA",
+          details: `Certificate at index ${i} in attestation chain lacks CA:TRUE in Basic Constraints.`,
+        };
+      }
+    }
+
+    // 4. Parse leaf certificate Key Attestation extension (1.3.6.1.4.1.11129.2.1.17)
+    const ATTESTATION_OID = Buffer.from([0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x01, 0x11]);
+    const oidPos = leafCert.raw.indexOf(ATTESTATION_OID);
+    if (oidPos === -1) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "KEY_ATTESTATION_EXTENSION_MISSING",
+        details: "Leaf certificate does not contain Android Key Attestation extension (OID 1.3.6.1.4.1.11129.2.1.17).",
+      };
+    }
+
+    let p = oidPos + ATTESTATION_OID.length;
+    // Optional BOOLEAN critical (0x01)
+    if (leafCert.raw[p] === 0x01) {
+      const bLen = leafCert.raw[p + 1]!;
+      p += 2 + (bLen < 0x80 ? bLen : 1);
+    }
+
+    if (leafCert.raw[p] !== 0x04) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "MALFORMED_ATTESTATION_EXTENSION",
+        details: "Expected OCTET STRING container for KeyDescription.",
+      };
+    }
+
+    // Read OCTET STRING length
+    p++;
+    let extLen = leafCert.raw[p]!;
+    p++;
+    if (extLen >= 0x80) {
+      const numBytes = extLen & 0x7f;
+      extLen = 0;
+      for (let k = 0; k < numBytes; k++) {
+        extLen = (extLen << 8) | leafCert.raw[p++]!;
+      }
+    }
+    const extnValue = leafCert.raw.subarray(p, p + extLen);
+
+    // Parse KeyDescription SEQUENCE
+    if (extnValue[0] !== 0x30) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "MALFORMED_KEY_DESCRIPTION",
+        details: "KeyDescription is not an ASN.1 SEQUENCE.",
+      };
+    }
+
+    let kp = 1;
+    let seqLen = extnValue[kp]!;
+    kp++;
+    if (seqLen >= 0x80) {
+      const numBytes = seqLen & 0x7f;
+      kp += numBytes;
+    }
+
+    // attestationVersion
+    kp++; // tag 0x02
+    const vLen = extnValue[kp++]!;
+    const attestationVersion = extnValue.readIntBE(kp, vLen);
+    kp += vLen;
+
+    // attestationSecurityLevel (0=Software, 1=TEE, 2=StrongBox)
+    kp++;
+    const sLen = extnValue[kp++]!;
+    const attestationSecurityLevel = extnValue.readIntBE(kp, sLen);
+    kp += sLen;
+
+    // keymasterVersion
+    kp++;
+    const kmvLen = extnValue[kp++]!;
+    const keymasterVersion = extnValue.readIntBE(kp, kmvLen);
+    kp += kmvLen;
+
+    // keymasterSecurityLevel (0=Software, 1=TEE, 2=StrongBox)
+    kp++;
+    const kmsLen = extnValue[kp++]!;
+    const keymasterSecurityLevel = extnValue.readIntBE(kp, kmsLen);
+    kp += kmsLen;
+
+    // attestationChallenge (OCTET STRING 0x04)
+    kp++;
+    let chalLen = extnValue[kp++]!;
+    if (chalLen >= 0x80) {
+      const nb = chalLen & 0x7f;
+      chalLen = 0;
+      for (let k = 0; k < nb; k++) chalLen = (chalLen << 8) | extnValue[kp++]!;
+    }
+    const attestationChallenge = extnValue.subarray(kp, kp + chalLen);
+    kp += chalLen;
+
+    // Reject Software security levels before expensive cryptographic signature verification
+    if (attestationSecurityLevel === 0 || keymasterSecurityLevel === 0) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "SOFTWARE_KEYSTORE_REJECTED",
+        details: "Android Key Attestation indicates software-backed keystore. Hardware backing (TEE or StrongBox) is strictly required.",
+      };
+    }
+
+    const isStrongBox = attestationSecurityLevel === 2 && keymasterSecurityLevel === 2;
+    const securityLevel: AttestationSecurityLevel = isStrongBox ? "StrongBox" : "TEE";
+
+    // 4. Cryptographic signature chain verification: cert[i] signed by cert[i+1]
+    for (let i = 0; i < certs.length - 1; i++) {
+      const child = certs[i]!;
+      const parent = certs[i + 1]!;
+      if (!child.verify(parent.publicKey)) {
+        return {
+          valid: false,
+          securityLevel: "Software",
+          attestationType: "android_keystore",
+          isHardwareBacked: false,
+          error: "CERTIFICATE_SIGNATURE_INVALID",
+          details: `Certificate at index ${i} was not signed by parent certificate at index ${i + 1}.`,
+        };
+      }
+    }
+
+    // 5. Validate root certificate against trusted Google Attestation Root anchors
+    const rootCert = certs[certs.length - 1]!;
+    const AOSP_TEST_ROOT_FP = "78:CE:57:11:47:E8:42:0B:40:99:99:AA:88:80:61:99:02:EB:65:21:8E:95:F4:71:E5:4E:51:7A:41:40:4C:E6";
+    const isProd =
+      typeof process !== "undefined" &&
+      (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
+
+    if (isProd && rootCert.fingerprint256 === AOSP_TEST_ROOT_FP) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "UNTRUSTED_TEST_ROOT_FORBIDDEN",
+        details: "The AOSP sample test root certificate is strictly forbidden in production registration.",
+      };
+    }
+
+    const TRUSTED_ROOT_FINGERPRINTS = new Set([
+      "CE:DB:1C:B6:DC:89:6A:E5:EC:79:73:48:BC:E9:28:67:53:C2:B3:8E:E7:1C:E0:FB:E3:4A:9A:12:48:80:0D:FC", // Google Attestation Root 1 (RSA)
+      "6D:9D:B4:CE:6C:5C:0B:29:31:66:D0:89:86:E0:57:74:A8:77:6C:EB:52:5D:9E:43:29:52:0D:E1:2B:A4:BC:C0", // Google Attestation Root 2 (EC)
+      ...(isProd ? [] : [AOSP_TEST_ROOT_FP]), // AOSP test root permitted ONLY during non-production test suites
+    ]);
+
+    if (!TRUSTED_ROOT_FINGERPRINTS.has(rootCert.fingerprint256)) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "UNTRUSTED_ATTESTATION_ROOT",
+        details: "Terminal root certificate does not match any trusted Google Key Attestation Root CA.",
+      };
+    }
+
+    if (!rootCert.verify(rootCert.publicKey)) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "ROOT_CERTIFICATE_NOT_SELF_SIGNED",
+        details: "Terminal root certificate is not a valid self-signed authority.",
+      };
+    }
+
+    // 6. Verify challenge match
+    const expectedBufUtf8 = Buffer.from(expectedChallenge, "utf-8");
+    let challengeMatch = false;
+    if (
+      attestationChallenge.length === expectedBufUtf8.length &&
+      crypto.timingSafeEqual(attestationChallenge, expectedBufUtf8)
+    ) {
+      challengeMatch = true;
+    } else {
+      try {
+        const expectedBufHex = Buffer.from(expectedChallenge, "hex");
+        if (
+          attestationChallenge.length === expectedBufHex.length &&
+          crypto.timingSafeEqual(attestationChallenge, expectedBufHex)
+        ) {
+          challengeMatch = true;
         }
       } catch {}
     }
 
-    // If client explicitly reports it is NOT hardware backed, reject claim of hardware security
-    if (evidence.isHardwareBacked === false && !evidence.attestationChain) {
-      securityLevel = "Software";
-      isHardware = false;
+    if (!challengeMatch) {
+      return {
+        valid: false,
+        securityLevel: "Software",
+        attestationType: "android_keystore",
+        isHardwareBacked: false,
+        error: "KEY_ATTESTATION_CHALLENGE_MISMATCH",
+        details: "Attestation challenge embedded in hardware certificate does not match the server-issued challenge nonce.",
+      };
+    }
+
+    // 7. Bind attested public key to the registered device public key
+    if (publicKeyPem) {
+      const leafPubKeyPem = leafCert.publicKey.export({ type: "spki", format: "pem" }).toString();
+      const fpLeaf = getDeviceKeyFingerprint(leafPubKeyPem);
+      const fpExpected = getDeviceKeyFingerprint(publicKeyPem);
+
+      if (fpLeaf !== fpExpected) {
+        return {
+          valid: false,
+          securityLevel: "Software",
+          attestationType: "android_keystore",
+          isHardwareBacked: false,
+          error: "ATTESTED_PUBLIC_KEY_MISMATCH",
+          details: "Attested public key in hardware certificate does not match the registered device public key.",
+        };
+      }
     }
 
     return {
       valid: true,
       securityLevel,
-      attestationType: "android_keystore",
-      isHardwareBacked: isHardware,
-      details,
+      attestationType: `AndroidKeymaster_${securityLevel}`,
+      isHardwareBacked: true,
+      details: `Hardware-attested Android Keystore (${securityLevel}, version ${attestationVersion}, Keymaster ${keymasterVersion})`,
     };
   }
 
@@ -642,6 +951,16 @@ export async function getActiveDeviceForStaff(staffCode: string): Promise<Device
           } catch {}
         }
 
+        // Opportunistic self-healing: if public_key was resolved from security_events or local store, update devices table
+        if (pubKey && !data.public_key) {
+          try {
+            await supabase
+              .from("devices")
+              .update({ public_key: pubKey, key_id: keyId, key_algorithm: keyAlgo })
+              .eq("id", data.id);
+          } catch {}
+        }
+
         return {
           id: data.id,
           staff_id: data.staff_id,
@@ -678,6 +997,20 @@ export async function getActiveDeviceForStaff(staffCode: string): Promise<Device
       if (Array.isArray(store.devices)) {
         const found = store.devices.find(
           (d: DeviceRecord) => d.staff_code?.toUpperCase() === cleanCode && d.status === "Active",
+        );
+        if (found) return found;
+      }
+    }
+  } catch {}
+
+  // Fallback to data/staff-db.json if available
+  try {
+    const staffDbPath = path.resolve(process.cwd(), "data", "staff-db.json");
+    if (fs.existsSync(staffDbPath)) {
+      const dbContent = JSON.parse(fs.readFileSync(staffDbPath, "utf-8"));
+      if (Array.isArray(dbContent.devices)) {
+        const found = dbContent.devices.find(
+          (d: any) => d.staff_code?.toUpperCase() === cleanCode && d.status === "Active",
         );
         if (found) return found;
       }
@@ -748,11 +1081,13 @@ export async function getAllDevicesForStaff(staffCode: string): Promise<DeviceRe
 /**
  * Registers a new cryptographic device for an authenticated faculty member.
  * 
- * STRICT POLICY ENFORCEMENT:
- * - Checks if the faculty member already has an active device.
- * - If an active device exists -> Immediately REJECTS with 409 Conflict.
- * - Never silently replaces or registers a second device.
- * - Stores record in Supabase and local store with atomic transaction safety.
+ * STRICT TWO-WAY POLICY ENFORCEMENT:
+ * - Rule 1: One staff account can be bound to only one registered physical device at a time.
+ * - Rule 2: One physical device can be bound to only one staff account at a time.
+ * - If the EXACT SAME physical device is already bound to this staff account -> Idempotent success (200 OK).
+ * - If a DIFFERENT device attempts to bind to an already-bound staff account -> 409 DEVICE_ALREADY_EXISTS.
+ * - If this physical device is already bound to ANOTHER staff account -> 409 DEVICE_BOUND_TO_ANOTHER_ACCOUNT.
+ * - Stores complete record in Supabase and local store with atomic transaction safety.
  */
 export async function registerDeviceForStaff(params: {
   staffId: string;
@@ -775,26 +1110,94 @@ export async function registerDeviceForStaff(params: {
   error?: string;
 }> {
   const cleanStaffCode = params.staffCode.trim().toUpperCase();
+  const normalizedKey = normalizePublicKeyToPem(params.publicKey);
+  const keyFingerprint = getDeviceKeyFingerprint(normalizedKey);
+  const platformStr = (params.platform || "android").toUpperCase();
+  const keyId =
+    params.keyId ||
+    `DEV_${platformStr}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
 
-  // 1. Concurrency Check: Check existing active device
+  // 1. RULE 1 CHECK: Check if faculty member already has an active device
   const existingActive = await getActiveDeviceForStaff(cleanStaffCode);
   if (existingActive) {
+    const isSameDevice =
+      existingActive.id === keyId ||
+      existingActive.key_id === keyId ||
+      (existingActive.public_key && getDeviceKeyFingerprint(existingActive.public_key) === keyFingerprint);
+
+    if (isSameDevice) {
+      // Idempotent re-registration / retry for the same physical device on the same account
+      return {
+        success: true,
+        statusCode: 200,
+        device: existingActive,
+      };
+    }
+
     return {
       success: false,
       statusCode: 409,
-      error: `Faculty member '${cleanStaffCode}' already has an active registered device (${existingActive.model}, ID: ${existingActive.id}). A second active device cannot be registered. Contact administration for device replacement.`,
+      error: `DEVICE_ALREADY_EXISTS: Faculty member '${cleanStaffCode}' already has an active registered device (${existingActive.model}, ID: ${existingActive.id}). One Faculty ID = One Phone policy prohibits registering a second device. Contact administration for device replacement.`,
     };
   }
 
+  // 2. RULE 2 CHECK: Check if this physical device is already bound to another staff account
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      const { data: boundDevices } = await supabase
+        .from("devices")
+        .select("id, staff_code, model, public_key, key_id, status")
+        .eq("status", "Active")
+        .or(`id.eq.${keyId},key_id.eq.${keyId}`);
+
+      const conflictingDevice = (boundDevices || []).find(
+        (d: any) => d.staff_code?.toUpperCase() !== cleanStaffCode
+      );
+
+      if (conflictingDevice) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${conflictingDevice.staff_code}). One physical device can only be bound to one staff account at a time.`,
+        };
+      }
+    } catch (e: any) {
+      console.warn("[device-binding] Supabase Rule 2 check notice:", e?.message);
+    }
+  }
+
+  // Check local store for Rule 2 conflict
+  try {
+    if (fs.existsSync(LOCAL_STORE_PATH)) {
+      const store = JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf-8"));
+      if (Array.isArray(store.devices)) {
+        const localConflict = store.devices.find(
+          (d: DeviceRecord) =>
+            d.status === "Active" &&
+            d.staff_code?.toUpperCase() !== cleanStaffCode &&
+            (d.id === keyId ||
+              d.key_id === keyId ||
+              (d.public_key && getDeviceKeyFingerprint(d.public_key) === keyFingerprint))
+        );
+        if (localConflict) {
+          return {
+            success: false,
+            statusCode: 409,
+            error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device is already bound to staff account '${localConflict.staff_code}' in local store.`,
+          };
+        }
+      }
+    }
+  } catch {}
+
   const now = new Date().toISOString();
-  const normalizedKey = normalizePublicKeyToPem(params.publicKey);
-  const keyId =
-    params.keyId ||
-    `DEV_${params.platform.toUpperCase()}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.staffId || "");
+  const staffIdForDb = isUuid ? params.staffId : null;
 
   const deviceRecord: DeviceRecord = {
     id: keyId,
-    staff_id: params.staffId,
+    staff_id: staffIdForDb,
     staff_code: cleanStaffCode,
     staff_name: params.staffName,
     public_key: normalizedKey,
@@ -815,11 +1218,10 @@ export async function registerDeviceForStaff(params: {
     audit_metadata: params.auditMetadata || {},
   };
 
-  // 2. Persist to Supabase
-  const supabase = getSupabase();
+  // 3. Persist to Supabase
   if (supabase) {
     try {
-      // Check again inside query to guard against concurrent race conditions
+      // Double check active device for staff to guard against race condition
       const { data: doubleCheck } = await supabase
         .from("devices")
         .select("id")
@@ -832,34 +1234,62 @@ export async function registerDeviceForStaff(params: {
         return {
           success: false,
           statusCode: 409,
-          error: "Concurrent registration detected: An active device was already registered for this account.",
+          error: "DEVICE_ALREADY_EXISTS: Concurrent registration detected: An active device was already registered for this account.",
         };
       }
 
-      // Insert into devices table
+      // Insert all columns into devices table
       const insertPayload: any = {
         id: deviceRecord.id,
-        staff_id: deviceRecord.staff_id,
+        staff_id: staffIdForDb,
         staff_code: deviceRecord.staff_code,
         staff_name: deviceRecord.staff_name,
+        public_key: deviceRecord.public_key,
+        key_id: deviceRecord.key_id,
+        key_algorithm: deviceRecord.key_algorithm,
+        platform: deviceRecord.platform,
+        attestation_status: deviceRecord.attestation_status,
+        attestation_type: deviceRecord.attestation_type,
+        attestation_evidence: deviceRecord.attestation_evidence,
         model: deviceRecord.model,
         os: deviceRecord.os,
         status: "Active",
         registered_at: now,
+        last_verified_at: now,
       };
 
-      const { error: insErr } = await supabase.from("devices").insert(insertPayload);
+      const { error: insErr } = await supabase.from("devices").upsert(insertPayload, { onConflict: "id" });
 
       if (insErr) {
-        // Unique index violation on staff_code (partial index WHERE status = 'Active')
+        // Unique index violation on staff_code (Rule 1) or public_key / key_id (Rule 2)
         if (insErr.code === "23505" || insErr.message.includes("unique")) {
+          const isStaffConflict = insErr.message.includes("staff_code") || insErr.message.includes("staff");
           return {
             success: false,
             statusCode: 409,
-            error: "Device registration conflict: Database unique constraint prevents binding multiple active devices.",
+            error: isStaffConflict
+              ? "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices to one staff member."
+              : "DEVICE_BOUND_TO_ANOTHER_ACCOUNT: Database unique constraint prevents binding this device to multiple staff accounts.",
           };
         }
-        console.warn("[device-binding] Supabase devices insert warning:", insErr.message);
+        // Fallback for legacy database schema missing optional columns
+        const { error: retryErr } = await supabase.from("devices").upsert({
+          id: deviceRecord.id,
+          staff_id: staffIdForDb,
+          staff_code: deviceRecord.staff_code,
+          staff_name: deviceRecord.staff_name,
+          model: deviceRecord.model,
+          os: deviceRecord.os,
+          status: "Active",
+          registered_at: now,
+        }, { onConflict: "id" });
+        if (retryErr && (retryErr.code === "23505" || retryErr.message.includes("unique"))) {
+          return {
+            success: false,
+            statusCode: 409,
+            error: "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices.",
+          };
+        }
       }
 
       // Record detailed cryptographic audit record in security_events
@@ -885,7 +1315,7 @@ export async function registerDeviceForStaff(params: {
     }
   }
 
-  // 3. Persist to Local Store (for offline developer and test environments)
+  // 4. Persist to Local Store (for offline developer and test environments)
   try {
     const dir = path.dirname(LOCAL_STORE_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -909,12 +1339,41 @@ export async function registerDeviceForStaff(params: {
       return {
         success: false,
         statusCode: 409,
-        error: `Local store conflict: Active device '${localActive.id}' already exists for staff '${cleanStaffCode}'.`,
+        error: `DEVICE_ALREADY_EXISTS: Active device '${localActive.id}' already exists for staff '${cleanStaffCode}' in local store.`,
       };
     }
 
-    store.devices.push(deviceRecord);
-    fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(store, null, 2), "utf-8");
+    // Ensure no existing active device with this key in local store
+    const localKeyConflict = store.devices.find(
+      (d: DeviceRecord) =>
+        d.status === "Active" &&
+        d.staff_code?.toUpperCase() !== cleanStaffCode &&
+        (d.id === keyId ||
+          d.key_id === keyId ||
+          (d.public_key && getDeviceKeyFingerprint(d.public_key) === keyFingerprint)),
+    );
+    if (localKeyConflict) {
+      return {
+        success: false,
+        statusCode: 409,
+        error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: Active device '${localKeyConflict.id}' is already bound to '${localKeyConflict.staff_code}' in local store.`,
+      };
+    }
+
+    for (const relPath of [path.join("data", "staff-db.json"), path.join(".gemini", "device-store.json")]) {
+      const storeFile = path.resolve(process.cwd(), relPath);
+      let fStore: any = { staff: [], devices: [] };
+      if (fs.existsSync(storeFile)) {
+        try {
+          fStore = JSON.parse(fs.readFileSync(storeFile, "utf-8"));
+        } catch {}
+      }
+      if (!Array.isArray(fStore.devices)) fStore.devices = [];
+      fStore.devices = fStore.devices.filter((d: any) => d.id !== keyId && d.key_id !== keyId);
+      fStore.devices.push(deviceRecord);
+      fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+      fs.writeFileSync(storeFile, JSON.stringify(fStore, null, 2), "utf-8");
+    }
   } catch (fsErr) {
     console.warn("[device-binding] Local store write warning:", fsErr);
   }
@@ -961,6 +1420,22 @@ export async function revokeDevice(params: {
         };
       }
     }
+    if (!targetDevice) {
+      try {
+        if (fs.existsSync(LOCAL_STORE_PATH)) {
+          const store = JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf-8"));
+          const found = (store.devices || []).find((d: any) => d.id === deviceId);
+          if (found) {
+            targetDevice = {
+              ...found,
+              status: found.status as DeviceStatus,
+              platform: (found.platform as DevicePlatform) || "android",
+              attestation_status: (found.attestation_status as AttestationSecurityLevel) || "Verified",
+            };
+          }
+        }
+      } catch {}
+    }
   }
 
   if (!targetDevice && staffCode) {
@@ -975,12 +1450,31 @@ export async function revokeDevice(params: {
   const supabase = getSupabase();
   if (supabase) {
     try {
-      await supabase
+      const { error: sbErr } = await supabase
         .from("devices")
         .update({
           status: "Blocked", // Supabase check constraint accepts 'Blocked'
+          revoked_at: now,
+          revocation_reason: reason,
+          revoked_by: adminUsername,
         })
         .eq("id", targetDevice.id);
+
+      if (sbErr) {
+        // Fallback for legacy DB schema without revocation metadata columns
+        await supabase
+          .from("devices")
+          .update({ status: "Blocked" })
+          .eq("id", targetDevice.id);
+      }
+
+      if (targetDevice?.staff_code) {
+        await supabase
+          .from("devices")
+          .update({ status: "Blocked" })
+          .ilike("staff_code", targetDevice.staff_code)
+          .eq("status", "Active");
+      }
 
       // Audit log revocation
       await supabase.from("security_events").insert({
@@ -1002,19 +1496,31 @@ export async function revokeDevice(params: {
     }
   }
 
-  // Update in Local Store
+  // Update in Local Stores
   try {
-    if (fs.existsSync(LOCAL_STORE_PATH)) {
-      const content = fs.readFileSync(LOCAL_STORE_PATH, "utf-8");
-      const store = JSON.parse(content);
-      if (Array.isArray(store.devices)) {
-        const found = store.devices.find((d: DeviceRecord) => d.id === targetDevice!.id);
-        if (found) {
-          found.status = "Revoked";
-          found.revoked_at = now;
-          found.revocation_reason = reason;
-          found.revoked_by = adminUsername;
-          fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(store, null, 2), "utf-8");
+    for (const relPath of [path.join("data", "staff-db.json"), path.join(".gemini", "device-store.json")]) {
+      const p = path.resolve(process.cwd(), relPath);
+      if (fs.existsSync(p)) {
+        const content = fs.readFileSync(p, "utf-8");
+        const store = JSON.parse(content);
+        if (Array.isArray(store.devices)) {
+          let modified = false;
+          store.devices.forEach((d: DeviceRecord) => {
+            if (
+              d.id === targetDevice!.id ||
+              d.key_id === targetDevice!.id ||
+              (targetDevice?.staff_code && d.staff_code?.toUpperCase() === targetDevice.staff_code.toUpperCase())
+            ) {
+              d.status = "Revoked";
+              d.revoked_at = now;
+              d.revocation_reason = reason;
+              d.revoked_by = adminUsername;
+              modified = true;
+            }
+          });
+          if (modified) {
+            fs.writeFileSync(p, JSON.stringify(store, null, 2), "utf-8");
+          }
         }
       }
     }

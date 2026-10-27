@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Activity,
@@ -149,12 +149,13 @@ function MarkAttendancePage() {
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusResponse | null>(null);
   const [isDeviceChecking, setIsDeviceChecking] = useState(false);
   const [isRegisteringDevice, setIsRegisteringDevice] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   const checkDeviceStatus = useCallback(async () => {
     if (!loggedInStaff?.staffId) return;
     setIsDeviceChecking(true);
     try {
-      const res = await fetchDeviceRegistrationStatus(loggedInStaff.token);
+      const res = await fetchDeviceRegistrationStatus(loggedInStaff.token, loggedInStaff.staffId);
       setDeviceStatus(res);
     } catch {
       // ignore
@@ -613,9 +614,13 @@ function MarkAttendancePage() {
     status,
   ]);
 
-  const run = async () => {
+  const run = async (overrideFace?: FaceScanResult) => {
+    if (isSubmittingRef.current || status === "verifying") {
+      return;
+    }
+
     if (!loggedInStaff) {
-      toast.error("Authentication Required", {
+      toast.error("Staff Authentication Required", {
         description: "You must be signed in with a registered staff account to mark attendance.",
       });
       return;
@@ -633,19 +638,26 @@ function MarkAttendancePage() {
         description:
           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
             ? `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Acquiring a better GPS fix...`
-            : "Your device GPS position is outside the authoritative 19-point campus polygon.",
+            : "Your device GPS position is outside the authoritative campus polygon.",
       });
       return;
     }
 
-    if (isWrongPerson) {
+    const currentFace = overrideFace || faceResult;
+    const isMismatch = Boolean(
+      currentFace &&
+      loggedInStaff &&
+      !isSameIndividual(loggedInStaff.staffId, currentFace.staffCode || currentFace.staffId)
+    );
+
+    if (isMismatch) {
       toast.error("Identity Mismatch", {
-        description: `Recognized identity (${faceResult?.staffCode || faceResult?.staffId}) does not match authenticated staff (${loggedInStaff.staffId}). Attendance rejected.`,
+        description: `Recognized identity (${currentFace?.staffCode || currentFace?.staffId}) does not match authenticated staff (${loggedInStaff.staffId}). Attendance rejected.`,
       });
       return;
     }
 
-    if (!faceAuthenticated) {
+    if (!currentFace || !currentFace.verified) {
       toast.error("Identity Verification Required", {
         description: "Please complete face recognition first.",
       });
@@ -653,11 +665,13 @@ function MarkAttendancePage() {
       return;
     }
 
+    isSubmittingRef.current = true;
     setStatus("verifying");
     try {
+      const activeDevId = deviceStatus?.device?.id || currentFace?.deviceId || undefined;
       const result = await markAttendance({
         staffCode: loggedInStaff.staffId,
-        staffName: loggedInStaff.name,
+        staffName: currentFace?.staffName || loggedInStaff.name,
         department: loggedInStaff.department,
         token: loggedInStaff.token,
         location: "Main Campus, Sona College",
@@ -667,27 +681,29 @@ function MarkAttendancePage() {
         verification: "Verified",
         networkAuthToken: wifiStatus?.networkAuthToken,
         faceVerified: true,
-        recognizedStaffCode: faceResult?.staffCode || faceResult?.staffId || loggedInStaff.staffId,
-        faceMatchDistance: faceResult?.distance,
-        livenessPassed: faceResult?.livenessCompleted === true,
-        antiSpoofScore: faceResult?.antiSpoofScore,
-        auditId: faceResult?.auditId || faceResult?.verification?.auditId,
-        biometricAttestation: faceResult?.biometricAttestation,
-        deviceId: faceResult?.deviceId,
-        sessionNonce: faceResult?.attemptNonce,
-        attemptNonce: faceResult?.attemptNonce,
-        livenessEvidence: faceResult?.livenessEvidence,
+        recognizedStaffCode: currentFace?.staffCode || currentFace?.staffId || loggedInStaff.staffId,
+        faceMatchDistance: currentFace?.distance,
+        livenessPassed: currentFace?.livenessCompleted === true,
+        antiSpoofScore: currentFace?.antiSpoofScore,
+        auditId: currentFace?.auditId || currentFace?.verification?.auditId,
+        biometricAttestation: currentFace?.biometricAttestation,
+        deviceId: activeDevId,
+        sessionNonce: currentFace?.attemptNonce,
+        attemptNonce: currentFace?.attemptNonce,
+        livenessEvidence: currentFace?.livenessEvidence,
       });
       setReceipt(result);
       setStatus("success");
       toast.success("Attendance Recorded Successfully!", {
-        description: `${faceResult?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
+        description: `${currentFace?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
       });
     } catch (err: any) {
       setStatus("idle");
       toast.error("Attendance Rejected by Server", {
         description: err?.message || "Server rejected attendance verification.",
       });
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
@@ -695,6 +711,7 @@ function MarkAttendancePage() {
     async (result: FaceScanResult) => {
       setFace(result.snapshot ?? null);
       setFaceResult(result);
+      setScanOpen(false);
 
       if (!result.verified) {
         toast.error("Face Unrecognized", {
@@ -715,51 +732,12 @@ function MarkAttendancePage() {
       }
 
       toast.success("Face Recognized", {
-        description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
+        description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"}). Ready to mark attendance.`,
       });
 
-      // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
+      // If all three factors pass, submit directly through run()
       if (loggedInStaff && wifiAuthorized && gpsInsideGeofence) {
-        setStatus("verifying");
-        try {
-          const attendanceReceipt = await markAttendance({
-            staffCode: loggedInStaff.staffId,
-            staffName: result.staffName || loggedInStaff.name,
-            department: loggedInStaff.department,
-            token: loggedInStaff.token,
-            location: "Main Campus, Sona College",
-            latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
-            longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
-            accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
-            verification: "Verified",
-            networkAuthToken: wifiStatus?.networkAuthToken,
-            faceVerified: true,
-            recognizedStaffCode: result.staffCode || result.staffId || loggedInStaff.staffId,
-            faceMatchDistance: result.distance,
-            livenessPassed: result.livenessCompleted === true,
-            antiSpoofScore: result.antiSpoofScore,
-            auditId: result.auditId || result.verification?.auditId,
-            biometricAttestation: result.biometricAttestation,
-            deviceId: result.deviceId,
-            sessionNonce: result.attemptNonce,
-            attemptNonce: result.attemptNonce,
-            livenessEvidence: result.livenessEvidence,
-          });
-          setReceipt(attendanceReceipt);
-          setStatus("success");
-          toast.success(`Attendance Marked Successfully!`, {
-            description: `${result.staffName || loggedInStaff.name} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
-          });
-          // Close scan dialog smoothly after confirmed database insertion
-          setTimeout(() => {
-            setScanOpen(false);
-          }, 1200);
-        } catch (err: any) {
-          setStatus("idle");
-          toast.error("Attendance Rejected by Server", {
-            description: err?.message || "Server rejected attendance verification.",
-          });
-        }
+        void run(result);
       } else {
         const reasons: string[] = [];
         if (!wifiAuthorized) reasons.push("Authorized Campus Wi-Fi");
@@ -769,7 +747,7 @@ function MarkAttendancePage() {
         });
       }
     },
-    [loggedInStaff, wifiAuthorized, gpsInsideGeofence, geofence, wifiStatus?.networkAuthToken],
+    [loggedInStaff, wifiAuthorized, gpsInsideGeofence, isWrongPerson, wifiStatus, geofence, deviceStatus]
   );
 
   return (
@@ -779,58 +757,6 @@ function MarkAttendancePage() {
         onOpenChange={setScanOpen}
         expectedStaffCode={loggedInStaff?.staffId || ""}
         onVerified={handleFaceVerified}
-      />
-
-      <PageHeader
-        title="Mark Attendance"
-        description="3-Factor Presence Verification: Wi-Fi Authorization + 19-Point GPS Polygon + ArcFace Biometric Recognition."
-        actions={
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void checkWifiConnection()}
-              disabled={isWifiChecking}
-              className="h-9 gap-1.5"
-            >
-              <Wifi className={`size-3.5 ${isWifiChecking ? "animate-spin" : ""}`} />
-              Recheck Wi-Fi
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void geofence.refreshLocation()}
-              disabled={geofence.isChecking}
-              className="h-9 gap-1.5"
-            >
-              <RefreshCw className={`size-3.5 ${geofence.isChecking ? "animate-spin" : ""}`} />
-              Refresh Location
-            </Button>
-            <div className="flex items-center gap-2">
-              <label htmlFor="scenario" className="text-xs text-muted-foreground">
-                Demo state
-              </label>
-              <Select
-                value={scenario}
-                onValueChange={(v) => {
-                  setScenario(v as VerificationScenario);
-                  setStatus("idle");
-                }}
-              >
-                <SelectTrigger id="scenario" className="w-44 bg-card">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(scenarioLabels).map(([k, label]) => (
-                    <SelectItem key={k} value={k}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        }
       />
 
       {status === "success" && receipt ? (
@@ -843,13 +769,66 @@ function MarkAttendancePage() {
           }}
         />
       ) : (
-        <div className="space-y-6">
-          {/* Conditional Status Banners */}
-          {!loggedInStaff && (
-            <AlertBanner
-              tone="error"
-              icon={ShieldAlert}
-              title="Staff Authentication Required"
+        <>
+          <PageHeader
+            title="Mark Attendance"
+            description="3-Factor Presence Verification: Wi-Fi Authorization + 19-Point GPS Polygon + ArcFace Biometric Recognition."
+            actions={
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void checkWifiConnection()}
+                  disabled={isWifiChecking}
+                  className="h-9 gap-1.5"
+                >
+                  <Wifi className={`size-3.5 ${isWifiChecking ? "animate-spin" : ""}`} />
+                  Recheck Wi-Fi
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void geofence.refreshLocation()}
+                  disabled={geofence.isChecking}
+                  className="h-9 gap-1.5"
+                >
+                  <RefreshCw className={`size-3.5 ${geofence.isChecking ? "animate-spin" : ""}`} />
+                  Refresh Location
+                </Button>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="scenario" className="text-xs text-muted-foreground">
+                    Demo state
+                  </label>
+                  <Select
+                    value={scenario}
+                    onValueChange={(v) => {
+                      setScenario(v as VerificationScenario);
+                      setStatus("idle");
+                    }}
+                  >
+                    <SelectTrigger id="scenario" className="w-44 bg-card">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(scenarioLabels).map(([k, label]) => (
+                        <SelectItem key={k} value={k}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            }
+          />
+
+          <div className="space-y-6">
+            {/* Conditional Status Banners */}
+            {!loggedInStaff && (
+              <AlertBanner
+                tone="error"
+                icon={ShieldAlert}
+                title="Staff Authentication Required"
               description="You are not currently logged in. Attendance marking requires an authenticated, registered staff account."
               action={
                 <Button variant="outline" size="sm" asChild className="mt-2 h-8 gap-1.5">
@@ -860,7 +839,11 @@ function MarkAttendancePage() {
           )}
 
           {/* One Faculty–One Registered Device Policy Banner */}
-          {!isUsingMockScenario && loggedInStaff && !isDeviceChecking && deviceStatus && !deviceStatus.hasActiveDevice && (
+          {!isUsingMockScenario &&
+            loggedInStaff &&
+            !isDeviceChecking &&
+            deviceStatus?.success === true &&
+            deviceStatus.hasActiveDevice === false && (
             <AlertBanner
               tone="error"
               icon={Smartphone}
@@ -880,7 +863,7 @@ function MarkAttendancePage() {
             />
           )}
 
-          {!isUsingMockScenario && loggedInStaff && deviceStatus?.hasActiveDevice && (
+          {!isUsingMockScenario && loggedInStaff && deviceStatus?.success === true && deviceStatus.hasActiveDevice === true && (
             <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
               <ShieldCheck className="size-4 shrink-0 text-primary" />
               <span>
@@ -1370,6 +1353,7 @@ function MarkAttendancePage() {
                   className="w-full"
                   disabled={
                     status === "verifying" ||
+                    isSubmittingRef.current ||
                     isWrongPerson ||
                     (!canMarkAttendance &&
                       geofence.status !== "location_services_off" &&
@@ -1430,7 +1414,7 @@ function MarkAttendancePage() {
                 >
                   {status === "verifying" ? (
                     <>
-                      <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
+                      <Loader2 className="mr-2 size-5 animate-spin" /> Verifying and recording attendance…
                     </>
                   ) : isWrongPerson ? (
                     <>
@@ -1485,7 +1469,8 @@ function MarkAttendancePage() {
             </Section>
           </div>
         </div>
-      )}
+      </>
+    )}
     </AppShell>
   );
 }
@@ -1503,46 +1488,74 @@ function SuccessPanel({
 }) {
   const displayFacultyId = receipt.staffCode || staffCode || "SCT-001";
   return (
-    <Section>
-      <div className="flex flex-col items-center px-6 py-12 text-center" id="attendance-success-screen">
-        <span className="grid size-20 place-items-center rounded-full bg-success-soft text-success">
+    <div className="flex justify-center py-4 px-2 sm:px-4" id="attendance-success-screen">
+      <div className="w-full max-w-md rounded-2xl bg-card border border-border/60 shadow-sm p-6 sm:p-8 flex flex-col items-center text-center">
+        {/* Top green circular success icon */}
+        <div className="grid size-20 place-items-center rounded-full bg-[#D4F4E2] text-[#0D6832]">
           <CheckCircle2 className="size-11" aria-hidden />
-        </span>
-        <h2 className="mt-5 text-2xl font-semibold tracking-tight text-foreground">Attendance Recorded</h2>
-        <p className="mt-1 text-lg font-medium text-foreground">Welcome, {displayFacultyId}</p>
-        <p className="mt-1 text-3xl font-semibold tabular-nums text-success">{receipt.time}</p>
-        <p className="text-sm text-muted-foreground">{receipt.date}</p>
+        </div>
 
-        <ul className="mt-7 w-full max-w-md space-y-2 text-left">
+        {/* Heading & Greeting */}
+        <h2 className="mt-6 text-2xl font-bold tracking-tight text-foreground">
+          Attendance Recorded
+        </h2>
+        <p className="mt-1 text-base font-medium text-foreground">
+          Welcome, {displayFacultyId}
+        </p>
+
+        {/* Recorded Time & Date matching Screenshot 2 */}
+        <p className="mt-2 text-4xl font-bold tabular-nums text-[#0D6832]">
+          {receipt.time}
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground font-normal">
+          {receipt.date}
+        </p>
+
+        {/* Verification status rows */}
+        <ul className="mt-8 w-full space-y-2.5 text-left">
           {[
             { icon: MapPin, label: "GPS Geofence polygon verified (Inside Campus)" },
             { icon: ScanFace, label: `Identity verified — ${displayFacultyId}` },
             { icon: Smartphone, label: "Device verified" },
             { icon: CheckCircle2, label: "Attendance successfully recorded" },
-          ].map((i) => (
+          ].map((item) => (
             <li
-              key={i.label}
-              className="flex items-center gap-3 rounded-lg border border-success/20 bg-success-soft px-4 py-2.5 text-sm text-success"
+              key={item.label}
+              className="flex items-center gap-3.5 rounded-xl border border-[#B9E9C9] bg-[#E8F8EE] px-4 py-3 text-xs sm:text-sm font-medium text-[#0D6832]"
             >
-              <i.icon className="size-4 shrink-0" aria-hidden />
-              <span>{i.label}</span>
+              <item.icon className="size-4 shrink-0 text-[#0D6832]" aria-hidden />
+              <span>{item.label}</span>
             </li>
           ))}
         </ul>
 
-        <p className="mt-6 rounded-lg bg-muted px-4 py-2 font-mono text-xs text-muted-foreground" id="attendance-record-id">
+        {/* Attendance ID section */}
+        <div
+          className="mt-6 w-full rounded-xl bg-muted/60 border border-border/40 px-4 py-3 font-mono text-xs text-muted-foreground break-all text-center"
+          id="attendance-record-id"
+        >
           Attendance ID: {receipt.attendanceId}
-        </p>
+        </div>
 
-        <div className="mt-6 flex flex-wrap justify-center gap-2">
-          <Button asChild id="back-to-dashboard-btn">
+        {/* Navigation buttons matching Screenshot 2 */}
+        <div className="mt-8 w-full flex flex-col gap-3">
+          <Button
+            asChild
+            id="back-to-dashboard-btn"
+            className="w-full h-12 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] text-white font-medium text-base shadow-sm"
+          >
             <Link to="/dashboard">Back to dashboard</Link>
           </Button>
-          <Button variant="outline" onClick={onReset} id="view-verification-panel-btn">
+          <Button
+            variant="outline"
+            onClick={onReset}
+            id="view-verification-panel-btn"
+            className="w-full h-12 rounded-xl bg-background hover:bg-muted text-foreground border border-border font-medium text-base shadow-sm"
+          >
             View verification panel
           </Button>
         </div>
       </div>
-    </Section>
+    </div>
   );
 }

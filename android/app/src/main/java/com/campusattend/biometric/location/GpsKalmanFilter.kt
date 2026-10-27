@@ -9,8 +9,8 @@ import kotlin.math.sqrt
  * applies dynamic measurement covariance R derived from raw accuracy, and smooths position.
  */
 class GpsKalmanFilter(
-    private val originLat: Double = 11.67709405,
-    private val originLng: Double = 78.12527699,
+    private val originLat: Double = 11.676556648538646,
+    private val originLng: Double = 78.12272439562298,
     private val processNoiseAcc: Double = 0.5
 ) {
     companion object {

@@ -118,73 +118,73 @@ export function getSnapshot(scenario: VerificationScenario): VerificationSnapsho
         accuracy: "11 m",
         signals: [
           loc,
-          { key: "wifi", value: "Not Connected", detail: "Campus network missing", state: "warning" },
-          ble,
-          { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
-        ],
-      };
-    case "bluetooth-unavailable":
-      return {
-        scenario,
-        canMark: false,
-        headline: "Campus beacon not detected",
-        message: "Turn on Bluetooth so the nearest campus beacon can be found.",
-        tone: "warning",
-        accuracy: "11 m",
-        signals: [
-          loc,
-          wifi,
-          { key: "bluetooth", value: "Bluetooth Off", detail: "No beacon signal", state: "warning" },
-          { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
-        ],
-      };
-    case "face-failed":
-      return {
-        scenario,
-        canMark: false,
-        headline: "Face verification failed",
-        message: "We couldn't match your face. Retry in good lighting or contact the admin office.",
-        tone: "error",
-        accuracy: "11 m",
-        signals: [
-          loc,
-          wifi,
-          ble,
-          { key: "identity", value: "Identity Verification", detail: "Failed · 2 attempts", state: "error" },
-        ],
-      };
-    case "already-marked":
-      return {
-        scenario,
-        canMark: false,
-        headline: "Attendance already marked",
-        message: "You marked attendance today at 09:03 AM. Only one entry per day is allowed.",
-        tone: "success",
-        accuracy: "11 m",
-        signals: base,
-      };
-    case "window-closed":
-      return {
-        scenario,
-        canMark: false,
-        headline: "Attendance window closed",
-        message: "Today's window (8:45 AM – 9:10 AM) has ended. Request a manual entry from admin.",
-        tone: "warning",
-        accuracy: "11 m",
-        signals: base,
-      };
-    default:
-      return {
-        scenario: "ready",
-        canMark: true,
-        headline: "Attendance Ready",
-        message: "All checks passed. You can mark your attendance now.",
-        tone: "success",
-        accuracy: "11 m",
-        signals: base,
-      };
-  }
-}
+                  { key: "wifi", value: "Not Connected", detail: "Campus network missing", state: "warning" },
+                  ble,
+                  { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
+                ],
+              };
+            case "bluetooth-unavailable":
+              return {
+                scenario,
+                canMark: false,
+                headline: "Campus beacon not detected",
+                message: "Turn on Bluetooth so the nearest campus beacon can be found.",
+                tone: "warning",
+                accuracy: "11 m",
+                signals: [
+                  loc,
+                  wifi,
+                  { key: "bluetooth", value: "Bluetooth Off", detail: "No beacon signal", state: "warning" },
+                  { key: "identity", value: "Identity Verification", detail: "Waiting", state: "pending" },
+                ],
+              };
+            case "face-failed":
+              return {
+                scenario,
+                canMark: false,
+                headline: "Face verification failed",
+                message: "We couldn't match your face. Retry in good lighting or contact the admin office.",
+                tone: "error",
+                accuracy: "11 m",
+                signals: [
+                  loc,
+                  wifi,
+                  ble,
+                  { key: "identity", value: "Identity Verification", detail: "Failed · 2 attempts", state: "error" },
+                ],
+              };
+            case "already-marked":
+              return {
+                scenario,
+                canMark: false,
+                headline: "Attendance already marked",
+                message: "You marked attendance today at 09:03 AM. Only one entry per day is allowed.",
+                tone: "success",
+                accuracy: "11 m",
+                signals: base,
+              };
+            case "window-closed":
+              return {
+                scenario,
+                canMark: false,
+                headline: "Attendance window closed",
+                message: "Today's window (8:45 AM – 9:10 AM) has ended. Request a manual entry from admin.",
+                tone: "warning",
+                accuracy: "11 m",
+                signals: base,
+              };
+            default:
+              return {
+                scenario: "ready",
+                canMark: true,
+                headline: "Attendance Ready",
+                message: "All checks passed. You can mark your attendance now.",
+                tone: "success",
+                accuracy: "11 m",
+                signals: base,
+              };
+          }
+        }
 
 export interface AttendanceReceipt {
   attendanceId: string;
@@ -240,32 +240,50 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
 
   // Request single-use server challenge if not already present
   if (!payload.challenge && (payload.token || reqHeaders["Authorization"])) {
-    try {
-      const chalRes = await fetch("/api/attendance?action=challenge", {
-        method: "POST",
-        headers: reqHeaders,
-        credentials: "include",
-      });
-      if (chalRes.ok) {
-        const chalData = await chalRes.json();
-        if (chalData.success && chalData.challenge) {
-          payload.challenge = chalData.challenge;
-          payload.challengeToken = chalData.challengeToken;
-        }
+    const chalRes = await fetch("/api/attendance?action=challenge", {
+      method: "POST",
+      headers: reqHeaders,
+      credentials: "include",
+      body: JSON.stringify({ action: "challenge" }),
+    });
+    if (!chalRes.ok) {
+      const errData = await chalRes.json().catch(() => ({}));
+      throw new Error(
+        errData.message ||
+          errData.error ||
+          `Failed to obtain attendance challenge from server (HTTP ${chalRes.status}).`
+      );
+    }
+    const chalData = await chalRes.json();
+    if (chalData.success && chalData.challenge) {
+      payload.challenge = chalData.challenge;
+      payload.challengeToken = chalData.challengeToken;
+      if (chalData.deviceId) {
+        payload.deviceId = chalData.deviceId;
       }
-    } catch {}
+    }
   }
 
   // If cryptographic deviceSignature is not yet provided, automatically sign with registered device
   if (!payload.deviceSignature && payload.staffCode) {
     const nonce = payload.challenge || payload.attemptNonce || payload.sessionNonce || `att_nonce_${Date.now()}`;
     payload.attemptNonce = nonce;
-    const signedDevice = await signAttendanceRequest(payload.staffCode, nonce);
+    const signedDevice = await signAttendanceRequest(payload.staffCode, nonce, undefined, {
+      deviceId: payload.deviceId || payload.deviceKeyId,
+      latitude: payload.latitude,
+      longitude: payload.longitude,
+    });
     if (signedDevice) {
       payload.deviceSignature = signedDevice.deviceSignature;
       payload.deviceKeyId = signedDevice.deviceKeyId;
       payload.deviceTimestamp = signedDevice.deviceTimestamp;
       payload.devicePayloadToSign = signedDevice.devicePayloadToSign;
+      if (signedDevice.publicKey) {
+        payload.devicePublicKey = signedDevice.publicKey;
+      }
+      if (!payload.deviceId && signedDevice.deviceKeyId) {
+        payload.deviceId = signedDevice.deviceKeyId;
+      }
     }
   }
 

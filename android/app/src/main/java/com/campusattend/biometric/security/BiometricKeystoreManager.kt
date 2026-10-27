@@ -40,9 +40,6 @@ class BiometricKeystoreManager(private val context: Context) {
         private const val CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
         private const val GCM_TAG_LENGTH_BITS = 128
 
-        // Shared server secret for HMAC attestation verification
-        private const val ATTESTATION_SECRET = "sona-campus-wifi-egress-auth-secret-key-2026"
-
         private const val TAG = "BiometricKeystoreMgr"
     }
 
@@ -168,9 +165,13 @@ class BiometricKeystoreManager(private val context: Context) {
     }
 
     /**
-     * Mint a short-lived, single-use cryptographic biometric attestation token.
-     * The server validates this token to confirm that local face matching succeeded
-     * without relying on client-supplied booleans.
+     * Mint a short-lived, device-bound asymmetric biometric attestation token.
+     * The token binds the client-generated biometric scores to the hardware-backed
+     * EC P-256 private key and the server-issued challenge nonce.
+     *
+     * NOTE: Cryptographically signing client-reported scores proves device origin
+     * and challenge binding; it does NOT independently prove face identity or
+     * liveness without trusted execution environment camera hardware attestation.
      */
     fun createAttestationToken(
         staffId: String,
@@ -179,20 +180,27 @@ class BiometricKeystoreManager(private val context: Context) {
         livenessPassed: Boolean,
         challenge: String?,
         antiSpoofScore: Float? = null,
-        attemptNonce: String? = null
-    ): String {
+        attemptNonce: String? = null,
+        canonicalDeviceId: String? = null
+    ): String? {
         val now = System.currentTimeMillis()
         val nonce = attemptNonce ?: UUID.randomUUID().toString()
-        val deviceId = getDeviceId()
+        val cleanId = staffId.trim().lowercase()
+        val alias = "campusattend_device_signing_$cleanId"
+
+        // Use canonical device identifier (DEV_ANDROID_...) matching server registered device record
+        val resolvedDeviceId = canonicalDeviceId?.takeIf { it.isNotBlank() }
+            ?: getDeviceKeyInfo(staffId).keyId
+            ?: getDeviceId()
 
         val payload = JSONObject().apply {
             put("staffId", staffId)
-            put("deviceId", deviceId)
+            put("deviceId", resolvedDeviceId)
             put("distance", distance.toDouble())
             if (margin != null) put("margin", margin.toDouble())
             put("livenessPassed", livenessPassed)
             if (antiSpoofScore != null) put("antiSpoofScore", antiSpoofScore.toDouble())
-            put("method", "device_local_arcface_keystore")
+            put("method", "device_local_arcface_keystore_asymmetric")
             put("timestamp", now)
             put("nonce", nonce)
             if (!challenge.isNullOrBlank()) put("challenge", challenge)
@@ -204,17 +212,25 @@ class BiometricKeystoreManager(private val context: Context) {
             android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
         )
 
-        // HMAC-SHA256 signature
-        val mac = Mac.getInstance("HmacSHA256")
-        val secretSpec = SecretKeySpec(ATTESTATION_SECRET.toByteArray(Charsets.UTF_8), "HmacSHA256")
-        mac.init(secretSpec)
-        val signatureBytes = mac.doFinal(payloadB64.toByteArray(Charsets.UTF_8))
-        val signatureB64 = android.util.Base64.encodeToString(
-            signatureBytes,
-            android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
-        )
-
-        return "$payloadB64.$signatureB64"
+        return try {
+            if (!keyStore.containsAlias(alias)) {
+                android.util.Log.w(TAG, "Cannot create asymmetric attestation: no device signing key found for $cleanId")
+                return null
+            }
+            val privateKey = (keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry).privateKey
+            val signer = Signature.getInstance("SHA256withECDSA")
+            signer.initSign(privateKey)
+            signer.update(payloadB64.toByteArray(Charsets.UTF_8))
+            val signatureBytes = signer.sign()
+            val signatureB64 = android.util.Base64.encodeToString(
+                signatureBytes,
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
+            )
+            "$payloadB64.$signatureB64"
+        } catch (e: Throwable) {
+            android.util.Log.e(TAG, "Asymmetric attestation signing failed: ${e.message}")
+            null
+        }
     }
 
     data class DeviceKeyResult(
@@ -226,6 +242,67 @@ class BiometricKeystoreManager(private val context: Context) {
         val isHardwareBacked: Boolean,
         val securityLevel: String
     )
+
+    data class DeviceKeyInfo(
+        val hasKey: Boolean,
+        val keyId: String?,
+        val publicKeyPem: String?,
+        val model: String,
+        val os: String
+    )
+
+    /**
+     * Inspect whether a valid hardware-backed signing key already exists for this staff member.
+     * Prevents regenerating keys on logout/login and normal app restarts.
+     */
+    fun getDeviceKeyInfo(staffId: String): DeviceKeyInfo {
+        val cleanId = staffId.trim().lowercase()
+        val alias = "campusattend_device_signing_$cleanId"
+        if (!keyStore.containsAlias(alias)) {
+            return DeviceKeyInfo(
+                hasKey = false,
+                keyId = null,
+                publicKeyPem = null,
+                model = android.os.Build.MODEL ?: "Android Device",
+                os = "Android " + android.os.Build.VERSION.RELEASE
+            )
+        }
+
+        return try {
+            val cert = keyStore.getCertificate(alias)
+            val publicKey = cert?.publicKey
+            if (publicKey != null) {
+                val pubKeyB64 = android.util.Base64.encodeToString(publicKey.encoded, android.util.Base64.NO_WRAP)
+                val pubKeyPem = "-----BEGIN PUBLIC KEY-----\n" +
+                        pubKeyB64.chunked(64).joinToString("\n") +
+                        "\n-----END PUBLIC KEY-----"
+                val keyId = "DEV_ANDROID_${getDeviceId().take(12)}_${cleanId.uppercase()}"
+                DeviceKeyInfo(
+                    hasKey = true,
+                    keyId = keyId,
+                    publicKeyPem = pubKeyPem,
+                    model = android.os.Build.MODEL ?: "Android Device",
+                    os = "Android " + android.os.Build.VERSION.RELEASE
+                )
+            } else {
+                DeviceKeyInfo(
+                    hasKey = false,
+                    keyId = null,
+                    publicKeyPem = null,
+                    model = android.os.Build.MODEL ?: "Android Device",
+                    os = "Android " + android.os.Build.VERSION.RELEASE
+                )
+            }
+        } catch (_: Throwable) {
+            DeviceKeyInfo(
+                hasKey = false,
+                keyId = null,
+                publicKeyPem = null,
+                model = android.os.Build.MODEL ?: "Android Device",
+                os = "Android " + android.os.Build.VERSION.RELEASE
+            )
+        }
+    }
 
     /**
      * Generate a non-exportable hardware-backed EC P-256 signing key in Android Keystore.
@@ -263,7 +340,7 @@ class BiometricKeystoreManager(private val context: Context) {
                 .setUserAuthenticationRequired(false)
                 .build()
 
-            kpg.init(strongBoxSpec)
+            kpg.initialize(strongBoxSpec)
             kpg.generateKeyPair()
             keyGenSuccess = true
             isStrongBox = true
@@ -288,7 +365,7 @@ class BiometricKeystoreManager(private val context: Context) {
                 .setUserAuthenticationRequired(false)
                 .build()
 
-            kpg.init(teeSpec)
+            kpg.initialize(teeSpec)
             kpg.generateKeyPair()
             securityLevel = "TEE"
         }

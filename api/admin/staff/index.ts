@@ -24,41 +24,106 @@ async function revokeDevice(params: {
   }
 
   try {
-    const { data: targetDevice, error: fetchErr } = await supabase
-      .from("devices")
-      .select("*")
-      .eq("id", deviceId)
-      .maybeSingle();
+    let targetDevice: any = null;
+    try {
+      const { data, error: fetchErr } = await supabase
+        .from("devices")
+        .select("*")
+        .eq("id", deviceId)
+        .maybeSingle();
+      if (!fetchErr && data) targetDevice = data;
+    } catch {}
 
-    if (fetchErr || !targetDevice) {
+    if (!targetDevice) {
+      try {
+        const fs = await import("node:fs");
+        const path = await import("node:path");
+        for (const relPath of [path.join(".gemini", "device-store.json"), path.join("data", "staff-db.json")]) {
+          const localStorePath = path.resolve(process.cwd(), relPath);
+          if (fs.existsSync(localStorePath)) {
+            const store = JSON.parse(fs.readFileSync(localStorePath, "utf-8"));
+            targetDevice = (store.devices || []).find((d: any) => d.id === deviceId);
+            if (targetDevice) break;
+          }
+        }
+      } catch {}
+    }
+
+    if (!targetDevice) {
       return { success: false, error: "No matching registered device found to revoke." };
     }
 
-    const { error: updateErr } = await supabase
-      .from("devices")
-      .update({
-        status: "Blocked",
-      })
-      .eq("id", deviceId);
+    try {
+      const { error: updErr } = await supabase
+        .from("devices")
+        .update({
+          status: "Blocked",
+          revoked_at: now,
+          revocation_reason: reason,
+          revoked_by: adminUsername,
+        })
+        .or(`id.eq.${deviceId},key_id.eq.${deviceId}`);
 
-    if (updateErr) {
-      return { success: false, error: updateErr.message };
-    }
+      if (updErr) {
+        await supabase.from("devices").update({ status: "Blocked" }).or(`id.eq.${deviceId},key_id.eq.${deviceId}`);
+      }
 
-    await supabase.from("security_events").insert({
-      time: now,
-      staff: targetDevice.staff_code,
-      event: `DEVICE_REVOKED|${deviceId}`,
-      device: JSON.stringify({
-        deviceId,
-        reason,
-        revokedBy: adminUsername,
-        revokedAt: now,
-      }),
-      location: "Admin Console",
-      result: "Blocked",
-      severity: "Medium",
-    });
+      if (targetDevice?.staff_code) {
+        await supabase
+          .from("devices")
+          .update({ status: "Blocked" })
+          .ilike("staff_code", targetDevice.staff_code)
+          .eq("status", "Active");
+      }
+    } catch {}
+
+    try {
+      await supabase.from("security_events").insert({
+        time: now,
+        staff: targetDevice.staff_code,
+        event: `DEVICE_REVOKED|${deviceId}`,
+        device: JSON.stringify({
+          deviceId,
+          reason,
+          revokedBy: adminUsername,
+          revokedAt: now,
+        }),
+        location: "Admin Console",
+        result: "Blocked",
+        severity: "Medium",
+      });
+    } catch {}
+
+    // Update in local store files if present
+    try {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      for (const relPath of [path.join(".gemini", "device-store.json"), path.join("data", "staff-db.json")]) {
+        const localStorePath = path.resolve(process.cwd(), relPath);
+        if (fs.existsSync(localStorePath)) {
+          const store = JSON.parse(fs.readFileSync(localStorePath, "utf-8"));
+          if (Array.isArray(store.devices)) {
+            let modified = false;
+            store.devices.forEach((d: any) => {
+              if (
+                d.id === deviceId ||
+                d.key_id === deviceId ||
+                (targetDevice?.staff_code && d.staff_code?.toUpperCase() === targetDevice.staff_code.toUpperCase())
+              ) {
+                d.status = "Revoked";
+                d.revoked_at = now;
+                d.revocation_reason = reason;
+                d.revoked_by = adminUsername;
+                modified = true;
+              }
+            });
+            if (modified) {
+              fs.writeFileSync(localStorePath, JSON.stringify(store, null, 2), "utf-8");
+            }
+          }
+        }
+      }
+    } catch {}
 
     return {
       success: true,

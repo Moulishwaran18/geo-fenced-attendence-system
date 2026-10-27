@@ -85,17 +85,46 @@ CREATE TABLE IF NOT EXISTS public.security_events (
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
--- 7. REGISTERED DEVICES TABLE
+-- 7. REGISTERED DEVICES TABLE (One Faculty <-> One Registered Device Policy)
 CREATE TABLE IF NOT EXISTS public.devices (
-    id VARCHAR(64) PRIMARY KEY, -- e.g. DEV-8842-AX
+    id VARCHAR(128) PRIMARY KEY, -- e.g. DEV_ANDROID_15da1ec2b55216de
     staff_id UUID REFERENCES public.staff(id) ON DELETE SET NULL,
     staff_code VARCHAR(64),
     staff_name VARCHAR(255),
     model VARCHAR(255) NOT NULL,
     os VARCHAR(64) NOT NULL,
-    status VARCHAR(32) DEFAULT 'Active' NOT NULL CHECK (status IN ('Active', 'Pending', 'Blocked')),
+    status VARCHAR(32) DEFAULT 'Active' NOT NULL CHECK (status IN ('Active', 'Pending', 'Blocked', 'Revoked')),
+    public_key TEXT,
+    key_id VARCHAR(128),
+    key_algorithm VARCHAR(64) DEFAULT 'ECDSA_P256',
+    platform VARCHAR(32) DEFAULT 'android',
+    attestation_status VARCHAR(64) DEFAULT 'Verified',
+    attestation_type VARCHAR(64) DEFAULT 'hardware',
+    attestation_evidence TEXT,
+    last_verified_at TIMESTAMPTZ DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ,
+    revocation_reason TEXT,
+    revoked_by VARCHAR(64),
+    audit_metadata JSONB DEFAULT '{}'::jsonb,
     registered_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
+
+-- RULE 1: At most one active registered device per faculty account
+DROP INDEX IF EXISTS idx_one_active_device_per_faculty;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_device_per_faculty 
+    ON public.devices (staff_code) 
+    WHERE (status = 'Active');
+
+-- RULE 2: At most one active faculty account per registered physical device
+DROP INDEX IF EXISTS idx_one_active_staff_per_device;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_staff_per_device 
+    ON public.devices (public_key) 
+    WHERE (status = 'Active' AND public_key IS NOT NULL);
+
+DROP INDEX IF EXISTS idx_one_active_staff_per_key_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_staff_per_key_id 
+    ON public.devices (key_id) 
+    WHERE (status = 'Active' AND key_id IS NOT NULL);
 
 -- 8. GEOFENCE ZONES TABLE
 CREATE TABLE IF NOT EXISTS public.geofence_zones (
@@ -151,7 +180,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_staff_attendance_per_day
 CREATE TABLE IF NOT EXISTS public.attendance_challenges (
     challenge VARCHAR(64) PRIMARY KEY,
     staff_code VARCHAR(64) NOT NULL,
-    device_id VARCHAR(64) NOT NULL,
+    device_id VARCHAR(128) NOT NULL,
     operation VARCHAR(32) DEFAULT 'ATTENDANCE_PUNCH' NOT NULL,
     issued_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
@@ -166,53 +195,70 @@ CREATE INDEX IF NOT EXISTS idx_attendance_challenges_expires ON public.attendanc
 CREATE OR REPLACE FUNCTION public.atomic_verify_and_consume_attendance_challenge(
     p_challenge VARCHAR,
     p_staff_code VARCHAR,
-    p_device_id VARCHAR
+    p_device_id VARCHAR,
+    p_operation VARCHAR DEFAULT 'ATTENDANCE_PUNCH'
 )
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_catalog, extensions
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_row public.attendance_challenges%ROWTYPE;
-    v_now TIMESTAMPTZ := NOW();
+    v_now TIMESTAMPTZ := pg_catalog.now();
 BEGIN
-    IF p_challenge IS NULL OR TRIM(p_challenge) = '' THEN
-        RETURN jsonb_build_object('valid', false, 'error', 'CHALLENGE_MISSING', 'message', 'Challenge nonce is required.');
+    IF p_challenge IS NULL OR pg_catalog.btrim(p_challenge) = '' THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_MISSING', 'message', 'Challenge nonce is required.');
+    END IF;
+
+    IF p_staff_code IS NULL OR pg_catalog.btrim(p_staff_code) = '' THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'STAFF_CODE_MISSING', 'message', 'Staff identifier is required.');
+    END IF;
+
+    IF p_device_id IS NULL OR pg_catalog.btrim(p_device_id) = '' THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'DEVICE_ID_MISSING', 'message', 'Exact registered device ID is required.');
+    END IF;
+
+    IF p_operation IS NULL OR pg_catalog.btrim(p_operation) = '' THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'OPERATION_MISSING', 'message', 'Operation type is required.');
     END IF;
 
     SELECT * INTO v_row
     FROM public.attendance_challenges
-    WHERE challenge = TRIM(p_challenge)
+    WHERE challenge = pg_catalog.btrim(p_challenge)
     FOR UPDATE;
 
     IF NOT FOUND THEN
-        RETURN jsonb_build_object('valid', false, 'error', 'CHALLENGE_NOT_FOUND', 'message', 'Challenge nonce was not found or was forged.');
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_NOT_FOUND', 'message', 'Challenge nonce was not found or was forged.');
     END IF;
 
     IF v_row.status = 'CONSUMED' OR v_row.consumed_at IS NOT NULL THEN
-        RETURN jsonb_build_object('valid', false, 'error', 'CHALLENGE_ALREADY_CONSUMED', 'message', 'Challenge nonce has already been consumed.');
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_ALREADY_CONSUMED', 'message', 'Challenge nonce has already been consumed.');
     END IF;
 
     IF v_now > v_row.expires_at THEN
-        UPDATE public.attendance_challenges SET status = 'EXPIRED' WHERE challenge = TRIM(p_challenge);
-        RETURN jsonb_build_object('valid', false, 'error', 'CHALLENGE_EXPIRED', 'message', 'Challenge has expired. Fresh challenge required.');
+        UPDATE public.attendance_challenges SET status = 'EXPIRED' WHERE challenge = pg_catalog.btrim(p_challenge);
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_EXPIRED', 'message', 'Challenge has expired. Fresh challenge required.');
     END IF;
 
-    IF UPPER(v_row.staff_code) <> UPPER(TRIM(p_staff_code)) THEN
-        RETURN jsonb_build_object('valid', false, 'error', 'CHALLENGE_STAFF_MISMATCH', 'message', 'Challenge is bound to a different faculty account.');
+    IF v_row.operation IS DISTINCT FROM pg_catalog.btrim(p_operation) THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_OPERATION_MISMATCH', 'message', 'Challenge was issued for a different operation.');
     END IF;
 
-    IF p_device_id IS NOT NULL AND TRIM(p_device_id) <> '' AND v_row.device_id <> TRIM(p_device_id) THEN
-        RETURN jsonb_build_object('valid', false, 'error', 'CHALLENGE_DEVICE_MISMATCH', 'message', 'Challenge is bound to a different registered device.');
+    IF pg_catalog.upper(v_row.staff_code) IS DISTINCT FROM pg_catalog.upper(pg_catalog.btrim(p_staff_code)) THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_STAFF_MISMATCH', 'message', 'Challenge is bound to a different faculty account.');
+    END IF;
+
+    IF v_row.device_id IS DISTINCT FROM pg_catalog.btrim(p_device_id) THEN
+        RETURN pg_catalog.jsonb_build_object('valid', false, 'error', 'CHALLENGE_DEVICE_MISMATCH', 'message', 'Challenge is bound to a different registered device.');
     END IF;
 
     UPDATE public.attendance_challenges
     SET status = 'CONSUMED',
         consumed_at = v_now
-    WHERE challenge = TRIM(p_challenge);
+    WHERE challenge = pg_catalog.btrim(p_challenge);
 
-    RETURN jsonb_build_object('valid', true, 'consumed_at', v_now);
+    RETURN pg_catalog.jsonb_build_object('valid', true, 'consumed_at', v_now);
 END;
 $$;
 
@@ -461,5 +507,5 @@ ON CONFLICT (staff_code) DO NOTHING;
 
 INSERT INTO public.geofence_zones (name, campus_name, polygon_coords, center_lat, center_lng, radius_meters, active)
 VALUES
-    ('Main Campus', 'Sona College of Technology', '[[11.679113056127784,78.12389462165308],[11.679160653348573,78.1251229550977],[11.679072439799588,78.12580219547301],[11.678915085838511,78.12659829439393],[11.67857653610425,78.12706572862274],[11.677855225878366,78.1268821218973],[11.677005135877979,78.12680385127157],[11.676963779359658,78.12619810348153],[11.675808384169112,78.12611721999878],[11.67548101155477,78.12632747328921],[11.675225395251344,78.12546783441684],[11.674880184146973,78.12470095781757],[11.67506203954446,78.12467072803454],[11.675345395390822,78.12439973963578],[11.675557255409673,78.1241730162712],[11.676220110497038,78.12411693452746],[11.677404862894116,78.12403601056346],[11.678027388807743,78.12399041301013],[11.679113056127784,78.12389462165308]]', 11.676981885555598, 78.12535378885866, 500, true)
+    ('Main Campus', 'Sona College of Technology', '[[11.675651510482604,78.12402220170895],[11.675657082681333,78.12382305416799],[11.675768526632474,78.12359545697831],[11.675857681761121,78.12339630943734],[11.676125146975094,78.1228443862524],[11.676370323194567,78.12244609117047],[11.676414900665728,78.12241764152176],[11.676448333764391,78.12143897360616],[11.676905252375372,78.12147880311436],[11.676977690622595,78.12159260170921],[11.67708913404289,78.12222418391055],[11.677990932044441,78.12235439874642],[11.677979915759753,78.1237830407748]]', 11.676556648538646, 78.12272439562298, 500, true)
 ON CONFLICT DO NOTHING;

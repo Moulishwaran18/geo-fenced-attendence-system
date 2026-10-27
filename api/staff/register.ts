@@ -41,6 +41,7 @@ async function registerDeviceForStaff(params: {
   staffId: string;
   staffName: string;
   publicKey: string;
+  keyId?: string;
   keyAlgorithm?: string;
   platform?: DevicePlatform;
   model?: string;
@@ -52,8 +53,14 @@ async function registerDeviceForStaff(params: {
 }) {
   const cleanStaffCode = params.staffCode.trim().toUpperCase();
   const supabaseClient = getSupabaseClient();
+  const normalizedKey = normalizePublicKeyToPem(params.publicKey);
+  const keyId =
+    params.keyId ||
+    `DEV_${(params.platform || "android").toUpperCase()}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
+
   if (supabaseClient) {
     try {
+      // 1. Rule 1 Check
       const { data: existingActive } = await supabaseClient
         .from("devices")
         .select("*")
@@ -63,10 +70,32 @@ async function registerDeviceForStaff(params: {
         .maybeSingle();
 
       if (existingActive) {
+        if (existingActive.id === keyId || existingActive.key_id === keyId || existingActive.public_key === normalizedKey) {
+          return { success: true, statusCode: 200, device: existingActive };
+        }
         return {
           success: false,
           statusCode: 409,
-          error: `Faculty account '${cleanStaffCode}' already has an active registered device (${existingActive.model}, ID: ${existingActive.id}).`,
+          error: `DEVICE_ALREADY_EXISTS: Faculty account '${cleanStaffCode}' already has an active registered device (${existingActive.model}, ID: ${existingActive.id}). One Faculty ID = One Phone policy prohibits registering a second device.`,
+        };
+      }
+
+      // 2. Rule 2 Check
+      const { data: boundDevices } = await supabaseClient
+        .from("devices")
+        .select("id, staff_code, model, public_key, key_id, status")
+        .eq("status", "Active")
+        .or(`id.eq.${keyId},key_id.eq.${keyId}`);
+
+      const conflictingDevice = (boundDevices || []).find(
+        (d: any) => d.staff_code?.toUpperCase() !== cleanStaffCode
+      );
+
+      if (conflictingDevice) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${conflictingDevice.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
     } catch (e: any) {
@@ -75,9 +104,6 @@ async function registerDeviceForStaff(params: {
   }
 
   const now = new Date().toISOString();
-  const normalizedKey = normalizePublicKeyToPem(params.publicKey);
-  const keyId = `DEV_${(params.platform || "android").toUpperCase()}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
-
   const deviceRecord = {
     id: keyId,
     staff_id: params.staffId,
@@ -96,23 +122,55 @@ async function registerDeviceForStaff(params: {
 
   if (supabaseClient) {
     try {
-      const { error: insErr } = await supabaseClient.from("devices").insert({
+      const insertPayload: any = {
         id: deviceRecord.id,
         staff_id: deviceRecord.staff_id,
         staff_code: deviceRecord.staff_code,
         staff_name: deviceRecord.staff_name,
+        public_key: deviceRecord.public_key,
+        key_id: deviceRecord.key_id,
+        key_algorithm: deviceRecord.key_algorithm,
+        platform: deviceRecord.platform,
         model: deviceRecord.model,
         os: deviceRecord.os,
         status: "Active",
         registered_at: now,
-      });
+        last_verified_at: now,
+      };
 
-      if (insErr && (insErr.code === "23505" || insErr.message.includes("unique"))) {
-        return {
-          success: false,
-          statusCode: 409,
-          error: "Device registration conflict: Database unique constraint prevents binding multiple active devices.",
-        };
+      const { error: insErr } = await supabaseClient.from("devices").insert(insertPayload);
+
+      if (insErr) {
+        if (insErr.code === "23505" || insErr.message.includes("unique")) {
+          const isStaffConflict = insErr.message.includes("staff_code") || insErr.message.includes("staff");
+          return {
+            success: false,
+            statusCode: 409,
+            error: isStaffConflict
+              ? "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices to one staff member."
+              : "DEVICE_BOUND_TO_ANOTHER_ACCOUNT: Database unique constraint prevents binding this device to multiple staff accounts.",
+          };
+        }
+
+        // Fallback for legacy DB schema missing optional columns
+        const { error: retryErr } = await supabaseClient.from("devices").insert({
+          id: deviceRecord.id,
+          staff_id: deviceRecord.staff_id,
+          staff_code: deviceRecord.staff_code,
+          staff_name: deviceRecord.staff_name,
+          model: deviceRecord.model,
+          os: deviceRecord.os,
+          status: "Active",
+          registered_at: now,
+        });
+
+        if (retryErr && (retryErr.code === "23505" || retryErr.message.includes("unique"))) {
+          return {
+            success: false,
+            statusCode: 409,
+            error: "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices.",
+          };
+        }
       }
 
       const cleanB64Key = normalizedKey

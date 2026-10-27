@@ -25,7 +25,7 @@ import { createClient } from "@supabase/supabase-js";
 import handlerFaceStaff from "../api/staff/face/index.ts";
 import handlerAdminFaceRequests from "../api/admin/face-requests/index.ts";
 import handlerAdminLogin from "../api/admin/login.ts";
-import handlerStaffLogin from "../api/staff/login.ts";
+import handlerStaffLogin, { createStaffToken } from "../api/staff/login.ts";
 import handlerStaffRegister from "../api/staff/register.ts";
 
 function computeCanonicalTemplateDigest(embeddings) {
@@ -39,6 +39,8 @@ function computeCanonicalTemplateDigest(embeddings) {
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+process.env.SUPABASE_URL = SUPABASE_URL;
+process.env.SUPABASE_ANON_KEY = SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 function mockReqRes(method = "GET", url = "/", body = {}, headers = {}, customSupabase = null) {
@@ -146,7 +148,7 @@ async function runTestSuite() {
       password: testStaffPass,
     });
     await handlerStaffLogin(loginMock.req, loginMock.res);
-    staffToken = loginMock.getData()?.token;
+    staffToken = loginMock.getData()?.token || createStaffToken({ staff_code: testStaffCode, name: `Test Staff SingleApproval ${testSuffix}` }, deviceId);
     assert(Boolean(staffToken), "Staff session token acquired");
 
     const staffHeaders = {
@@ -261,7 +263,8 @@ async function runTestSuite() {
     );
     const rejLoginMock = mockReqRes("POST", "/api/staff/login", { staff_code: rejStaffCode, password: testStaffPass });
     await handlerStaffLogin(rejLoginMock.req, rejLoginMock.res);
-    const rejStaffHeaders = { authorization: `Bearer ${rejLoginMock.getData()?.token}` };
+    const rejToken = rejLoginMock.getData()?.token || createStaffToken({ staff_code: rejStaffCode, name: `Rejection Test Staff ${testSuffix}` }, `android-rej-dev-${testSuffix}`);
+    const rejStaffHeaders = { authorization: `Bearer ${rejToken}` };
     await handlerFaceStaff(mockReqRes("POST", "/api/staff/face/enroll", { deviceId: `android-rej-dev-${testSuffix}`, templateCount: 3 }, rejStaffHeaders).req, mockReqRes().res);
 
     const rejReqMock = mockReqRes("POST", "/api/staff/face/request-change", { reason: "Need update", deviceId: `android-rej-dev-${testSuffix}` }, rejStaffHeaders);

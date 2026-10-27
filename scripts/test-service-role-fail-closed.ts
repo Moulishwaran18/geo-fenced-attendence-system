@@ -154,10 +154,19 @@ async function runServiceRoleFailClosedTests() {
   // ---------------------------------------------------------------------------
   console.log("\n--- TEST 7: api/attendance.ts Fail-Closed ---");
   delete process.env["SUPABASE_SERVICE_ROLE_KEY"];
-  // Set TEST_MODE to allow function import without immediate hmac secret check on root
-  process.env["TEST_MODE"] = "1";
   process.env["RECORD_HMAC_SECRET"] = "valid-length-record-hmac-secret-for-testing-at-least-32-chars";
   const attModule = await import("../api/attendance.ts");
+
+  // 7a. Direct getSupabaseClient() throws CONFIGURATION_FAULT on missing key
+  let attClientThrew = false;
+  try {
+    attModule.getSupabaseClient();
+  } catch (err: any) {
+    if (err.message.includes("CONFIGURATION_FAULT")) attClientThrew = true;
+  }
+  assert.strictEqual(attClientThrew, true, "api/attendance getSupabaseClient throws CONFIGURATION_FAULT on missing key");
+
+  // 7b. Handler returns 503 SERVER_CONFIG_FAULT on missing key
   let attStatus = 0;
   let attPayload: any = null;
   const fakeAttRes = {
@@ -165,7 +174,6 @@ async function runServiceRoleFailClosedTests() {
     status(s: number) { attStatus = s; return this; },
     json(p: any) { attPayload = p; return p; },
   };
-  // Calling /api/attendance when pool is disabled and service key is missing
   process.env["DATABASE_URL"] = "";
   await attModule.default(
     {
@@ -175,7 +183,46 @@ async function runServiceRoleFailClosedTests() {
     },
     fakeAttRes
   );
-  console.log("  ✓ PASS: api/attendance safely handles missing service-role key without anonymous fallback");
+  assert.strictEqual(attStatus, 503, "api/attendance returns 503 on missing service-role key");
+  assert.strictEqual(attPayload.error, "SERVER_CONFIG_FAULT");
+  console.log("  ✓ PASS: api/attendance fails closed with 503 SERVER_CONFIG_FAULT on missing service-role key");
+
+  // 7c. Rejection of publishable key
+  process.env["SUPABASE_SERVICE_ROLE_KEY"] = "sb_publishable_invalid_attempt";
+  let attPubThrew = false;
+  try {
+    attModule.getSupabaseClient();
+  } catch (err: any) {
+    if (err.message.includes("CONFIGURATION_FAULT")) attPubThrew = true;
+  }
+  assert.strictEqual(attPubThrew, true, "api/attendance getSupabaseClient rejects publishable key in production");
+
+  attStatus = 0;
+  attPayload = null;
+  await attModule.default(
+    {
+      method: "POST",
+      url: "/api/attendance",
+      body: { action: "request_challenge", staff_code: "SCT-001", device_id: "DEV_001" },
+    },
+    fakeAttRes
+  );
+  assert.strictEqual(attStatus, 503, "api/attendance returns 503 on publishable key");
+  assert.strictEqual(attPayload.error, "SERVER_CONFIG_FAULT");
+  console.log("  ✓ PASS: api/attendance rejects publishable key and fails closed with 503");
+
+  // 7d. Anonymous-key fallback prevention in production
+  delete process.env["SUPABASE_SERVICE_ROLE_KEY"];
+  process.env["SUPABASE_ANON_KEY"] = "sb_publishable_anon_token";
+  process.env["VITE_SUPABASE_ANON_KEY"] = "sb_publishable_anon_token";
+  let attAnonThrew = false;
+  try {
+    attModule.getSupabaseClient();
+  } catch (err: any) {
+    if (err.message.includes("CONFIGURATION_FAULT")) attAnonThrew = true;
+  }
+  assert.strictEqual(attAnonThrew, true, "api/attendance never falls back to anonymous key in production");
+  console.log("  ✓ PASS: api/attendance strictly prevents anonymous key fallback in production");
 
   // ---------------------------------------------------------------------------
   // TEST 8: api/device/index.ts - Missing Service-Role Key

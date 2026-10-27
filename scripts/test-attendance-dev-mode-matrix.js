@@ -22,8 +22,8 @@ const pool = new Pool({
 
 // Campus coordinates inside polygon (Sona College Main Gate / CSE Block)
 const GPS_INSIDE_POINT = {
-  lat: 11.67776,
-  lng: 78.12519,
+  lat: 11.676557,
+  lng: 78.122724,
 };
 
 // Coordinates outside polygon (Salem Bus Stand ~5km away)

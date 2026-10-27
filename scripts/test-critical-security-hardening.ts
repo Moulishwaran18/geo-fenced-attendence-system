@@ -266,8 +266,8 @@ async function runRegressionSuite() {
   const validWifi = mintNetworkToken("SONA-WIFI-FACULTY", true);
 
   // Authoritative Campus Coordinates (Inside)
-  const CAMPUS_LAT = 11.6775;
-  const CAMPUS_LNG = 78.1250;
+  const CAMPUS_LAT = 11.676557;
+  const CAMPUS_LNG = 78.122724;
   // Outside Campus Coordinates
   const OUTSIDE_LAT = 11.6850;
   const OUTSIDE_LNG = 78.1300;

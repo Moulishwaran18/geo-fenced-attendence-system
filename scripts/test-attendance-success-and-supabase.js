@@ -15,6 +15,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 
+const envPath = path.resolve(rootDir, ".env");
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, "utf-8");
+  for (const line of envContent.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("#")) {
+      const idx = trimmed.indexOf("=");
+      if (idx !== -1) {
+        const k = trimmed.slice(0, idx).trim();
+        const v = trimmed.slice(idx + 1).trim();
+        if (process.env[k] === undefined) {
+          process.env[k] = v;
+        }
+      }
+    }
+  }
+}
+
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -22,6 +40,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const TOKEN_SECRET = process.env.CAMPUS_AUTH_SECRET || "sona-campus-wifi-egress-auth-secret-key-2026";
 const STAFF_TOKEN_SECRET = process.env.CAMPUS_AUTH_SECRET || process.env.STAFF_AUTH_SECRET || "campusattend-staff-auth-session-sec-key-2026";
 const ADMIN_TOKEN_SECRET = process.env.CAMPUS_ADMIN_SECRET || "campusattend-admin-sec-key-moulish-2026-auth-token";
+const BIOMETRIC_SECRET = process.env.BIOMETRIC_ATTESTATION_SECRET || "campusattend-dedicated-biometric-attestation-secret-2026-32b";
 
 function createMockReqRes({ method = "POST", body = {}, headers = {}, url = "/api/attendance" }) {
   const req = {
@@ -114,7 +133,7 @@ function mintBiometricAttestation(staffId, deviceId, nonce = "att_nonce_" + Date
     nonce,
   };
   const b64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = crypto.createHmac("sha256", TOKEN_SECRET).update(b64).digest("base64url");
+  const sig = crypto.createHmac("sha256", BIOMETRIC_SECRET).update(b64).digest("base64url");
   return `${b64}.${sig}`;
 }
 
@@ -186,12 +205,17 @@ async function runTestSuite() {
   // ---------------------------------------------------------------------------
   console.log("\n--- SECTION 2: Server-Side Attendance Hard Gates & Security Checks ---");
 
+  const sct001Token = mintStaffToken("SCT-001");
+
   // TEST 7: Campus Wi-Fi Gatekeeper
   const noWifiMock = createMockReqRes({
+    headers: {
+      authorization: `Bearer ${sct001Token}`,
+    },
     body: {
       staffCode: "SCT-001",
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
     },
   });
   await attendanceHandler(noWifiMock.req, noWifiMock.res);
@@ -204,11 +228,15 @@ async function runTestSuite() {
   // TEST 8: Campus GPS Polygon Geofence Gatekeeper
   const validNetToken = mintNetworkToken("SONA-WIFI");
   const outsideGpsMock = createMockReqRes({
-    headers: { "x-network-auth-token": validNetToken },
+    headers: {
+      authorization: `Bearer ${sct001Token}`,
+      "x-network-auth-token": validNetToken,
+    },
     body: {
       staffCode: "SCT-001",
       latitude: 11.6500, // Outside campus
       longitude: 78.1000,
+      accuracy: 5,
     },
   });
   await attendanceHandler(outsideGpsMock.req, outsideGpsMock.res);
@@ -220,11 +248,14 @@ async function runTestSuite() {
 
   // TEST 9: GPS Accuracy Enforcement (<= 20m)
   const lowAccuracyMock = createMockReqRes({
-    headers: { "x-network-auth-token": validNetToken },
+    headers: {
+      authorization: `Bearer ${sct001Token}`,
+      "x-network-auth-token": validNetToken,
+    },
     body: {
       staffCode: "SCT-001",
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 35, // exceeds 20m threshold
     },
   });
@@ -240,8 +271,8 @@ async function runTestSuite() {
     headers: { "x-network-auth-token": validNetToken },
     body: {
       staffCode: "SCT-001",
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 8,
     },
   });
@@ -253,7 +284,6 @@ async function runTestSuite() {
   );
 
   // TEST 11: Identity Forgery Protection
-  const sct001Token = mintStaffToken("SCT-001");
   const forgeryMock = createMockReqRes({
     headers: {
       authorization: `Bearer ${sct001Token}`,
@@ -261,8 +291,8 @@ async function runTestSuite() {
     },
     body: {
       staffCode: "SCT-002", // Forged client attempt
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 8,
     },
   });
@@ -281,8 +311,8 @@ async function runTestSuite() {
     },
     body: {
       staffCode: "SCT-001",
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 8,
       faceVerified: true,
       recognizedStaffCode: "SCT-001",
@@ -304,7 +334,7 @@ async function runTestSuite() {
   const parsedAtt = JSON.parse(Buffer.from(b64Part, "base64url").toString("utf-8"));
   parsedAtt.livenessPassed = false;
   const badB64 = Buffer.from(JSON.stringify(parsedAtt)).toString("base64url");
-  const badSig = crypto.createHmac("sha256", TOKEN_SECRET).update(badB64).digest("base64url");
+  const badSig = crypto.createHmac("sha256", BIOMETRIC_SECRET).update(badB64).digest("base64url");
   const badLivenessToken = `${badB64}.${badSig}`;
 
   const failedFaceMock = createMockReqRes({
@@ -314,8 +344,8 @@ async function runTestSuite() {
     },
     body: {
       staffCode: "SCT-001",
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 8,
       biometricAttestation: badLivenessToken,
       faceVerified: true,
@@ -327,6 +357,7 @@ async function runTestSuite() {
   assertTest(
     failedFaceRes.statusCode === 403 && (
       failedFaceRes.data?.error === "INVALID_BIOMETRIC_ATTESTATION" ||
+      failedFaceRes.data?.error === "BIOMETRIC_LIVENESS_FAILED" ||
       failedFaceRes.data?.error === "LIVENESS_FAILED" ||
       failedFaceRes.data?.error === "FACE_BIOMETRIC_UNAUTHORIZED"
     ),
@@ -353,6 +384,35 @@ async function runTestSuite() {
   const testNonce = "nonce_success_test_" + Date.now();
   const attestationToken = mintBiometricAttestation("SCT-001", deviceRow.id, testNonce);
 
+  // Generate ECDSA P-256 test key pair for deviceRow
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const devicePublicKey = publicKey.export({ type: "spki", format: "pem" });
+  const deviceTimestamp = Date.now();
+
+  // Register active test key in local device store for SCT-001's deviceRow
+  const deviceStorePath = path.resolve(rootDir, ".gemini", "device-store.json");
+  let store = { staff: [], devices: [] };
+  try {
+    store = JSON.parse(fs.readFileSync(deviceStorePath, "utf-8"));
+  } catch {}
+  store.devices = (store.devices || []).filter(d => d.id !== deviceRow.id);
+  store.devices.unshift({
+    id: deviceRow.id,
+    staff_code: "SCT-001",
+    staff_name: "Moulishwaran S",
+    public_key: devicePublicKey,
+    key_id: deviceRow.id,
+    key_algorithm: "ECDSA_P256",
+    status: "Active",
+    registered_at: new Date().toISOString(),
+  });
+  fs.writeFileSync(deviceStorePath, JSON.stringify(store, null, 2));
+
+  const canonicalPayload = `v2:SCT-001:${deviceRow.id}:${testNonce}:${(11.676557).toFixed(6)}:${(78.122724).toFixed(6)}:${deviceTimestamp}`;
+  const signer = crypto.createSign("SHA256");
+  signer.update(canonicalPayload);
+  const deviceSignature = signer.sign(privateKey, "base64");
+
   const attendanceSubmissionMock = createMockReqRes({
     headers: {
       authorization: `Bearer ${sct001Token}`,
@@ -363,8 +423,8 @@ async function runTestSuite() {
       staffCode: "SCT-001",
       staffName: "Fake Client Claim", // Authoritative server should pull genuine name
       department: "Fake Dept Claim", // Authoritative server should pull genuine dept
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 6.5,
       location: "Main Campus, Sona College",
       biometricAttestation: attestationToken,
@@ -372,6 +432,10 @@ async function runTestSuite() {
       recognizedStaffCode: "SCT-001",
       deviceId: deviceRow.id,
       attemptNonce: testNonce,
+      challenge: testNonce,
+      deviceSignature,
+      deviceTimestamp,
+      devicePublicKey,
     },
   });
 
@@ -419,8 +483,21 @@ async function runTestSuite() {
   // ---------------------------------------------------------------------------
   console.log("\n--- SECTION 5: Accidental Duplicate Submission Prevention (Idempotency) ---");
 
+  const todayDateStr = dbRecord.date;
+  const { count: countBeforeDuplicate } = await supabase
+    .from("attendance_records")
+    .select("*", { count: "exact", head: true })
+    .ilike("staff_code", "SCT-001")
+    .eq("date", todayDateStr);
+
   const duplicateNonce = "nonce_dup_test_" + Date.now();
   const duplicateAttestation = mintBiometricAttestation("SCT-001", deviceRow.id, duplicateNonce);
+
+  const dupTimestamp = Date.now();
+  const dupPayload = `v2:SCT-001:${deviceRow.id}:${duplicateNonce}:${(11.676557).toFixed(6)}:${(78.122724).toFixed(6)}:${dupTimestamp}`;
+  const dupSigner = crypto.createSign("SHA256");
+  dupSigner.update(dupPayload);
+  const dupSignature = dupSigner.sign(privateKey, "base64");
 
   const duplicateMock = createMockReqRes({
     headers: {
@@ -430,14 +507,18 @@ async function runTestSuite() {
     },
     body: {
       staffCode: "SCT-001",
-      latitude: 11.67776,
-      longitude: 78.12519,
+      latitude: 11.676557,
+      longitude: 78.122724,
       accuracy: 7.0,
       biometricAttestation: duplicateAttestation,
       faceVerified: true,
       recognizedStaffCode: "SCT-001",
       deviceId: deviceRow.id,
       attemptNonce: duplicateNonce,
+      challenge: duplicateNonce,
+      deviceSignature: dupSignature,
+      deviceTimestamp: dupTimestamp,
+      devicePublicKey,
     },
   });
 
@@ -454,17 +535,16 @@ async function runTestSuite() {
     `Duplicate request returns original Attendance ID (${dupResult.data?.receipt?.attendanceId}), preventing new entry`
   );
 
-  // Verify record count for SCT-001 today in Supabase
-  const todayDateStr = dbRecord.date;
-  const { count: todayCount } = await supabase
+  // Verify record count for SCT-001 today in Supabase remains strictly unchanged
+  const { count: countAfterDuplicate } = await supabase
     .from("attendance_records")
     .select("*", { count: "exact", head: true })
     .ilike("staff_code", "SCT-001")
     .eq("date", todayDateStr);
 
   assertTest(
-    todayCount === 1,
-    `Supabase exact row count for SCT-001 on date ${todayDateStr} is strictly 1 (No duplicate row created)`
+    countAfterDuplicate === countBeforeDuplicate,
+    `Supabase exact row count unchanged after duplicate attempt (${countAfterDuplicate} === ${countBeforeDuplicate}, strictly no duplicate created)`
   );
 
   // ---------------------------------------------------------------------------

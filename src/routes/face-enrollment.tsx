@@ -132,7 +132,9 @@ function StaffFaceEnrollmentPage() {
 
   const [isActivating, setIsActivating] = useState(false);
   const [activationError, setActivationError] = useState<string | null>(null);
+  const [justActivatedInitialEnrollment, setJustActivatedInitialEnrollment] = useState(false);
   const activationInProgressRef = useRef(false);
+  const savingInProgressRef = useRef(false);
 
   if (!activeStaff) {
     return (
@@ -666,6 +668,8 @@ function StaffFaceEnrollmentPage() {
       return;
     }
 
+    if (isSaving || savingInProgressRef.current) return;
+    savingInProgressRef.current = true;
     setIsSaving(true);
     try {
       const embeddings = validSamples.map((s) => s.embedding!);
@@ -879,14 +883,22 @@ function StaffFaceEnrollmentPage() {
       toast.error("Failed to save biometric enrollment", { description: msg });
     } finally {
       setIsSaving(false);
+      savingInProgressRef.current = false;
     }
   };
 
   // Activate pending templates staged locally after administrator approval
   const handleActivateApprovedProfile = useCallback(
     async (tokenOverride?: string) => {
-      const token = tokenOverride || serverStatus?.oneTimeToken;
-      if (!token) {
+      const token = (
+        tokenOverride ||
+        serverStatus?.oneTimeToken ||
+        (serverStatus as any)?.approvedRequest?.oneTimeToken ||
+        (serverStatus as any)?.activeRequest?.oneTimeToken ||
+        ""
+      ).trim();
+
+      if (!token || !token.startsWith("ftok_")) {
         return;
       }
 
@@ -898,7 +910,15 @@ function StaffFaceEnrollmentPage() {
       setIsActivating(true);
       setActivationError(null);
 
-      try {
+      // Safe 15-second bounded timeout promise to prevent any infinite loading
+      let timeoutId: any;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error("Biometric activation timed out after 15 seconds. Please tap Retry Activation to complete."));
+        }, 15000);
+      });
+
+      const executeActivation = async () => {
         // Step 0: Check if templates are ALREADY verified and active in local storage (Idempotency)
         const preCheck = await verifyNativePersistence(staffId);
         let templateCount = preCheck.count;
@@ -908,18 +928,14 @@ function StaffFaceEnrollmentPage() {
           const actResult = await activateNativePendingEnrollment(staffId, token);
           if (!actResult.success) {
             const errMsg = actResult.message || actResult.error || "Failed to activate templates on this device.";
-            setActivationError(errMsg);
-            toast.error(errMsg);
-            return;
+            throw new Error(errMsg);
           }
 
           // 2. Read-back verification in Android Keystore Room DB
           const verifyCheck = await verifyNativePersistence(staffId);
           if (!verifyCheck.verified || verifyCheck.count === 0) {
             const errMsg = verifyCheck.message || "Local persistence verification failed. Templates were not confirmed in secure device storage.";
-            setActivationError(errMsg);
-            toast.error(errMsg);
-            return;
+            throw new Error(errMsg);
           }
           templateCount = verifyCheck.count;
         }
@@ -936,29 +952,33 @@ function StaffFaceEnrollmentPage() {
 
         if (!serverRes.success) {
           const errMsg = serverRes.error || "Failed to complete server lock registration.";
-          setActivationError(errMsg);
-          toast.error(errMsg);
-          return;
+          throw new Error(errMsg);
         }
 
         hasActivatedTokenRef.current = token;
         setActivationError(null);
+        setJustActivatedInitialEnrollment(true);
 
-        toast.success("Face Registration Approved and Active!", {
+        toast.success("Face Enrollment Successful", {
           description: `${templateCount} template(s) permanently locked with AES-256-GCM. You may now mark attendance with face recognition.`,
         });
 
         await checkStatus();
+      };
+
+      try {
+        await Promise.race([executeActivation(), timeoutPromise]);
       } catch (err: any) {
         const errMsg = err?.message || String(err);
         setActivationError(errMsg);
-        toast.error("Activation failed", { description: errMsg });
+        toast.error("Activation could not be completed", { description: errMsg });
       } finally {
+        clearTimeout(timeoutId);
         setIsActivating(false);
         activationInProgressRef.current = false;
       }
     },
-    [serverStatus?.oneTimeToken, staffId, nativeDeviceId, checkStatus]
+    [serverStatus?.oneTimeToken, (serverStatus as any)?.approvedRequest?.oneTimeToken, (serverStatus as any)?.activeRequest?.oneTimeToken, staffId, nativeDeviceId, checkStatus]
   );
 
   // Commit authorized replacement templates into Room DB upon administrator approval
@@ -1269,11 +1289,9 @@ function StaffFaceEnrollmentPage() {
     }
   };
 
-  const isEnrolledOnDevice = nativeStatus?.isEnrolled === true;
+  const isEnrolledOnDevice = nativeStatus?.isEnrolled === true && (nativeStatus?.count || 0) > 0;
   const isEnrolledOnServer = Boolean(
-    serverStatus?.isLocked ||
-    serverStatus?.status === "approved" ||
-    serverStatus?.enrollmentStatus === "approved"
+    serverStatus?.isLocked && ((serverStatus?.embeddingCount || 0) > 0 || (serverStatus?.sampleCount || 0) > 0)
   );
   const isEnrolled = isEnrolledOnDevice || isEnrolledOnServer;
 
@@ -1308,9 +1326,9 @@ function StaffFaceEnrollmentPage() {
     serverStatus?.enrollmentStatus === "pending_approval";
   const isRejected = latestReqStatus === "rejected" || serverStatus?.status === "rejected" || serverStatus?.enrollmentStatus === "rejected";
   const isExpiredRequest = latestReqStatus === "expired" || serverStatus?.status === "expired";
-  const isApproved = isApprovedForReplacement || (
+  const isApproved = isApprovedForReplacement || Boolean(
     !isEnrolled &&
-    serverStatus?.status === "approved" &&
+    (serverStatus?.status === "approved" || serverStatus?.enrollmentStatus === "approved" || serverStatus?.approvedRequest?.status === "approved") &&
     Boolean(availableToken.startsWith("ftok_"))
   );
 
@@ -1327,11 +1345,12 @@ function StaffFaceEnrollmentPage() {
 
   // 2. Automatically trigger activation for pending initial enrollment upon approval
   useEffect(() => {
-    const token = serverStatus?.oneTimeToken;
+    const token = availableToken;
     const isApprovedAndReady =
-      (serverStatus?.status === "approved" || serverStatus?.canSaveReplacement === true) &&
-      Boolean(token) &&
-      (!isEnrolled || nativeStatus?.hasPendingEnrollment);
+      !isEnrolled &&
+      isApproved &&
+      Boolean(token && token.startsWith("ftok_")) &&
+      !isReplacementMode;
 
     if (
       isApprovedAndReady &&
@@ -1339,12 +1358,11 @@ function StaffFaceEnrollmentPage() {
       !isActivating &&
       !activationInProgressRef.current &&
       hasActivatedTokenRef.current !== token &&
-      !isReplacementMode &&
       !activationError
     ) {
       void handleActivateApprovedProfile(token);
     }
-  }, [serverStatus, isEnrolled, nativeStatus, isActivating, handleActivateApprovedProfile, isReplacementMode, activationError]);
+  }, [isApproved, isEnrolled, availableToken, isActivating, handleActivateApprovedProfile, isReplacementMode, activationError]);
 
   const validCount = samples.filter((s) => s.status === "valid").length;
   const hasRejected = samples.some((s) => s.status === "rejected");
@@ -1427,6 +1445,80 @@ function StaffFaceEnrollmentPage() {
             <Loader2 className="size-5 animate-spin text-primary" />
             <p className="text-sm text-muted-foreground">Inspecting device hardware keystore biometric status…</p>
           </div>
+        ) : justActivatedInitialEnrollment ? (
+          /* STATE: Face Enrollment Successful Confirmation */
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-6 sm:p-8 shadow-sm">
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-4">
+                  <span className="grid size-14 shrink-0 place-items-center rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                    <ShieldCheck className="size-8" />
+                  </span>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-lg font-bold text-foreground">Face Enrollment Successful</h3>
+                      <Badge variant="outline" className="border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-semibold">
+                        <Lock className="mr-1 size-3" /> Locked & Active
+                      </Badge>
+                      <Badge variant="outline" className="border-emerald-500/50 text-emerald-700 dark:text-emerald-300">
+                        Keystore AES-256-GCM
+                      </Badge>
+                      <Badge variant="outline" className="border-emerald-500/50 text-emerald-700 dark:text-emerald-300">
+                        Hardware Bound
+                      </Badge>
+                    </div>
+
+                    <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+                      Your facial biometric templates have been securely encrypted with Android Keystore hardware-backed keys and permanently locked to this physical device. You are now authorized to mark automated attendance using facial recognition.
+                    </p>
+
+                    <div className="mt-4 grid gap-2.5 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div className="rounded-lg bg-background/60 p-3 border border-border/50">
+                        <span className="font-semibold text-foreground">Staff Member:</span> {activeStaff.name} ({staffId})
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-3 border border-border/50">
+                        <span className="font-semibold text-foreground">Active Templates:</span>{" "}
+                        {nativeStatus?.count || serverStatus?.sampleCount || 5} reference sample(s) locked
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-3 border border-border/50">
+                        <span className="font-semibold text-foreground">Bound Device ID:</span>{" "}
+                        {nativeDeviceId || (isNative ? "Android Keystore Device" : "Active Device")}
+                      </div>
+                      <div className="rounded-lg bg-background/60 p-3 border border-border/50">
+                        <span className="font-semibold text-foreground">Biometric Storage:</span> App-Private Hardware Isolation (Zero Cloud Upload)
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2.5 shrink-0 self-start">
+                  <Button
+                    onClick={() => setJustActivatedInitialEnrollment(false)}
+                    variant="outline"
+                    className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10"
+                  >
+                    View Status
+                  </Button>
+                  <Button
+                    asChild
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+                  >
+                    <Link to="/mark-attendance">
+                      <ScanFace className="mr-2 size-4" />
+                      Mark Attendance
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4 text-xs text-muted-foreground flex items-center gap-3">
+              <ShieldCheck className="size-4 text-primary shrink-0" />
+              <span>
+                Biometric templates are stored exclusively in hardware Keystore memory on this device and are never transmitted over the network or uploaded to cloud storage.
+              </span>
+            </div>
+          </div>
         ) : isPendingApproval ? (
           /* STATE: Pending Administrator Approval */
           <div className="space-y-6">
@@ -1438,7 +1530,7 @@ function StaffFaceEnrollmentPage() {
                   </span>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base font-semibold text-foreground">Pending Administrator Approval</h3>
+                      <h3 className="text-base font-semibold text-foreground">Waiting for Administrator Approval</h3>
                       <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
                         Awaiting Review
                       </Badge>
@@ -1493,7 +1585,7 @@ function StaffFaceEnrollmentPage() {
               </span>
             </div>
           </div>
-        ) : isApproved && !isReplacementMode && (!isEnrolledOnDevice || nativeStatus?.hasPendingEnrollment) ? (
+        ) : !isEnrolled && isApproved && !isReplacementMode ? (
           /* STATE: Administrator Approval Detected — Automatic Activation Flow */
           <div className="space-y-6">
             {activationError ? (
@@ -1957,8 +2049,12 @@ function StaffFaceEnrollmentPage() {
               </div>
             )}
             <Section
-              title="Add Reference Face Photos"
-              description="Capture 1 to 5 clear, well-lit photos using your camera or upload image files."
+              title={isReplacementMode ? "Add Replacement Face Photos" : "Register Face"}
+              description={
+                isReplacementMode
+                  ? "Capture 1 to 5 clear, well-lit photos using your camera or upload image files."
+                  : "Capture or upload 1 to 5 clear face photos on your bound device to submit for administrator approval."
+              }
             >
               <div className="p-6 space-y-6">
                 {/* Model Loading Status Banner */}
@@ -2278,12 +2374,14 @@ function StaffFaceEnrollmentPage() {
                     {isSaving ? (
                       <>
                         <Loader2 className="mr-2 size-4 animate-spin" />
-                        {isReplacementMode ? "Replacing Face Registration…" : "Encrypting & Saving Face…"}
+                        {isReplacementMode ? "Replacing Face Registration…" : "Submitting Enrollment for Approval…"}
                       </>
                     ) : (
                       <>
                         <Lock className="mr-2 size-4" />
-                        Save Face Registration ({validCount} Photo{validCount === 1 ? "" : "s"})
+                        {isReplacementMode
+                          ? `Save Face Registration (${validCount} Photo${validCount === 1 ? "" : "s"})`
+                          : `Register and Save (${validCount} Photo${validCount === 1 ? "" : "s"})`}
                       </>
                     )}
                   </Button>

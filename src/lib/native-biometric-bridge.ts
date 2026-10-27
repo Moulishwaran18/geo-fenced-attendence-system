@@ -112,6 +112,10 @@ export async function getNativeEnrollmentStatus(staffId: string): Promise<Native
         const stagedRaw = window.sessionStorage?.getItem(stagedKey) || window.localStorage?.getItem(stagedKey);
         const enrolled = enrolledRaw ? JSON.parse(enrolledRaw) : null;
         const staged = stagedRaw ? JSON.parse(stagedRaw) : null;
+        const pendingKey = `pending_face_${cleanId}`;
+        const pendingRaw = window.sessionStorage?.getItem(pendingKey) || window.localStorage?.getItem(pendingKey);
+        const pending = pendingRaw ? JSON.parse(pendingRaw) : null;
+
         if (enrolled) {
           return {
             isAvailable: true,
@@ -127,6 +131,24 @@ export async function getNativeEnrollmentStatus(staffId: string): Promise<Native
             hasStagedReplacement: Boolean(staged && staged.count > 0),
             stagedCount: staged?.count || 0,
             stagedDigest: staged?.digest || undefined,
+            hasPendingEnrollment: false,
+            pendingCount: 0,
+          };
+        }
+
+        if (pending && pending.count > 0) {
+          return {
+            isAvailable: true,
+            isEnrolled: false,
+            count: 0,
+            staffId: cleanId,
+            deviceId: "web-simulation",
+            isDeviceBound: true,
+            hardwareKeystore: false,
+            hasPendingEnrollment: true,
+            pendingCount: Number(pending.count || 0),
+            hasStagedReplacement: false,
+            stagedCount: 0,
           };
         }
       } catch {}
@@ -136,6 +158,8 @@ export async function getNativeEnrollmentStatus(staffId: string): Promise<Native
       isAvailable: false,
       isEnrolled: false,
       count: 0,
+      hasPendingEnrollment: false,
+      pendingCount: 0,
     };
   }
 
@@ -217,16 +241,16 @@ export async function stageNativePendingEnrollment(
 
   // Web fallback simulation ONLY when running in desktop/standard browser without native hardware bridge
   try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      window.sessionStorage.setItem(
-        `pending_face_${staffId.trim().toUpperCase()}`,
-        JSON.stringify({
-          staffId: staffId.trim().toUpperCase(),
-          deviceId,
-          count: embeddings.length,
-          stagedAt: Date.now(),
-        })
-      );
+    if (typeof window !== "undefined") {
+      const cleanId = staffId.trim().toUpperCase();
+      const payload = JSON.stringify({
+        staffId: cleanId,
+        deviceId,
+        count: embeddings.length,
+        stagedAt: Date.now(),
+      });
+      try { window.sessionStorage?.setItem(`pending_face_${cleanId}`, payload); } catch {}
+      try { window.localStorage?.setItem(`pending_face_${cleanId}`, payload); } catch {}
     }
     return {
       success: true,
@@ -333,14 +357,44 @@ export async function activateNativePendingEnrollment(
   }
 
   // Web fallback simulation ONLY when bridge is null
-  if (typeof window !== "undefined" && window.sessionStorage) {
-    window.sessionStorage.removeItem(`pending_face_${staffId.trim().toUpperCase()}`);
+  let activatedCount = 5;
+  let stagedAt: number | undefined;
+  let activeDigest: string | undefined;
+
+  if (typeof window !== "undefined") {
+    const cleanId = staffId.trim().toUpperCase();
+    const pendingKey = `pending_face_${cleanId}`;
+    try {
+      const rawPending = window.sessionStorage?.getItem(pendingKey) || window.localStorage?.getItem(pendingKey);
+      if (rawPending) {
+        const parsed = JSON.parse(rawPending);
+        if (parsed.count) activatedCount = Number(parsed.count);
+        if (parsed.stagedAt) stagedAt = Number(parsed.stagedAt);
+        if (parsed.digest) activeDigest = parsed.digest;
+      }
+      window.sessionStorage?.removeItem(pendingKey);
+      window.localStorage?.removeItem(pendingKey);
+    } catch {}
+
+    const enrolledPayload = JSON.stringify({
+      enrolled: true,
+      count: activatedCount,
+      activeDigest: activeDigest || undefined,
+      templateVersion: 1,
+      enrolledAt: stagedAt || Date.now(),
+    });
+
+    try {
+      window.sessionStorage?.setItem(`enrolled_face_${cleanId}`, enrolledPayload);
+      window.localStorage?.setItem(`enrolled_face_${cleanId}`, enrolledPayload);
+    } catch {}
   }
+
   return {
     success: true,
     staffId: staffId.trim().toUpperCase(),
     deviceId,
-    count: 1,
+    count: activatedCount,
     message: "Pending enrollment activated.",
   };
 }
@@ -363,8 +417,10 @@ export async function clearNativePendingEnrollment(staffId: string): Promise<boo
     return true;
   }
 
-  if (typeof window !== "undefined" && window.sessionStorage) {
-    window.sessionStorage.removeItem(`pending_face_${staffId.trim().toUpperCase()}`);
+  if (typeof window !== "undefined") {
+    const cleanId = staffId.trim().toUpperCase();
+    try { window.sessionStorage?.removeItem(`pending_face_${cleanId}`); } catch {}
+    try { window.localStorage?.removeItem(`pending_face_${cleanId}`); } catch {}
   }
   return true;
 }

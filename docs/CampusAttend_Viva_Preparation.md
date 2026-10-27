@@ -170,7 +170,7 @@ CampusAttend implements an **Administrator-Supervised Face Re-Enrollment Lifecyc
 
 ### Q14: How does CampusAttend verify that a user is physically inside the campus?
 **Answer:**  
-The campus geofence is defined by an authoritative **19-vertex polygon** covering the physical boundaries of Sona College of Technology (`AUTHORIZED_GEOFENCE_POLYGON` in `geofence-service.ts`).  
+The campus geofence is defined by an authoritative **13-vertex polygon** covering the physical boundaries of Sona College of Technology (`AUTHORIZED_GEOFENCE_POLYGON` in `geofence-service.ts`).  
 The system evaluates coordinates using the **Ray-Casting Algorithm** (Jordan Curve Theorem):
 - An imaginary horizontal ray is cast eastward from the user's location to infinity.
 - The algorithm counts how many polygon edges intersect this ray.

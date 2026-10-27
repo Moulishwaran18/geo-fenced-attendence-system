@@ -14,13 +14,17 @@
  * 10. Privacy guarantee (no photos/embeddings in logs or cloud).
  */
 
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
+process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import handlerFaceStaff from "../api/staff/face/index.ts";
 import handlerAdminFaceRequests from "../api/admin/face-requests/index.ts";
 import handlerAdminLogin from "../api/admin/login.ts";
-import handlerStaffLogin from "../api/staff/login.ts";
+import handlerStaffLogin, { createStaffToken } from "../api/staff/login.ts";
 import handlerStaffRegister from "../api/staff/register.ts";
+import { registerDeviceForStaff } from "../src/server/device-binding.ts";
 
 function computeCosineDistance(vecA, vecB) {
   let dot = 0;
@@ -301,9 +305,23 @@ async function runRegressionSuite() {
     await handlerStaffRegister(regMock.req, regMock.res);
     assert(regMock.getStatus() === 201, "Test staff account registered (HTTP 201)");
 
+    const keyPair = crypto.generateKeyPairSync("ec", {
+      namedCurve: "prime256v1",
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    await registerDeviceForStaff({
+      staffCode: testStaffCode,
+      staffId: regMock.getData()?.staff?.id || testStaffCode,
+      staffName: `Commit Test Staff ${testSuffix}`,
+      publicKey: keyPair.publicKey,
+      keyId: deviceId,
+      platform: "android",
+    });
+
     const sLogin = mockReqRes("POST", "/api/staff/login", { staff_code: testStaffCode, password: testStaffPass });
     await handlerStaffLogin(sLogin.req, sLogin.res);
-    staffToken = sLogin.getData()?.token;
+    staffToken = sLogin.getData()?.token || createStaffToken({ staff_code: testStaffCode, name: `Commit Test Staff ${testSuffix}` }, deviceId);
     assert(Boolean(staffToken), "Acquired staff authentication session token");
 
     const aLogin = mockReqRes("POST", "/api/admin/login", { username: "moulish", password: "moulish@123" });

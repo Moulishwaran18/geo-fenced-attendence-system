@@ -47,6 +47,7 @@ export interface AttendanceDeviceSignatureResult {
   deviceTimestamp: number;
   attemptNonce: string;
   devicePayloadToSign?: string;
+  publicKey?: string;
 }
 
 const LOCAL_KEY_STORAGE_PREFIX = "campusattend_device_key_";
@@ -91,14 +92,18 @@ export function detectPlatform(): "android" | "ios" | "web" {
 /**
  * Queries whether the authenticated faculty member has an active registered device.
  */
-export async function fetchDeviceRegistrationStatus(token?: string): Promise<DeviceStatusResponse> {
+export async function fetchDeviceRegistrationStatus(token?: string, staffCode?: string): Promise<DeviceStatusResponse> {
   const headers: Record<string, string> = {};
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
     headers["x-staff-token"] = token;
   }
 
-  const res = await fetch("/api/device/status", {
+  const url = staffCode
+    ? `/api/device/status?staff_code=${encodeURIComponent(staffCode)}`
+    : "/api/device/status";
+
+  const res = await fetch(url, {
     method: "GET",
     headers,
     credentials: "include",
@@ -325,9 +330,38 @@ export async function signAttendanceRequest(
   staffId: string,
   nonce: string,
   timestamp: number = Date.now(),
+  options?: {
+    deviceId?: string;
+    latitude?: number;
+    longitude?: number;
+  },
 ): Promise<AttendanceDeviceSignatureResult | null> {
   const cleanStaffId = staffId.trim().toUpperCase();
-  const canonicalPayload = `${cleanStaffId}:${nonce}:${timestamp}`;
+  let resolvedDeviceId = options?.deviceId;
+  if (!resolvedDeviceId && typeof sessionStorage !== "undefined") {
+    resolvedDeviceId = sessionStorage.getItem(`${LOCAL_KEY_STORAGE_PREFIX}${cleanStaffId}`) || undefined;
+  }
+  if (!resolvedDeviceId && isAndroidKeystoreAvailable()) {
+    const bridge = getAndroidBridge();
+    if (typeof bridge.getDeviceKeyInfo === "function") {
+      try {
+        const info = bridge.getDeviceKeyInfo(cleanStaffId);
+        const parsed = typeof info === "string" ? JSON.parse(info) : info;
+        if (parsed?.keyId) resolvedDeviceId = parsed.keyId;
+      } catch {}
+    }
+    if (!resolvedDeviceId && typeof bridge.getDeviceId === "function") {
+      const rawId = bridge.getDeviceId();
+      if (rawId) {
+        resolvedDeviceId = `DEV_ANDROID_${rawId.slice(0, 12)}_${cleanStaffId}`;
+      }
+    }
+  }
+  const effectiveDeviceId = resolvedDeviceId || "";
+  const canonicalPayload =
+    typeof options?.latitude === "number" && typeof options?.longitude === "number"
+      ? `v2:${cleanStaffId}:${effectiveDeviceId}:${nonce}:${options.latitude.toFixed(6)}:${options.longitude.toFixed(6)}:${timestamp}`
+      : `${cleanStaffId}:${nonce}:${timestamp}`;
 
   // 1. If Android native bridge available, sign via Android Keystore
   if (isAndroidKeystoreAvailable()) {
@@ -335,19 +369,22 @@ export async function signAttendanceRequest(
     const rawRes = bridge.signAttendancePayload(cleanStaffId, canonicalPayload);
     const parsed = typeof rawRes === "string" ? JSON.parse(rawRes) : rawRes;
     if (parsed && parsed.success && parsed.signature) {
+      const deviceId = typeof bridge.getDeviceId === "function" ? bridge.getDeviceId() : "native";
+      const shortId = (deviceId || "native").slice(0, 12);
       return {
         deviceSignature: parsed.signature,
-        deviceKeyId: `DEV_ANDROID_${bridge.getDeviceId()?.take(12) || "native"}_${cleanStaffId}`,
+        deviceKeyId: parsed.keyId || `DEV_ANDROID_${shortId}_${cleanStaffId}`,
         deviceTimestamp: timestamp,
         attemptNonce: nonce,
         devicePayloadToSign: canonicalPayload,
+        publicKey: parsed.publicKey || parsed.publicKeyPem,
       };
     }
   }
 
   // 2. WebCrypto fallback
   try {
-    const { keyPair, keyId } = await getOrCreateWebCryptoKeyPair(cleanStaffId);
+    const { keyPair, keyId, publicKeyPem } = await getOrCreateWebCryptoKeyPair(cleanStaffId);
     const payloadBytes = new TextEncoder().encode(canonicalPayload);
     const sigDer = await window.crypto.subtle.sign(
       {
@@ -365,6 +402,7 @@ export async function signAttendanceRequest(
       deviceTimestamp: timestamp,
       attemptNonce: nonce,
       devicePayloadToSign: canonicalPayload,
+      publicKey: publicKeyPem,
     };
   } catch (err) {
     console.warn("[device-registration-client] WebCrypto sign error:", err);
@@ -400,15 +438,24 @@ export async function getDeviceLoginPayload(staffId: string): Promise<{
       const rawRes = bridge.signAttendancePayload(cleanStaffId, canonicalPayload);
       const parsed = typeof rawRes === "string" ? JSON.parse(rawRes) : rawRes;
       if (parsed && parsed.success && parsed.signature) {
+        let keyInfo: any = null;
+        if (typeof bridge.getDeviceKeyInfo === "function") {
+          try {
+            const rawInfo = bridge.getDeviceKeyInfo(cleanStaffId);
+            keyInfo = typeof rawInfo === "string" ? JSON.parse(rawInfo) : rawInfo;
+          } catch {}
+        }
+        const deviceId = typeof bridge.getDeviceId === "function" ? bridge.getDeviceId() : "native";
+        const shortId = (deviceId || "native").slice(0, 12);
         return {
           deviceSignature: parsed.signature,
-          deviceKeyId: parsed.keyId || `DEV_ANDROID_${cleanStaffId}`,
+          deviceKeyId: keyInfo?.keyId || parsed.keyId || `DEV_ANDROID_${shortId}_${cleanStaffId}`,
           deviceTimestamp: timestamp,
           deviceNonce: nonce,
-          publicKey: parsed.publicKeyPem,
+          publicKey: keyInfo?.publicKeyPem || parsed.publicKeyPem,
           platform: "android",
-          model: parsed.model || "Android Keystore Device",
-          os: parsed.os || "Android",
+          model: keyInfo?.model || parsed.model || "Android Keystore Device",
+          os: keyInfo?.os || parsed.os || "Android",
         };
       }
     } catch {}
