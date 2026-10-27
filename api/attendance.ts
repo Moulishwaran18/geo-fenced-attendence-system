@@ -1868,18 +1868,6 @@ export default async function handler(req: any, res?: any) {
         message: "Existing attendance record integrity fault: tamper status is invalid.",
       });
     }
-    let existingHash = todayExisting.record_hash;
-    if (!existingHash && todayExisting.device_id) {
-      try {
-        existingHash = computeRecordHmac({
-          staff_code: canonicalStaffCode,
-          date: todayExisting.date,
-          time: todayExisting.time,
-          status: todayExisting.status || "Present",
-          device_id: todayExisting.device_id,
-        });
-      } catch {}
-    }
     return sendJsonResponse(res, 200, {
       success: true,
       alreadyMarked: true,
@@ -1891,7 +1879,8 @@ export default async function handler(req: any, res?: any) {
         staffCode: todayExisting.staff_code,
         staffName: todayExisting.staff_name,
         department: todayExisting.department,
-        recordHash: existingHash,
+        recordHash: todayExisting.record_hash || null,
+        tamperStatus: todayExisting.tamper_status || "VERIFIED",
       },
     });
   }
@@ -1952,11 +1941,11 @@ export default async function handler(req: any, res?: any) {
     try {
       const insRes = await pool.query(
         `INSERT INTO public.attendance_records 
-         (staff_code, staff_name, department, date, day, time, status, location, verification, latitude, longitude, device_id, record_hash, tamper_status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Present', 'Main Campus, Sona College', 'Verified', $7, $8, $9, $10, 'VERIFIED')
+         (staff_code, staff_name, department, date, day, time, status, location, verification, latitude, longitude, device_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Present', 'Main Campus, Sona College', 'Verified', $7, $8, $9)
          ON CONFLICT (staff_code, date) DO NOTHING
          RETURNING *`,
-        [canonicalStaffCode, staffName, department, istDateStr, dayStr, timeStr, latitude, longitude, activeDevice.id, recordHash]
+        [canonicalStaffCode, staffName, department, istDateStr, dayStr, timeStr, latitude, longitude, activeDevice.id]
       );
       if (insRes.rows.length > 0 && insRes.rows[0]?.id) {
         insertedRecord = insRes.rows[0];
@@ -1968,25 +1957,6 @@ export default async function handler(req: any, res?: any) {
         );
         if (existRes.rows.length > 0 && existRes.rows[0]?.id) {
           const r = existRes.rows[0];
-          if (r.tamper_status && r.tamper_status !== "VERIFIED") {
-            return sendJsonResponse(res, 500, {
-              success: false,
-              error: "EXISTING_RECORD_INTEGRITY_FAULT",
-              message: "Existing attendance record integrity fault: tamper status is invalid.",
-            });
-          }
-          let existingHash = r.record_hash;
-          if (!existingHash && r.device_id) {
-            try {
-              existingHash = computeRecordHmac({
-                staff_code: canonicalStaffCode,
-                date: r.date,
-                time: r.time,
-                status: r.status || "Present",
-                device_id: r.device_id,
-              });
-            } catch {}
-          }
           return sendJsonResponse(res, 200, {
             success: true,
             alreadyMarked: true,
@@ -1998,7 +1968,8 @@ export default async function handler(req: any, res?: any) {
               staffCode: r.staff_code,
               staffName: r.staff_name,
               department: r.department,
-              recordHash: existingHash,
+              recordHash: r.record_hash || null,
+              tamperStatus: r.tamper_status || "VERIFIED",
             },
           });
         }
@@ -2011,7 +1982,7 @@ export default async function handler(req: any, res?: any) {
   if (!insertedRecord) {
     const supabase = getSupabaseClient();
     if (supabase) {
-      let insertPayload: any = {
+      const insertPayload = {
         staff_code: canonicalStaffCode,
         staff_name: staffName,
         department,
@@ -2024,27 +1995,13 @@ export default async function handler(req: any, res?: any) {
         latitude,
         longitude,
         device_id: activeDevice.id,
-        record_hash: recordHash,
-        tamper_status: "VERIFIED",
       };
 
-      let { data: insData, error: insErr } = await supabase
+      const { data: insData, error: insErr } = await supabase
         .from("attendance_records")
         .insert(insertPayload)
         .select()
         .single();
-
-      if (insErr && (insErr.message?.includes("record_hash") || insErr.message?.includes("tamper_status") || insErr.code === "PGRST204")) {
-        delete insertPayload.record_hash;
-        delete insertPayload.tamper_status;
-        const retryResult = await supabase
-          .from("attendance_records")
-          .insert(insertPayload)
-          .select()
-          .single();
-        insData = retryResult.data;
-        insErr = retryResult.error;
-      }
 
       if (insErr) {
         if (insErr.code === "23505" || insErr.message?.includes("unique") || insErr.message?.includes("duplicate")) {
@@ -2078,7 +2035,8 @@ export default async function handler(req: any, res?: any) {
                 staffCode: existData.staff_code,
                 staffName: existData.staff_name,
                 department: existData.department,
-                recordHash: existData.record_hash || recordHash,
+                recordHash: existData.record_hash || null,
+                tamperStatus: existData.tamper_status || "VERIFIED",
               },
             });
           }
@@ -2103,47 +2061,102 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  // Strictly verify persisted integrity hash when supported by database row
-  if (insertedRecord.record_hash) {
-    if (insertedRecord.tamper_status && insertedRecord.tamper_status !== "VERIFIED") {
+  // Database read-back confirmation: ensure record can be queried
+  const supabaseClientForReadback = getSupabaseClient();
+  if (supabaseClientForReadback) {
+    try {
+      const { data: verifiedRow, error: readBackErr } = await supabaseClientForReadback
+        .from("attendance_records")
+        .select("id, staff_code, date, time")
+        .eq("id", insertedRecord.id)
+        .maybeSingle();
+
+      if (readBackErr || !verifiedRow?.id) {
+        console.error("[attendance] Database read-back verification failed:", readBackErr);
+        return sendJsonResponse(res, 500, {
+          success: false,
+          error: "DATABASE_READBACK_FAILED",
+          message: "Database insertion could not be confirmed via read-back. Attendance was not recorded.",
+          details: readBackErr?.message,
+        });
+      }
+    } catch (rbEx: any) {
+      console.error("[attendance] Database read-back verification exception:", rbEx);
       return sendJsonResponse(res, 500, {
         success: false,
-        error: "DATABASE_INTEGRITY_FAULT",
-        message: "Database record tamper status was not persisted as VERIFIED.",
+        error: "DATABASE_READBACK_FAILED",
+        message: "Database insertion could not be confirmed via read-back due to an exception. Attendance was not recorded.",
+        details: rbEx?.message || String(rbEx),
       });
     }
+  } else if (!pool) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_READBACK_FAILED",
+      message: "Database client unavailable for read-back verification. Attendance was not recorded.",
+    });
   }
-
-  const persistedRecordHash = insertedRecord.record_hash || recordHash;
 
   // 5. Append tamper-evident audit log to public.security_events
   const eventPayload = {
     attendanceId: insertedRecord.id,
-    recordHash: persistedRecordHash,
+    recordHash,
     deviceId: activeDevice.id,
     challenge,
   };
+
+  let auditPersisted = false;
+  let auditErrorDetail: string | undefined;
+
   if (pool) {
     try {
-      await pool.query(
+      const auditRes = await pool.query(
         `INSERT INTO public.security_events (time, staff, event, device, location, result, severity)
          VALUES ($1, $2, $3, $4, 'Main Campus Gate', 'Allowed', 'Low')`,
         [now.toISOString(), canonicalStaffCode, `ATTENDANCE_RECORDED|${insertedRecord.id}`, JSON.stringify(eventPayload)]
       );
-    } catch {}
-  } else {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      void supabase.from("security_events").insert({
-        time: now.toISOString(),
-        staff: canonicalStaffCode,
-        event: `ATTENDANCE_RECORDED|${insertedRecord.id}`,
-        device: JSON.stringify(eventPayload),
-        location: "Main Campus Gate",
-        result: "Allowed",
-        severity: "Low",
-      });
+      if (auditRes.rowCount && auditRes.rowCount > 0) {
+        auditPersisted = true;
+      }
+    } catch (auditErr: any) {
+      auditErrorDetail = auditErr?.message || String(auditErr);
+      console.error("[attendance] PG pool audit event insertion failed:", auditErr?.message || auditErr);
     }
+  }
+
+  if (!auditPersisted) {
+    const supabaseAuditClient = getSupabaseClient();
+    if (supabaseAuditClient) {
+      try {
+        const { error: secErr } = await supabaseAuditClient.from("security_events").insert({
+          time: now.toISOString(),
+          staff: canonicalStaffCode,
+          event: `ATTENDANCE_RECORDED|${insertedRecord.id}`,
+          device: JSON.stringify(eventPayload),
+          location: "Main Campus Gate",
+          result: "Allowed",
+          severity: "Low",
+        });
+        if (secErr) {
+          auditErrorDetail = secErr.message;
+          console.error("[attendance] Supabase security_events audit insertion error:", secErr);
+        } else {
+          auditPersisted = true;
+        }
+      } catch (secEx: any) {
+        auditErrorDetail = secEx?.message || String(secEx);
+        console.error("[attendance] Supabase security_events audit insertion exception:", secEx);
+      }
+    }
+  }
+
+  if (!auditPersisted) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "AUDIT_LOG_PERSISTENCE_FAILED",
+      message: "Attendance was recorded but mandatory audit log in security_events could not be persisted.",
+      details: auditErrorDetail,
+    });
   }
 
   // 6. Return verified attendance receipt
@@ -2156,7 +2169,7 @@ export default async function handler(req: any, res?: any) {
       staffCode: canonicalStaffCode,
       staffName,
       department,
-      recordHash: persistedRecordHash,
+      recordHash,
     },
     verifiedFactors: {
       wifi: true,

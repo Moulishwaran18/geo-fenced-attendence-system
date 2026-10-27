@@ -314,6 +314,21 @@ async function runIsolatedAttendanceSecuritySuite() {
           return {
             select() {
               return {
+                eq(col: string, val: any) {
+                  return {
+                    async maybeSingle() {
+                      return {
+                        data: {
+                          id: val,
+                          staff_code: testStaffCode,
+                          date: "2026-10-28",
+                          time: "10:00:00 AM",
+                        },
+                        error: null,
+                      };
+                    },
+                  };
+                },
                 ilike() {
                   return {
                     eq() {
