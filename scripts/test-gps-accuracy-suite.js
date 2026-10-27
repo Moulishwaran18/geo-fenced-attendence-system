@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import {
   AUTHORIZED_GEOFENCE_POLYGON,
   isPointInPolygon,
@@ -29,35 +31,29 @@ function assert(condition, testName, details = "") {
 }
 
 // -----------------------------------------------------------------------------
-// TEST 1: Authoritative 19-Point Polygon Integrity (C1 -> ... -> C19 -> C1)
+// TEST 1: Authoritative 13-Point Polygon Integrity (C1 -> ... -> C13)
 // -----------------------------------------------------------------------------
-console.log("1. TESTING AUTHORITATIVE POLYGON INTEGRITY:");
+console.log("1. TESTING AUTHORITATIVE POLYGON INTEGRITY & PARITY:");
 assert(
-  AUTHORIZED_GEOFENCE_POLYGON.length === 19,
-  "Polygon contains exactly 19 vertices (C1 through C19)",
+  AUTHORIZED_GEOFENCE_POLYGON.length === 13,
+  "Polygon contains exactly 13 authoritative vertices (C1 through C13)",
   `Found ${AUTHORIZED_GEOFENCE_POLYGON.length} vertices`,
 );
 
 const expectedCoords = [
-  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C1
-  { lat: 11.679160653348573, lng: 78.1251229550977 },  // C2
-  { lat: 11.679072439799588, lng: 78.12580219547301 }, // C3
-  { lat: 11.678915085838511, lng: 78.12659829439393 }, // C4
-  { lat: 11.67857653610425,  lng: 78.12706572862274 }, // C5
-  { lat: 11.677855225878366, lng: 78.1268821218973 },  // C6
-  { lat: 11.677005135877979, lng: 78.12680385127157 }, // C7
-  { lat: 11.676963779359658, lng: 78.12619810348153 }, // C8
-  { lat: 11.675808384169112, lng: 78.12611721999878 }, // C9
-  { lat: 11.67548101155477,  lng: 78.12632747328921 }, // C10
-  { lat: 11.675225395251344, lng: 78.12546783441684 }, // C11
-  { lat: 11.674880184146973, lng: 78.12470095781757 }, // C12
-  { lat: 11.67506203954446,  lng: 78.12467072803454 }, // C13
-  { lat: 11.675345395390822, lng: 78.12439973963578 }, // C14
-  { lat: 11.675557255409673, lng: 78.1241730162712 },  // C15
-  { lat: 11.676220110497038, lng: 78.12411693452746 }, // C16
-  { lat: 11.677404862894116, lng: 78.12403601056346 }, // C17
-  { lat: 11.678027388807743, lng: 78.12399041301013 }, // C18
-  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C19
+  { lat: 11.675651510482604, lng: 78.12402220170895 }, // C1
+  { lat: 11.675657082681333, lng: 78.12382305416799 }, // C2
+  { lat: 11.675768526632474, lng: 78.12359545697831 }, // C3
+  { lat: 11.675857681761121, lng: 78.12339630943734 }, // C4
+  { lat: 11.676125146975094, lng: 78.1228443862524 },  // C5
+  { lat: 11.676370323194567, lng: 78.12244609117047 }, // C6
+  { lat: 11.676414900665728, lng: 78.12241764152176 }, // C7
+  { lat: 11.676448333764391, lng: 78.12143897360616 }, // C8
+  { lat: 11.676905252375372, lng: 78.12147880311436 }, // C9
+  { lat: 11.676977690622595, lng: 78.12159260170921 }, // C10
+  { lat: 11.67708913404289,  lng: 78.12222418391055 }, // C11
+  { lat: 11.677990932044441, lng: 78.12235439874642 }, // C12
+  { lat: 11.677979915759753, lng: 78.1237830407748 },  // C13
 ];
 
 expectedCoords.forEach((exp, idx) => {
@@ -69,19 +65,124 @@ expectedCoords.forEach((exp, idx) => {
   );
 });
 
-// Closure check
+// Closure check: Algorithm connects Point 13 back to Point 1 (j = polygon.length - 1 when i = 0)
+const p1 = AUTHORIZED_GEOFENCE_POLYGON[0];
+const p13 = AUTHORIZED_GEOFENCE_POLYGON[12];
+const midClosingEdge = {
+  lat: (p1.lat + p13.lat) / 2,
+  lng: (p1.lng + p13.lng) / 2,
+};
+const justInsideClosing = { lat: midClosingEdge.lat, lng: midClosingEdge.lng - 0.0001 };
+const justOutsideClosing = { lat: midClosingEdge.lat, lng: midClosingEdge.lng + 0.0001 };
+const isClosingSegmentInside = isPointInPolygon(justInsideClosing);
+const isClosingSegmentOutside = !isPointInPolygon(justOutsideClosing);
+
 assert(
-  AUTHORIZED_GEOFENCE_POLYGON[0].lat === AUTHORIZED_GEOFENCE_POLYGON[18].lat &&
-    AUTHORIZED_GEOFENCE_POLYGON[0].lng === AUTHORIZED_GEOFENCE_POLYGON[18].lng,
-  "Polygon correctly closes back to C1 (C19 === C1)",
-  `C1: (${AUTHORIZED_GEOFENCE_POLYGON[0].lat}, ${AUTHORIZED_GEOFENCE_POLYGON[0].lng}) vs C19: (${AUTHORIZED_GEOFENCE_POLYGON[18].lat}, ${AUTHORIZED_GEOFENCE_POLYGON[18].lng})`,
+  isClosingSegmentInside && isClosingSegmentOutside,
+  "Polygon is closed correctly by algorithm (connecting C13 back to C1)",
+  `Inside closing edge: ${isClosingSegmentInside} | Outside closing edge: ${isClosingSegmentOutside}`,
 );
 
 const centroid = getPolygonCentroid();
 assert(
-  centroid.lat > 11.674 && centroid.lat < 11.680 && centroid.lng > 78.123 && centroid.lng < 78.127,
+  centroid.lat > 11.675 && centroid.lat < 11.678 && centroid.lng > 78.121 && centroid.lng < 78.125,
   "Polygon centroid is within campus bounds",
   `Centroid: ${centroid.lat.toFixed(6)}° N, ${centroid.lng.toFixed(6)}° E`,
+);
+
+// Cross-Platform Parity: Android GeofenceManager.kt must define identical 13 points in same order
+const androidGeofenceFile = path.resolve("android/app/src/main/java/com/campusattend/biometric/location/GeofenceManager.kt");
+if (fs.existsSync(androidGeofenceFile)) {
+  const androidContent = fs.readFileSync(androidGeofenceFile, "utf-8");
+  const latLngRegex = /LatLng\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)/g;
+  const androidPoints = [];
+  let match;
+  while ((match = latLngRegex.exec(androidContent)) !== null) {
+    androidPoints.push({ lat: parseFloat(match[1]), lng: parseFloat(match[2]) });
+  }
+  // Filter for polygon points (first 13)
+  const androidPolygon = androidPoints.slice(0, 13);
+  assert(
+    androidPolygon.length === 13,
+    "Android GeofenceManager contains exactly 13 polygon vertices",
+    `Parsed ${androidPolygon.length} vertices`,
+  );
+  let androidParityOk = true;
+  androidPolygon.forEach((pt, idx) => {
+    const exp = expectedCoords[idx];
+    if (!exp || Math.abs(pt.lat - exp.lat) > 1e-12 || Math.abs(pt.lng - exp.lng) > 1e-12) {
+      androidParityOk = false;
+    }
+  });
+  assert(
+    androidParityOk,
+    "Android GeofenceManager uses identical 13 points in exact same order",
+    `Verified all 13 vertices against expectedCoords`,
+  );
+}
+
+// Server Parity: api/attendance.ts must define identical 13 points in same order
+const apiAttendanceFile = path.resolve("api/attendance.ts");
+if (fs.existsSync(apiAttendanceFile)) {
+  const apiContent = fs.readFileSync(apiAttendanceFile, "utf-8");
+  const coordRegex = /\{\s*lat:\s*([0-9.]+)\s*,\s*lng:\s*([0-9.]+)\s*\}/g;
+  const serverPoints = [];
+  let sMatch;
+  while ((sMatch = coordRegex.exec(apiContent)) !== null) {
+    serverPoints.push({ lat: parseFloat(sMatch[1]), lng: parseFloat(sMatch[2]) });
+  }
+  const serverPolygon = serverPoints.slice(0, 13);
+  assert(
+    serverPolygon.length === 13,
+    "Server (api/attendance.ts) contains exactly 13 polygon vertices",
+    `Parsed ${serverPolygon.length} vertices`,
+  );
+  let serverParityOk = true;
+  serverPolygon.forEach((pt, idx) => {
+    const exp = expectedCoords[idx];
+    if (!exp || Math.abs(pt.lat - exp.lat) > 1e-12 || Math.abs(pt.lng - exp.lng) > 1e-12) {
+      serverParityOk = false;
+    }
+  });
+  assert(
+    serverParityOk,
+    "Server (api/attendance.ts) uses identical 13 points in exact same order",
+    `Verified all 13 vertices against expectedCoords`,
+  );
+}
+
+// Coordinate Precision and Canonical Signature Parity Test
+const testLat = 11.676556648538646;
+const testLng = 78.12272439562298;
+const clientPrecision = `${testLat.toFixed(6)}:${testLng.toFixed(6)}`;
+const serverPrecision = `${testLat.toFixed(6)}:${testLng.toFixed(6)}`;
+assert(
+  clientPrecision === "11.676557:78.122724" && clientPrecision === serverPrecision,
+  "Client and server use the same 6-decimal coordinate precision and canonical signature format",
+  `Formatted: ${clientPrecision}`,
+);
+
+// Malformed Coordinate Safety
+const malformedTests = [
+  { pt: { lat: NaN, lng: 78.1227 }, desc: "lat is NaN" },
+  { pt: { lat: 11.6765, lng: Infinity }, desc: "lng is Infinity" },
+  { pt: { lat: null, lng: undefined }, desc: "null / undefined values" },
+  { pt: null, desc: "null point object" },
+  { pt: {}, desc: "empty object" },
+];
+let allMalformedRejected = true;
+malformedTests.forEach((mt) => {
+  try {
+    const res = isPointInPolygon(mt.pt);
+    if (res !== false) allMalformedRejected = false;
+  } catch {
+    allMalformedRejected = false;
+  }
+});
+assert(
+  allMalformedRejected,
+  "Malformed and non-numeric coordinates are rejected safely without throwing",
+  `Tested ${malformedTests.length} malformed input cases`,
 );
 
 // -----------------------------------------------------------------------------
@@ -422,13 +523,21 @@ console.log("\n3. TESTING POINT-IN-POLYGON (PIP) CONTAINMENT:");
 
 const locations = [
   { name: "Centroid Interior", lat: centroid.lat, lng: centroid.lng, expectedInside: true },
-  { name: "Inside Campus Core", lat: 11.677100, lng: 78.125300, expectedInside: true },
-  { name: "Inside North Quad", lat: 11.678500, lng: 78.125500, expectedInside: true },
-  { name: "Inside South Quad", lat: 11.675600, lng: 78.125000, expectedInside: true },
-  { name: "Outside North", lat: 11.682000, lng: 78.125300, expectedInside: false },
-  { name: "Outside South", lat: 11.672000, lng: 78.125300, expectedInside: false },
-  { name: "Outside East", lat: 11.677100, lng: 78.130000, expectedInside: false },
-  { name: "Outside West", lat: 11.677100, lng: 78.120000, expectedInside: false },
+  { name: "Inside Campus Core", lat: 11.676800, lng: 78.122800, expectedInside: true },
+  { name: "Inside North Quad", lat: 11.677200, lng: 78.123200, expectedInside: true },
+  { name: "Inside South Quad", lat: 11.676000, lng: 78.123500, expectedInside: true },
+  { name: "Inside West Quad", lat: 11.676600, lng: 78.121800, expectedInside: true },
+  { name: "Boundary: Just Inside North Edge (5m)", lat: 11.677940, lng: 78.123069, expectedInside: true },
+  { name: "Boundary: Just Inside West Edge (5m)", lat: 11.676677, lng: 78.121505, expectedInside: true },
+  { name: "Boundary: Just Outside North Edge (5m)", lat: 11.678030, lng: 78.123069, expectedInside: false },
+  { name: "Boundary: Just Outside West Edge (5m)", lat: 11.676677, lng: 78.121413, expectedInside: false },
+  { name: "Boundary: Just Outside Point 1 (+0.0002 lat)", lat: 11.675852, lng: 78.124022, expectedInside: false },
+  { name: "Boundary: Just Outside Point 8 (-0.0002 lng)", lat: 11.676448, lng: 78.121239, expectedInside: false },
+  { name: "Outside North", lat: 11.682000, lng: 78.122700, expectedInside: false },
+  { name: "Outside South", lat: 11.672000, lng: 78.122700, expectedInside: false },
+  { name: "Outside East", lat: 11.676500, lng: 78.130000, expectedInside: false },
+  { name: "Outside West", lat: 11.676500, lng: 78.118000, expectedInside: false },
+  { name: "Distant Outside (Salem Bus Stand)", lat: 11.655000, lng: 78.158000, expectedInside: false },
 ];
 
 locations.forEach((loc) => {

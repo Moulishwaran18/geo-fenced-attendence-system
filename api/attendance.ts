@@ -18,7 +18,7 @@
  *    - Rejects unregistered, revoked, or mismatched devices.
  * 4. INDEPENDENT FACTOR VALIDATION:
  *    - Factor 1: Campus Wi-Fi egress IP or unexpired server-minted network auth token.
- *    - Factor 2: GPS coordinates inside 19-point campus polygon with accuracy <= 20m.
+ *    - Factor 2: GPS coordinates inside 13-point campus polygon with accuracy <= 20m.
  *    - Factor 3: Biometric face recognition & anti-spoof liveness evidence.
  * 5. IMMUTABLE & TRANSACTION-SAFE PERSISTENCE:
  *    - Computes cryptographic SHA-256 record hash for tamper-evident audit logging.
@@ -185,15 +185,30 @@ export function getAllHmacSecrets(): string[] {
  * Deterministic canonical record serialization for HMAC-SHA256 integrity verification.
  * Strictly binds immutable record attributes: version, staffCode, date, time, status, deviceId.
  */
+export function normalizeDateString(d: any): string {
+  if (!d) return "";
+  if (d instanceof Date) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  const s = String(d).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    return s.slice(0, 10);
+  }
+  return s;
+}
+
 export function buildCanonicalRecordString(record: {
   staff_code: string;
-  date: string;
+  date: string | any;
   time: string;
   status: string;
   device_id: string;
 }): string {
   const staff = String(record.staff_code || "").trim().toUpperCase();
-  const date = String(record.date || "").trim();
+  const date = normalizeDateString(record.date);
   const time = String(record.time || "").trim();
   const status = String(record.status || "Present").trim();
   const device = String(record.device_id || "").trim();
@@ -488,27 +503,21 @@ function verifyNetworkAuthToken(token?: string | null): { valid: boolean; payloa
   }
 }
 
-// Authoritative 19-point Campus Polygon Coordinates (C1 -> ... -> C18 -> C19)
+// Authoritative 13-point Campus Polygon Coordinates (Strict Order C1 -> ... -> C13)
 const AUTHORIZED_GEOFENCE_POLYGON = [
-  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C1
-  { lat: 11.679160653348573, lng: 78.1251229550977 },  // C2
-  { lat: 11.679072439799588, lng: 78.12580219547301 }, // C3
-  { lat: 11.678915085838511, lng: 78.12659829439393 }, // C4
-  { lat: 11.67857653610425,  lng: 78.12706572862274 }, // C5
-  { lat: 11.677855225878366, lng: 78.1268821218973 },  // C6
-  { lat: 11.677005135877979, lng: 78.12680385127157 }, // C7
-  { lat: 11.676963779359658, lng: 78.12619810348153 }, // C8
-  { lat: 11.675808384169112, lng: 78.12611721999878 }, // C9
-  { lat: 11.67548101155477,  lng: 78.12632747328921 }, // C10
-  { lat: 11.675225395251344, lng: 78.12546783441684 }, // C11
-  { lat: 11.674880184146973, lng: 78.12470095781757 }, // C12
-  { lat: 11.67506203954446,  lng: 78.12467072803454 }, // C13
-  { lat: 11.675345395390822, lng: 78.12439973963578 }, // C14
-  { lat: 11.675557255409673, lng: 78.1241730162712 },  // C15
-  { lat: 11.676220110497038, lng: 78.12411693452746 }, // C16
-  { lat: 11.677404862894116, lng: 78.12403601056346 }, // C17
-  { lat: 11.678027388807743, lng: 78.12399041301013 }, // C18
-  { lat: 11.679113056127784, lng: 78.12389462165308 }, // C19
+  { lat: 11.675651510482604, lng: 78.12402220170895 }, // C1
+  { lat: 11.675657082681333, lng: 78.12382305416799 }, // C2
+  { lat: 11.675768526632474, lng: 78.12359545697831 }, // C3
+  { lat: 11.675857681761121, lng: 78.12339630943734 }, // C4
+  { lat: 11.676125146975094, lng: 78.1228443862524 },  // C5
+  { lat: 11.676370323194567, lng: 78.12244609117047 }, // C6
+  { lat: 11.676414900665728, lng: 78.12241764152176 }, // C7
+  { lat: 11.676448333764391, lng: 78.12143897360616 }, // C8
+  { lat: 11.676905252375372, lng: 78.12147880311436 }, // C9
+  { lat: 11.676977690622595, lng: 78.12159260170921 }, // C10
+  { lat: 11.67708913404289,  lng: 78.12222418391055 }, // C11
+  { lat: 11.677990932044441, lng: 78.12235439874642 }, // C12
+  { lat: 11.677979915759753, lng: 78.1237830407748 },  // C13
 ];
 
 function isPointInPolygon(point: { lat: number; lng: number }): boolean {
@@ -705,19 +714,41 @@ async function getActiveDeviceForStaff(cleanCode: string) {
   if (pool) {
     try {
       const res = await pool.query(
-        "SELECT * FROM public.devices WHERE UPPER(staff_code) = $1 ORDER BY registered_at DESC LIMIT 1",
+        "SELECT * FROM public.devices WHERE UPPER(staff_code) = $1 ORDER BY CASE WHEN status = 'Active' THEN 1 ELSE 2 END, registered_at DESC LIMIT 1",
         [code]
       );
       if (res.rows.length > 0) {
         const d = res.rows[0];
+        let pubKey = d.public_key;
+        let keyAlgo = d.key_algorithm || "ECDSA_P256";
+        let keyId = d.key_id || d.id;
+
+        if (!pubKey) {
+          try {
+            const evRes = await pool.query(
+              "SELECT device FROM public.security_events WHERE UPPER(staff) = $1 AND event LIKE 'DEVICE_REGISTERED|%' ORDER BY time DESC LIMIT 1",
+              [code]
+            );
+            if (evRes.rows.length > 0 && evRes.rows[0].device) {
+              const devMeta = typeof evRes.rows[0].device === "string" ? JSON.parse(evRes.rows[0].device) : evRes.rows[0].device;
+              const foundKey = devMeta?.pub || devMeta?.publicKey;
+              if (foundKey) {
+                pubKey = normalizePublicKeyToPem(foundKey);
+                if (devMeta.algo || devMeta.keyAlgorithm) keyAlgo = devMeta.algo || devMeta.keyAlgorithm;
+                if (devMeta.id || devMeta.keyId) keyId = devMeta.id || devMeta.keyId;
+              }
+            }
+          } catch {}
+        }
+
         return {
           id: d.id,
           staff_id: d.staff_id,
           staff_code: d.staff_code,
           staff_name: d.staff_name,
-          public_key: d.public_key,
-          key_id: d.key_id || d.id,
-          key_algorithm: d.key_algorithm || "ECDSA_P256",
+          public_key: pubKey,
+          key_id: keyId,
+          key_algorithm: keyAlgo,
           platform: d.platform || "android",
           model: d.model || "Mobile Device",
           os: d.os || "Android",
@@ -743,14 +774,48 @@ async function getActiveDeviceForStaff(cleanCode: string) {
         .maybeSingle();
 
       if (!error && data) {
+        let pubKey = data.public_key;
+        let keyAlgo = data.key_algorithm || "ECDSA_P256";
+        let keyId = data.key_id || data.id;
+
+        if (!pubKey) {
+          try {
+            const { data: eventRow } = await supabase
+              .from("security_events")
+              .select("device")
+              .ilike("staff", code)
+              .like("event", "DEVICE_REGISTERED|%")
+              .order("time", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (eventRow?.device) {
+              const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
+              const foundKey = devMeta?.pub || devMeta?.publicKey;
+              if (foundKey) {
+                pubKey = normalizePublicKeyToPem(foundKey);
+                if (devMeta.algo || devMeta.keyAlgorithm) keyAlgo = devMeta.algo || devMeta.keyAlgorithm;
+                if (devMeta.id || devMeta.keyId) keyId = devMeta.id || devMeta.keyId;
+
+                // Self-heal
+                try {
+                  await supabase
+                    .from("devices")
+                    .update({ public_key: pubKey, key_id: keyId, key_algorithm: keyAlgo })
+                    .eq("id", data.id);
+                } catch {}
+              }
+            }
+          } catch {}
+        }
+
         return {
           id: data.id,
           staff_id: data.staff_id,
           staff_code: data.staff_code,
           staff_name: data.staff_name,
-          public_key: data.public_key,
-          key_id: data.key_id || data.id,
-          key_algorithm: data.key_algorithm || "ECDSA_P256",
+          public_key: pubKey,
+          key_id: keyId,
+          key_algorithm: keyAlgo,
           platform: data.platform || "android",
           model: data.model || "Mobile Device",
           os: data.os || "Android",
@@ -763,6 +828,32 @@ async function getActiveDeviceForStaff(cleanCode: string) {
       }
     } catch {}
   }
+
+  // Fallback to local store file if available
+  try {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const localStorePath = path.resolve(process.cwd(), ".gemini", "device-store.json");
+    if (fs.existsSync(localStorePath)) {
+      const store = JSON.parse(fs.readFileSync(localStorePath, "utf-8"));
+      if (Array.isArray(store.devices)) {
+        const found = store.devices.find(
+          (d: any) => d.staff_code?.toUpperCase() === code && d.status === "Active"
+        );
+        if (found) return found;
+      }
+    }
+    const staffDbPath = path.resolve(process.cwd(), "data", "staff-db.json");
+    if (fs.existsSync(staffDbPath)) {
+      const dbContent = JSON.parse(fs.readFileSync(staffDbPath, "utf-8"));
+      if (Array.isArray(dbContent.devices)) {
+        const found = dbContent.devices.find(
+          (d: any) => d.staff_code?.toUpperCase() === code && d.status === "Active"
+        );
+        if (found) return found;
+      }
+    }
+  } catch {}
 
   return null;
 }
@@ -1367,15 +1458,10 @@ export default async function handler(req: any, res?: any) {
   }
 
   // 3. Server-Constructed Canonical Payload (Never accept client-supplied payload)
-  // v2 canonical format binds: version, staffCode, deviceId, challenge, latitude, longitude, deviceTimestamp
+  // v2 canonical format strictly binds: version, staffCode, deviceId, challenge, latitude, longitude, deviceTimestamp
   const canonicalPayloadV2 = `v2:${canonicalStaffCode}:${activeDevice.id}:${challenge}:${latitude.toFixed(6)}:${longitude.toFixed(6)}:${deviceTimestamp}`;
-  const canonicalPayloadV1 = `${canonicalStaffCode}:${challenge}:${deviceTimestamp}`;
 
-  let isSigValid = verifyDeviceSignature(activeDevice.public_key, canonicalPayloadV2, deviceSignature, activeDevice.key_algorithm);
-  if (!isSigValid) {
-    // Check v1 transition fallback
-    isSigValid = verifyDeviceSignature(activeDevice.public_key, canonicalPayloadV1, deviceSignature, activeDevice.key_algorithm);
-  }
+  const isSigValid = verifyDeviceSignature(activeDevice.public_key, canonicalPayloadV2, deviceSignature, activeDevice.key_algorithm);
 
   if (!isSigValid) {
     return sendJsonResponse(res, 403, {

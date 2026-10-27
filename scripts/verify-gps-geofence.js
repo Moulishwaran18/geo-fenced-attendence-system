@@ -10,20 +10,22 @@ console.log("       CAMPUSATTEND AUTHORITATIVE GPS GEOFENCE AUDIT & TEST REPORT 
 console.log("===============================================================================\n");
 
 // 1. Polygon Coordinates Verification
-console.log("1. AUTHORITATIVE GEOFENCE POLYGON VERTICES (C1 → C2 → ... → C19 → C1):");
+console.log("1. AUTHORITATIVE GEOFENCE POLYGON VERTICES (C1 → C2 → ... → C13):");
 AUTHORIZED_GEOFENCE_POLYGON.forEach((pt, idx) => {
   console.log(`   C${idx + 1}: Lat: ${pt.lat.toFixed(6)}, Lng: ${pt.lng.toFixed(6)}`);
 });
 
-// Check if polygon has 19 vertices
-const hasExpectedVertices = AUTHORIZED_GEOFENCE_POLYGON.length === 19;
-console.log(`\n   • Total Vertices: ${AUTHORIZED_GEOFENCE_POLYGON.length} (${hasExpectedVertices ? "✓ 19 Vertices Present" : "✗ MISMATCH"})`);
+// Check if polygon has 13 vertices
+const hasExpectedVertices = AUTHORIZED_GEOFENCE_POLYGON.length === 13;
+console.log(`\n   • Total Vertices: ${AUTHORIZED_GEOFENCE_POLYGON.length} (${hasExpectedVertices ? "✓ 13 Vertices Present" : "✗ MISMATCH"})`);
 
-// Closure check: C19 connects back to C1
-const c1 = AUTHORIZED_GEOFENCE_POLYGON[0];
-const c19 = AUTHORIZED_GEOFENCE_POLYGON[AUTHORIZED_GEOFENCE_POLYGON.length - 1];
-const isClosed = c1.lat === c19.lat && c1.lng === c19.lng;
-console.log(`   • Polygon Closure: C1 (${c1.lat}, ${c1.lng}) ← C19 (${c19.lat}, ${c19.lng}) [${isClosed ? "✓ Exact Loop Closed" : "✗ Not Closed"}]`);
+// Closure check: Algorithm connects C13 back to C1
+const p1 = AUTHORIZED_GEOFENCE_POLYGON[0];
+const p13 = AUTHORIZED_GEOFENCE_POLYGON[AUTHORIZED_GEOFENCE_POLYGON.length - 1];
+const midClosingEdge = { lat: (p1.lat + p13.lat) / 2, lng: (p1.lng + p13.lng) / 2 };
+const isClosed = isPointInPolygon({ lat: midClosingEdge.lat, lng: midClosingEdge.lng - 0.0001 }) &&
+                 !isPointInPolygon({ lat: midClosingEdge.lat, lng: midClosingEdge.lng + 0.0001 });
+console.log(`   • Polygon Closure: C13 (${p13.lat.toFixed(6)}, ${p13.lng.toFixed(6)}) → C1 (${p1.lat.toFixed(6)}, ${p1.lng.toFixed(6)}) [${isClosed ? "✓ Exact Loop Closed by Algorithm" : "✗ Not Closed"}]`);
 
 const centroid = getPolygonCentroid();
 console.log(`   • Computed Polygon Centroid: Lat ${centroid.lat.toFixed(8)}° N, Lng ${centroid.lng.toFixed(8)}° E`);
@@ -40,44 +42,74 @@ const testPoints = [
   },
   {
     name: "Inside Point A (Campus Core)",
-    lat: 11.677100,
-    lng: 78.125300,
+    lat: 11.676800,
+    lng: 78.122800,
     expectedInside: true,
   },
   {
     name: "Inside Point B (North Quad)",
-    lat: 11.678500,
-    lng: 78.125500,
+    lat: 11.677200,
+    lng: 78.123200,
     expectedInside: true,
   },
   {
-    name: "Inside Point C (South Quad)",
-    lat: 11.675600,
-    lng: 78.125000,
+    name: "Inside Point C (West Quad)",
+    lat: 11.676600,
+    lng: 78.121800,
     expectedInside: true,
+  },
+  {
+    name: "Inside Point D (South Quad)",
+    lat: 11.676000,
+    lng: 78.123500,
+    expectedInside: true,
+  },
+  {
+    name: "Boundary: Just Inside North Edge (5m)",
+    lat: 11.677940,
+    lng: 78.123069,
+    expectedInside: true,
+  },
+  {
+    name: "Boundary: Just Inside West Edge (5m)",
+    lat: 11.676677,
+    lng: 78.121505,
+    expectedInside: true,
+  },
+  {
+    name: "Boundary: Just Outside North Edge (5m)",
+    lat: 11.678030,
+    lng: 78.123069,
+    expectedInside: false,
+  },
+  {
+    name: "Boundary: Just Outside West Edge (5m)",
+    lat: 11.676677,
+    lng: 78.121413,
+    expectedInside: false,
   },
   {
     name: "Outside North",
     lat: 11.682000,
-    lng: 78.125300,
+    lng: 78.122700,
     expectedInside: false,
   },
   {
     name: "Outside South",
     lat: 11.672000,
-    lng: 78.125300,
+    lng: 78.122700,
     expectedInside: false,
   },
   {
     name: "Outside East",
-    lat: 11.677100,
+    lat: 11.676500,
     lng: 78.130000,
     expectedInside: false,
   },
   {
     name: "Outside West",
-    lat: 11.677100,
-    lng: 78.120000,
+    lat: 11.676500,
+    lng: 78.118000,
     expectedInside: false,
   },
   {

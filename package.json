@@ -42,7 +42,9 @@
     "verify:reenroll-deployment": "node scripts/verify-live-deployment-reenroll.js",
     "verify:admin-deployment": "node scripts/verify-live-deployment-session.js",
     "verify:attendance-deployment": "node scripts/verify-live-deployment-attendance.js",
-    "test:security-hardening": "npx tsx scripts/test-critical-security-hardening.ts"
+    "verify:geofence-deployment": "node scripts/verify-live-deployment-geofence.js",
+    "test:security-hardening": "npx tsx scripts/test-critical-security-hardening.ts",
+    "test:tampering": "npx tsx scripts/test-local-security-tampering-suite.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
