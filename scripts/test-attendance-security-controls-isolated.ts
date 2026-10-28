@@ -1,3 +1,4 @@
+process.env["SUPABASE_URL"] = process.env["SUPABASE_URL"] || "https://gcpuuvhydtgmcpiumpfa.supabase.co";
 /**
  * CampusAttend — Isolated Local Attendance Security Controls Test Suite
  *
@@ -18,6 +19,9 @@
 
 import assert from "node:assert";
 import crypto from "node:crypto";
+import deviceApiHandler, {
+  setCustomSupabaseClient as setDeviceCustomSupabaseClient,
+} from "../api/device/index.ts";
 import attendanceHandler, {
   getSupabaseClient,
   getRecordHmacSecret,
@@ -699,8 +703,645 @@ async function runIsolatedAttendanceSecuritySuite() {
     assert.strictEqual(inaccurateReq.getData()?.error, "GPS_ACCURACY_INSUFFICIENT");
     console.log("  ✓ PASS: GPS accuracy exceeding 20m strictly rejected with 403 GPS_ACCURACY_INSUFFICIENT");
 
+    // -------------------------------------------------------------------------
+    // TEST 11: Successful device registration
+    // -------------------------------------------------------------------------
+    console.log("\n--- TEST 11: Successful Device Registration Flow ---");
+    process.env["NODE_ENV"] = "test";
+    process.env["TEST_MODE"] = "1";
+
+    const regStaff = "SCT-REG-001";
+    const regStaffToken = mintTestStaffToken(regStaff);
+    const regKeyPair = createTestDeviceKeyPair();
+    const storedDevices: any[] = [];
+    const storedSecurityEvents: any[] = [];
+    const storedChallenges: any[] = [];
+
+    const mockDeviceDb = {
+      from(table: string) {
+        if (table === "staff") {
+          return {
+            select() {
+              return {
+                ilike(col: string, val: string) {
+                  return {
+                    async maybeSingle() {
+                      return {
+                        data: {
+                          id: `uuid-staff-${val.toLowerCase()}`,
+                          staff_code: val.toUpperCase(),
+                          name: "Registered Faculty",
+                          email: `${val.toLowerCase()}@sonatech.ac.in`,
+                          active: true,
+                        },
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === "devices") {
+          return {
+            select() {
+              return {
+                ilike(col: string, val: string) {
+                  return {
+                    eq(col2: string, val2: string) {
+                      return {
+                        order() {
+                          return {
+                            limit() {
+                              return {
+                                async maybeSingle() {
+                                  const found = storedDevices.find(
+                                    (d) => d.staff_code?.toUpperCase() === val.toUpperCase() && d.status === val2
+                                  );
+                                  return { data: found || null, error: null };
+                                },
+                              };
+                            },
+                          };
+                        },
+                      };
+                    },
+                    order() {
+                      return {
+                        async limit() {
+                          const found = storedDevices.filter(
+                            (d) => d.staff_code?.toUpperCase() === val.toUpperCase()
+                          );
+                          return { data: found, error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+                eq(col: string, val: string) {
+                  return {
+                    or(cond: string) {
+                      return {
+                        data: storedDevices.filter((d) => d.status === val),
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            async upsert(payload: any) {
+              storedDevices.push(payload);
+              return { data: payload, error: null };
+            },
+          };
+        }
+        if (table === "security_events") {
+          return {
+            select() {
+              return {
+                ilike(col: string, val: string) {
+                  return {
+                    limit() {
+                      return {
+                        data: storedSecurityEvents.filter((e) => e.event?.toUpperCase() === val.toUpperCase()),
+                        error: null,
+                      };
+                    },
+                  };
+                },
+                eq(col: string, val: string) {
+                  return {
+                    limit() {
+                      return {
+                        data: storedSecurityEvents.filter((e) => e.event === val),
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+            async insert(payload: any) {
+              storedSecurityEvents.push(payload);
+              return { data: payload, error: null };
+            },
+          };
+        }
+        if (table === "attendance_challenges") {
+          return {
+            select() {
+              return {
+                eq(col: string, val: any) {
+                  return {
+                    async maybeSingle() {
+                      const found = storedChallenges.find((c) => c[col] === val);
+                      return { data: found || null, error: null };
+                    },
+                  };
+                },
+              };
+            },
+            async insert(payload: any) {
+              const existing = storedChallenges.find((c) => c.challenge === payload.challenge);
+              if (existing) {
+                return { data: null, error: { code: "23505", message: "duplicate key value violates unique constraint" } };
+              }
+              storedChallenges.push({ ...payload });
+              return { data: payload, error: null };
+            },
+            update(updateFields: any) {
+              return {
+                eq(col1: string, val1: any) {
+                  return {
+                    eq(col2: string, val2: any) {
+                      return {
+                        select() {
+                          const foundIndex = storedChallenges.findIndex(
+                            (c) => c[col1] === val1 && c[col2] === val2
+                          );
+                          if (foundIndex !== -1) {
+                            storedChallenges[foundIndex] = {
+                              ...storedChallenges[foundIndex],
+                              ...updateFields,
+                            };
+                            return {
+                              data: [{ challenge: val1 }],
+                              error: null,
+                            };
+                          }
+                          return { data: [], error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        return {
+          select: () => ({ error: null, data: [] }),
+          insert: async () => ({ error: null }),
+        };
+      },
+    };
+
+    setDeviceCustomSupabaseClient(mockDeviceDb);
+
+    // 1. Request Challenge
+    const chalReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/challenge",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: { staff_code: regStaff, action: "challenge" },
+    });
+    await deviceApiHandler(chalReq.req, chalReq.res);
+    assert.strictEqual(chalReq.getStatus(), 200, "Device challenge must return 200 OK");
+    const chalResult = chalReq.getData();
+    assert.strictEqual(chalResult?.success, true);
+    assert.ok(chalResult?.challenge, "Challenge nonce must be returned");
+    assert.ok(chalResult?.challengeToken, "Challenge token must be returned");
+
+    // 2. Sign Challenge Nonce with ECDSA P-256 Key
+    const challengeSig = signDevicePayload(regKeyPair.privateKey, chalResult.challenge);
+
+    // 3. Register Device
+    const regDeviceReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: chalResult.challengeToken,
+        challenge: chalResult.challenge,
+        publicKey: regKeyPair.publicKey,
+        signature: challengeSig,
+        platform: "web",
+        model: "OnePlus Nord CE 3 Lite (Chrome WebCrypto)",
+        os: "Android",
+        attestationEvidence: {
+          cryptoSystem: "WebCrypto non-exportable ECDSA P-256",
+          timestamp: Date.now(),
+        },
+      },
+    });
+    await deviceApiHandler(regDeviceReq.req, regDeviceReq.res);
+    assert.strictEqual(regDeviceReq.getStatus(), 201, "Device registration must return 201 Created");
+    assert.strictEqual(regDeviceReq.getData()?.success, true);
+    assert.strictEqual(regDeviceReq.getData()?.device?.status, "Active");
+    console.log("  ✓ PASS: Successful device registration flow with ECDSA P-256 signature verification");
+
+    // -------------------------------------------------------------------------
+    // TEST 12: Unavailable database fails closed with 500 / 503
+    // -------------------------------------------------------------------------
+    console.log("\n--- TEST 12: Unavailable Database Fails Closed ---");
+    setDeviceCustomSupabaseClient(null);
+    process.env["NODE_ENV"] = "production";
+    delete process.env["SUPABASE_SERVICE_ROLE_KEY"];
+
+    const unavailReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/challenge",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: { staff_code: regStaff, action: "challenge" },
+    });
+    await deviceApiHandler(unavailReq.req, unavailReq.res);
+    assert.ok(
+      unavailReq.getStatus() === 500 || unavailReq.getStatus() === 503,
+      "Unavailable database in production must return 500 or 503"
+    );
+    assert.ok(
+      unavailReq.getData()?.error === "DATABASE_UNAVAILABLE" ||
+      unavailReq.getData()?.error === "SERVER_CONFIG_FAULT",
+      "Must return DATABASE_UNAVAILABLE or SERVER_CONFIG_FAULT"
+    );
+    console.log("  ✓ PASS: Missing / unavailable database strictly fails closed in production");
+
+    // -------------------------------------------------------------------------
+    // TEST 13: Invalid or forged challenge rejected
+    // -------------------------------------------------------------------------
+    console.log("\n--- TEST 13: Invalid / Forged / Expired Challenge Nonce Rejected ---");
+    setDeviceCustomSupabaseClient(mockDeviceDb);
+    process.env["NODE_ENV"] = "test";
+    process.env["TEST_MODE"] = "1";
+
+    // 13a: Forged challenge token (invalid HMAC signature)
+    const forgedToken = "eyJub25jZSI6ImZvcmdlZCJ9.invalid-sig";
+    const forgedDeviceChalReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: forgedToken,
+        challenge: "forged-nonce-123",
+        publicKey: regKeyPair.publicKey,
+        signature: challengeSig,
+        platform: "web",
+      },
+    });
+    await deviceApiHandler(forgedDeviceChalReq.req, forgedDeviceChalReq.res);
+    assert.strictEqual(forgedDeviceChalReq.getStatus(), 403, "Forged challenge must return 403 Forbidden");
+    assert.strictEqual(forgedDeviceChalReq.getData()?.error, "CHALLENGE_FORGERY_DETECTED");
+
+    // 13b: Expired challenge token
+    const expiredPayload = {
+      nonce: "expired-nonce-123456",
+      staffId: regStaff,
+      issuedAt: Date.now() - 600_000,
+      expiresAt: Date.now() - 300_000, // Expired 5 minutes ago
+      purpose: "device_registration",
+    };
+    const expPayloadB64 = Buffer.from(JSON.stringify(expiredPayload)).toString("base64url");
+    const expSig = crypto.createHmac("sha256", "campusattend-device-binding-sec-key-2026").update(expPayloadB64).digest("base64url");
+    const expiredToken = `${expPayloadB64}.${expSig}`;
+    const expSigBytes = signDevicePayload(regKeyPair.privateKey, expiredPayload.nonce);
+
+    const expiredReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: expiredToken,
+        challenge: expiredPayload.nonce,
+        publicKey: regKeyPair.publicKey,
+        signature: expSigBytes,
+        platform: "web",
+      },
+    });
+    await deviceApiHandler(expiredReq.req, expiredReq.res);
+    assert.strictEqual(expiredReq.getStatus(), 403, "Expired challenge must return 403 Forbidden");
+    assert.strictEqual(expiredReq.getData()?.error, "CHALLENGE_EXPIRED");
+
+    // 13c: Staff code mismatch in challenge token
+    const mismatchedPayload = {
+      nonce: "mismatch-nonce-123456",
+      staffId: "SCT-OTHER-USER",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 300_000,
+      purpose: "device_registration",
+    };
+    const misPayloadB64 = Buffer.from(JSON.stringify(mismatchedPayload)).toString("base64url");
+    const misSig = crypto.createHmac("sha256", "campusattend-device-binding-sec-key-2026").update(misPayloadB64).digest("base64url");
+    const misToken = `${misPayloadB64}.${misSig}`;
+    const misSigBytes = signDevicePayload(regKeyPair.privateKey, mismatchedPayload.nonce);
+
+    const misReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff, // SCT-REG-001 vs token's SCT-OTHER-USER
+        challengeToken: misToken,
+        challenge: mismatchedPayload.nonce,
+        publicKey: regKeyPair.publicKey,
+        signature: misSigBytes,
+        platform: "web",
+      },
+    });
+    await deviceApiHandler(misReq.req, misReq.res);
+    assert.strictEqual(misReq.getStatus(), 403, "Mismatched staff challenge must return 403 Forbidden");
+    assert.strictEqual(misReq.getData()?.error, "CHALLENGE_STAFF_MISMATCH");
+
+    // 13d: Challenge marked status: 'EXPIRED' in database while expires_at is in future
+    const futureExpiredNonce = "future-expired-nonce-999";
+    storedChallenges.push({
+      challenge: futureExpiredNonce,
+      staff_code: regStaff,
+      device_id: "PENDING_REGISTRATION",
+      operation: "device_registration",
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 600_000).toISOString(), // 10 minutes in the future!
+      status: "EXPIRED",
+    });
+    const futureExpPayload = {
+      nonce: futureExpiredNonce,
+      staffId: regStaff,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      purpose: "device_registration",
+    };
+    const futureExpB64 = Buffer.from(JSON.stringify(futureExpPayload)).toString("base64url");
+    const futureExpSig = crypto.createHmac("sha256", "campusattend-device-binding-sec-key-2026").update(futureExpB64).digest("base64url");
+    const futureExpToken = `${futureExpB64}.${futureExpSig}`;
+    const futureExpSigBytes = signDevicePayload(regKeyPair.privateKey, futureExpiredNonce);
+
+    const futureExpReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: futureExpToken,
+        challenge: futureExpiredNonce,
+        publicKey: regKeyPair.publicKey,
+        signature: futureExpSigBytes,
+        platform: "web",
+      },
+    });
+    await deviceApiHandler(futureExpReq.req, futureExpReq.res);
+    assert.strictEqual(futureExpReq.getStatus(), 403, "Challenge marked EXPIRED in database must return 403 even if expires_at is in future");
+    assert.strictEqual(futureExpReq.getData()?.error, "CHALLENGE_EXPIRED");
+
+    // 13e: Challenge already CONSUMED in database
+    const consumedNonce = "already-consumed-nonce-888";
+    storedChallenges.push({
+      challenge: consumedNonce,
+      staff_code: regStaff,
+      device_id: "PENDING_REGISTRATION",
+      operation: "device_registration",
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      consumed_at: new Date().toISOString(),
+      status: "CONSUMED",
+    });
+    const consumedPayload = {
+      nonce: consumedNonce,
+      staffId: regStaff,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      purpose: "device_registration",
+    };
+    const consumedB64 = Buffer.from(JSON.stringify(consumedPayload)).toString("base64url");
+    const consumedSig = crypto.createHmac("sha256", "campusattend-device-binding-sec-key-2026").update(consumedB64).digest("base64url");
+    const consumedToken = `${consumedB64}.${consumedSig}`;
+    const consumedSigBytes = signDevicePayload(regKeyPair.privateKey, consumedNonce);
+
+    const consumedReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: consumedToken,
+        challenge: consumedNonce,
+        publicKey: regKeyPair.publicKey,
+        signature: consumedSigBytes,
+        platform: "web",
+      },
+    });
+    await deviceApiHandler(consumedReq.req, consumedReq.res);
+    assert.strictEqual(consumedReq.getStatus(), 403, "Already-consumed challenge must return 403 Forbidden");
+    assert.strictEqual(consumedReq.getData()?.error, "CHALLENGE_ALREADY_USED_DISTRIBUTED");
+
+    // 13f: Concurrent attempts to consume the exact same challenge
+    const concurrentNonce = "concurrent-nonce-777";
+    storedChallenges.push({
+      challenge: concurrentNonce,
+      staff_code: regStaff,
+      device_id: "PENDING_REGISTRATION",
+      operation: "device_registration",
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      status: "ACTIVE",
+    });
+    const concurrentPayload = {
+      nonce: concurrentNonce,
+      staffId: regStaff,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      purpose: "device_registration",
+    };
+    const concB64 = Buffer.from(JSON.stringify(concurrentPayload)).toString("base64url");
+    const concSig = crypto.createHmac("sha256", "campusattend-device-binding-sec-key-2026").update(concB64).digest("base64url");
+    const concToken = `${concB64}.${concSig}`;
+    const concSigBytes = signDevicePayload(regKeyPair.privateKey, concurrentNonce);
+
+    const concReq1 = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: concToken,
+        challenge: concurrentNonce,
+        publicKey: regKeyPair.publicKey,
+        signature: concSigBytes,
+        platform: "web",
+      },
+    });
+    const concReq2 = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: concToken,
+        challenge: concurrentNonce,
+        publicKey: regKeyPair.publicKey,
+        signature: concSigBytes,
+        platform: "web",
+      },
+    });
+
+    // Run both concurrently
+    const [res1, res2] = await Promise.all([
+      deviceApiHandler(concReq1.req, concReq1.res),
+      deviceApiHandler(concReq2.req, concReq2.res),
+    ]);
+
+    const statuses = [concReq1.getStatus(), concReq2.getStatus()].sort();
+    // Exactly one request must succeed (200), and the second must be rejected (403 CHALLENGE_ALREADY_USED_DISTRIBUTED)
+    assert.strictEqual(statuses[0], 200, "One concurrent registration request must succeed with 200");
+    assert.strictEqual(statuses[1], 403, "Second concurrent registration request must be rejected with 403");
+    console.log("  ✓ PASS: Concurrent attempts to consume same challenge serialized: exactly 1 succeeded, 1 rejected");
+
+    console.log("  ✓ PASS: Invalid, forged, expired, and mismatched challenges strictly rejected with 403 Forbidden");
+
+    // -------------------------------------------------------------------------
+    // TEST 14: Unauthorized replacement of active device rejected (Rule 1)
+    // -------------------------------------------------------------------------
+    console.log("\n--- TEST 14: Unauthorized Device Replacement Rejected (Rule 1) ---");
+    // Generate new different key pair representing unauthorized second phone
+    const attackerPhoneKeyPair = createTestDeviceKeyPair();
+
+    // Get fresh challenge for regStaff
+    const chalReq2 = createMockReqRes({
+      method: "POST",
+      url: "/api/device/challenge",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: { staff_code: regStaff, action: "challenge", isReRegistration: true },
+    });
+    await deviceApiHandler(chalReq2.req, chalReq2.res);
+    const chal2 = chalReq2.getData();
+
+    const attackerSig = signDevicePayload(attackerPhoneKeyPair.privateKey, chal2.challenge);
+    const replaceReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${regStaffToken}` },
+      body: {
+        staff_code: regStaff,
+        challengeToken: chal2.challengeToken,
+        challenge: chal2.challenge,
+        publicKey: attackerPhoneKeyPair.publicKey, // DIFFERENT KEY!
+        signature: attackerSig,
+        platform: "web",
+        model: "Unauthorized Second Phone",
+      },
+    });
+    await deviceApiHandler(replaceReq.req, replaceReq.res);
+    assert.strictEqual(replaceReq.getStatus(), 409, "Unauthorized device replacement must return 409 Conflict");
+    assert.strictEqual(replaceReq.getData()?.error, "DEVICE_ALREADY_REGISTERED");
+    console.log("  ✓ PASS: Unauthorized second device replacement strictly rejected with 409 DEVICE_ALREADY_REGISTERED");
+
+    // -------------------------------------------------------------------------
+    // TEST 15: Database errors fail closed with 500 (Zero Mock Success)
+    // -------------------------------------------------------------------------
+    console.log("\n--- TEST 15: Database Errors Fail Closed with HTTP 500 ---");
+    const failingDb = {
+      from(table: string) {
+        if (table === "staff") {
+          return {
+            select() {
+              return {
+                ilike(col: string, val: string) {
+                  return {
+                    async maybeSingle() {
+                      return {
+                        data: { id: "staff-fail-id", staff_code: val.toUpperCase(), name: "Fail Staff", active: true },
+                        error: null,
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        }
+        if (table === "devices") {
+          return {
+            select() {
+              return {
+                ilike() {
+                  return {
+                    eq() {
+                      return {
+                        order() {
+                          return {
+                            limit() {
+                              return {
+                                async maybeSingle() {
+                                  return { data: null, error: null };
+                                },
+                              };
+                            },
+                          };
+                        },
+                      };
+                    },
+                    order() {
+                      return {
+                        async limit() {
+                          return { data: [], error: null };
+                        },
+                      };
+                    },
+                  };
+                },
+                eq() {
+                  return {
+                    or() {
+                      return { data: [], error: null };
+                    },
+                  };
+                },
+              };
+            },
+            async upsert() {
+              return {
+                data: null,
+                error: { code: "57P01", message: "terminating connection due to administrator command" },
+              };
+            },
+          };
+        }
+        return {
+          select: () => ({ error: null, data: [] }),
+          insert: async () => ({ error: null }),
+        };
+      },
+    };
+
+    setDeviceCustomSupabaseClient(failingDb);
+
+    // Get fresh challenge
+    const freshStaff = "SCT-FAIL-001";
+    const freshToken = mintTestStaffToken(freshStaff);
+    const chalReq3 = createMockReqRes({
+      method: "POST",
+      url: "/api/device/challenge",
+      headers: { authorization: `Bearer ${freshToken}` },
+      body: { staff_code: freshStaff, action: "challenge" },
+    });
+    await deviceApiHandler(chalReq3.req, chalReq3.res);
+    const chal3 = chalReq3.getData();
+
+    const failKey = createTestDeviceKeyPair();
+    const failSig = signDevicePayload(failKey.privateKey, chal3.challenge);
+    const failRegReq = createMockReqRes({
+      method: "POST",
+      url: "/api/device/register",
+      headers: { authorization: `Bearer ${freshToken}` },
+      body: {
+        staff_code: freshStaff,
+        challengeToken: chal3.challengeToken,
+        challenge: chal3.challenge,
+        publicKey: failKey.publicKey,
+        signature: failSig,
+        platform: "web",
+      },
+    });
+    await deviceApiHandler(failRegReq.req, failRegReq.res);
+    assert.strictEqual(failRegReq.getStatus(), 500, "Database persistence failure must return HTTP 500");
+    assert.strictEqual(failRegReq.getData()?.error, "DATABASE_ERROR");
+    console.log("  ✓ PASS: Database errors strictly fail closed with HTTP 500 (zero mock success)");
+
     console.log("\n=================================================================");
-    console.log("   ALL ISOLATED ATTENDANCE SECURITY TESTS PASSED (10/10)        ");
+    console.log("   ALL ISOLATED ATTENDANCE & DEVICE SECURITY TESTS PASSED (15/15) ");
     console.log("=================================================================\n");
   } finally {
     // Restore clean environment
@@ -709,6 +1350,7 @@ async function runIsolatedAttendanceSecuritySuite() {
     }
     Object.assign(process.env, originalEnv);
     setCustomSupabaseClient(null);
+    setDeviceCustomSupabaseClient(null);
   }
 }
 

@@ -19,7 +19,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 export type DevicePlatform = "android" | "ios" | "web";
 export type DeviceStatus = "Active" | "Revoked" | "Pending" | "Blocked";
-export type AttestationSecurityLevel = "StrongBox" | "TEE" | "AppAttest" | "WebAuthn_Passkey" | "Software" | "Verified";
+export type AttestationSecurityLevel = "StrongBox" | "TEE" | "AppAttest" | "WebAuthn_Passkey" | "WebCrypto_Platform" | "Software" | "Verified" | "Pending" | "unknown";
 
 export interface DeviceRecord {
   id: string; // Key ID / Device ID (e.g., DEV_P256_...)
@@ -64,9 +64,9 @@ const LOCAL_STORE_PATH = path.resolve(process.cwd(), "data", "staff-db.json");
 
 function getSupabase(): SupabaseClient | null {
   const url =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "https://qvjcxoznvhoagclbyhad.supabase.co";
+    typeof process !== "undefined"
+      ? (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"] || "").trim()
+      : "";
 
   const isProd =
     typeof process !== "undefined" &&
@@ -79,6 +79,10 @@ function getSupabase(): SupabaseClient | null {
 
   // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
   if (isProd) {
+    if (!url) {
+      console.error("[DeviceBinding] CRITICAL: SUPABASE_URL is required in production environment configuration.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_URL is required for cryptographic device binding operations in production.");
+    }
     if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
       console.error("[DeviceBinding] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
       throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for cryptographic device binding operations in production.");
@@ -970,8 +974,8 @@ export async function getActiveDeviceForStaff(staffCode: string): Promise<Device
           key_id: keyId,
           key_algorithm: keyAlgo,
           platform: (data.platform as DevicePlatform) || "android",
-          attestation_status: (data.attestation_status as AttestationSecurityLevel) || "Verified",
-          attestation_type: data.attestation_type || "hardware",
+          attestation_status: (data.attestation_status as AttestationSecurityLevel) || "Pending",
+          attestation_type: data.attestation_type || "unknown",
           attestation_evidence: data.attestation_evidence,
           model: data.model,
           os: data.os,
@@ -1045,8 +1049,8 @@ export async function getAllDevicesForStaff(staffCode: string): Promise<DeviceRe
           key_id: d.key_id || d.id,
           key_algorithm: d.key_algorithm || "ECDSA_P256",
           platform: (d.platform as DevicePlatform) || "android",
-          attestation_status: (d.attestation_status as AttestationSecurityLevel) || "Verified",
-          attestation_type: d.attestation_type || "hardware",
+          attestation_status: (d.attestation_status as AttestationSecurityLevel) || "Pending",
+          attestation_type: d.attestation_type || "unknown",
           attestation_evidence: d.attestation_evidence,
           model: d.model,
           os: d.os,
@@ -1250,7 +1254,16 @@ export async function registerDeviceForStaff(params: {
         platform: deviceRecord.platform,
         attestation_status: deviceRecord.attestation_status,
         attestation_type: deviceRecord.attestation_type,
-        attestation_evidence: deviceRecord.attestation_evidence,
+        attestation_evidence:
+          typeof deviceRecord.attestation_evidence === "string"
+            ? (function () {
+                try {
+                  return JSON.parse(deviceRecord.attestation_evidence);
+                } catch {
+                  return { raw: deviceRecord.attestation_evidence };
+                }
+              })()
+            : deviceRecord.attestation_evidence || {},
         model: deviceRecord.model,
         os: deviceRecord.os,
         status: "Active",

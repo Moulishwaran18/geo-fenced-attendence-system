@@ -20,7 +20,7 @@ import handlerRegister from "../api/staff/register.ts";
 import handlerLogin from "../api/staff/login.ts";
 import handlerAdminStaff from "../api/admin/staff/index.ts";
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://gcpuuvhydtgmcpiumpfa.supabase.co";
 const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 

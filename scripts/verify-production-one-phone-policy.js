@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 const BASE_URL = process.env.PRODUCTION_URL || "https://geo-fenced-attendence-system.vercel.app";
-const SUPABASE_URL = process.env.SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://gcpuuvhydtgmcpiumpfa.supabase.co";
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY ||

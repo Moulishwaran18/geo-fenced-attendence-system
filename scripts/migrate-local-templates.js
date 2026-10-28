@@ -20,7 +20,7 @@ async function migrate() {
   console.log("=================================================================\n");
 
   const env = getEnv();
-  const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
+  const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL || "https://gcpuuvhydtgmcpiumpfa.supabase.co";
   const supabaseKey = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseKey) {

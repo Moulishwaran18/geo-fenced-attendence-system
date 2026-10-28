@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = "https://qvjcxoznvhoagclbyhad.supabase.co";
+const SUPABASE_URL = "https://gcpuuvhydtgmcpiumpfa.supabase.co";
 const SUPABASE_KEY = "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 

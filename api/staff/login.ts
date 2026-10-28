@@ -363,9 +363,9 @@ const STAFF_TOKEN_SECRET =
 
 function getSupabaseClient() {
   const url =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "https://qvjcxoznvhoagclbyhad.supabase.co";
+    typeof process !== "undefined"
+      ? (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"] || "").trim()
+      : "";
 
   const isProd =
     typeof process !== "undefined" &&
@@ -378,6 +378,10 @@ function getSupabaseClient() {
 
   // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
   if (isProd) {
+    if (!url) {
+      console.error("[LoginGate] CRITICAL: SUPABASE_URL or VITE_SUPABASE_URL is required in environment configuration.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_URL is required in production environment configuration.");
+    }
     if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
       console.error("[LoginGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
       throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for privileged server database operations in production.");

@@ -274,7 +274,8 @@ export async function registerCurrentDevice(
     const sigB64 = btoa(String.fromCharCode(...new Uint8Array(signatureDer)));
     const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "Browser";
     let modelName = "Personal Computer (Web Browser)";
-    if (/iPhone/.test(userAgent)) modelName = "Apple iPhone (Safari)";
+    if (/Android/.test(userAgent)) modelName = "Android Device (Web Browser)";
+    else if (/iPhone/.test(userAgent)) modelName = "Apple iPhone (Safari)";
     else if (/iPad/.test(userAgent)) modelName = "Apple iPad (Safari)";
     else if (/Macintosh/.test(userAgent)) modelName = "Apple Mac (Secure Enclave)";
     else if (/Windows/.test(userAgent)) modelName = "Windows PC (Secure Hardware)";
@@ -286,9 +287,9 @@ export async function registerCurrentDevice(
       keyId,
       keyAlgorithm: "ECDSA_P256",
       signature: sigB64,
-      platform,
+      platform: "web",
       model: modelName,
-      os: platform === "ios" ? "iOS" : "Web Platform",
+      os: /Android/.test(userAgent) ? "Android" : platform === "ios" ? "iOS" : "Web Platform",
       attestationEvidence: {
         cryptoSystem: "WebCrypto non-exportable ECDSA P-256",
         timestamp: Date.now(),

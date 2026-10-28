@@ -72,17 +72,21 @@ export function getSupabaseClient() {
       process.env["VERCEL_ENV"] === "production");
 
   const url =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "https://qvjcxoznvhoagclbyhad.supabase.co";
+    typeof process !== "undefined"
+      ? (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"] || "").trim()
+      : "";
 
   const serviceRoleKey =
     typeof process !== "undefined" && process.env["SUPABASE_SERVICE_ROLE_KEY"]
       ? process.env["SUPABASE_SERVICE_ROLE_KEY"].trim()
       : undefined;
 
-  // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
+  // In production runtime, privileged server database access strictly requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
   if (isProduction) {
+    if (!url) {
+      console.error("[AttendanceGate] CRITICAL: SUPABASE_URL or VITE_SUPABASE_URL is required in environment configuration.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_URL is required in production environment configuration.");
+    }
     if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
       console.error("[AttendanceGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
       throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for attendance operations in production.");
@@ -786,6 +790,22 @@ async function verifyAndConsumeServerChallenge(
 
       if (!updateErr && updatedRows && updatedRows.length > 0) {
         return { valid: true };
+      }
+
+      const isTableMissing =
+        updateErr &&
+        (updateErr.code === "PGRST205" ||
+          updateErr.code === "42P01" ||
+          updateErr.message?.toLowerCase().includes("schema cache") ||
+          updateErr.message?.toLowerCase().includes("does not exist"));
+
+      if (isTableMissing) {
+        console.error("[verifyAndConsumeServerChallenge] CRITICAL: public.attendance_challenges table is missing from database schema. Migration required.");
+        return {
+          valid: false,
+          error: "DATABASE_UNAVAILABLE",
+          message: "Attendance challenge verification requires durable database connection.",
+        };
       }
     } catch {}
   }

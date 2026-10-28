@@ -39,7 +39,7 @@ import {
   revokeDevice,
 } from "../src/server/device-binding.ts";
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://gcpuuvhydtgmcpiumpfa.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
 const STAFF_SECRET = process.env.CAMPUS_AUTH_SECRET || process.env.STAFF_AUTH_SECRET || "campusattend-staff-auth-session-sec-key-2026";
 const NETWORK_SECRET = process.env.CAMPUS_AUTH_SECRET || process.env.NETWORK_AUTH_SECRET || "sona-campus-wifi-egress-auth-secret-key-2026";

@@ -23,7 +23,7 @@ import fs from "fs";
 
 // Production indicators to prevent accidental execution against production
 const PRODUCTION_INDICATORS = [
-  "qvjcxoznvhoagclbyhad", // Production Supabase project reference
+  "gcpuuvhydtgmcpiumpfa", // Production Supabase project reference
   "campusattend-prod",
   "prod.supabase.co",
   "production",

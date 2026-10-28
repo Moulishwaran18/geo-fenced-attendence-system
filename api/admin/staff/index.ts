@@ -522,9 +522,9 @@ async function authenticateAdmin(user: string, pass: string): Promise<any> {
 
 export function getSupabaseClient() {
   const url =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "https://qvjcxoznvhoagclbyhad.supabase.co";
+    typeof process !== "undefined"
+      ? (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"] || "").trim()
+      : "";
 
   const isProd =
     typeof process !== "undefined" &&
@@ -535,8 +535,12 @@ export function getSupabaseClient() {
       ? process.env["SUPABASE_SERVICE_ROLE_KEY"].trim()
       : undefined;
 
-  // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
+  // In production runtime, privileged server database access strictly requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
   if (isProd) {
+    if (!url) {
+      console.error("[AdminStaffGate] CRITICAL: SUPABASE_URL or VITE_SUPABASE_URL is required in environment configuration.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_URL is required in production environment configuration.");
+    }
     if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
       console.error("[AdminStaffGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
       throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for admin staff operations in production.");
@@ -850,12 +854,21 @@ export default async function handler(req: any, res?: any) {
     if (pathname.includes("/db-diagnostic") && method === "GET") {
       const { count: staffCount } = await supabase.from("staff").select("*", { count: "exact", head: true });
 
+      const currentUrl =
+        (typeof process !== "undefined" &&
+          (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
+        "";
+      let hostName = "gcpuuvhydtgmcpiumpfa.supabase.co";
+      try {
+        if (currentUrl) hostName = new URL(currentUrl).host;
+      } catch {}
+
       return sendJsonResponse(res, 200, {
         success: true,
         data: {
           status: "CONNECTED",
           databaseType: "Supabase (Cloud Managed PostgreSQL)",
-          host: "qvjcxoznvhoagclbyhad.supabase.co",
+          host: hostName,
           port: 443,
           databaseName: "postgres",
           staffCount: staffCount ?? 0,

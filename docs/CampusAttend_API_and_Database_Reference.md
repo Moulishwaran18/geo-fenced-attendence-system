@@ -3,7 +3,7 @@
 **Document Version:** 1.0.0 (Production Verified)  
 **Project Name:** CampusAttend — Geofenced Biometric Attendance Management System  
 **Repository Path:** `D:\project\geo-fenced-attendence-system`  
-**Database Host:** Supabase Managed PostgreSQL (`qvjcxoznvhoagclbyhad.supabase.co`)  
+**Database Host:** Supabase Managed PostgreSQL (`gcpuuvhydtgmcpiumpfa.supabase.co`)  
 **Serverless API Base URL:** `https://geo-fenced-attendence-system.vercel.app/api`  
 
 ---

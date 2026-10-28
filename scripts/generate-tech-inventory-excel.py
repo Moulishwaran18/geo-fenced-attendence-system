@@ -283,7 +283,7 @@ def build_inventory():
             "Input: SQL queries, REST API calls; Output: JSON result sets, transaction commits",
             "Connected via @supabase/supabase-js and direct pg pool in backend migration scripts",
             "External Cloud Database Service",
-            "Hosted on qvjcxoznvhoagclbyhad.supabase.co; schema.sql (284 lines)",
+            "Hosted on gcpuuvhydtgmcpiumpfa.supabase.co; schema.sql (284 lines)",
             "Free tier project pausing if inactive; connection pool limits on serverless invocations"
         ),
         (

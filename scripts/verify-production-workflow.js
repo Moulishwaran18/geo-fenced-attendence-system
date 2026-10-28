@@ -6,7 +6,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 const BASE_URL = "https://geo-fenced-attendence-system.vercel.app";
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://qvjcxoznvhoagclbyhad.supabase.co";
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://gcpuuvhydtgmcpiumpfa.supabase.co";
 const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 

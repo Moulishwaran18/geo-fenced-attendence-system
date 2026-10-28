@@ -13,8 +13,7 @@ const getEnvVar = (key: string): string => {
 
 const supabaseUrl =
   getEnvVar("VITE_SUPABASE_URL") ||
-  getEnvVar("SUPABASE_URL") ||
-  "https://qvjcxoznvhoagclbyhad.supabase.co";
+  getEnvVar("SUPABASE_URL");
 
 const supabaseKey =
   getEnvVar("VITE_SUPABASE_PUBLISHABLE_KEY") ||
@@ -22,9 +21,9 @@ const supabaseKey =
   getEnvVar("SUPABASE_ANON_KEY") ||
   "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
 
-if (!supabaseUrl || !supabaseKey) {
-  console.warn(
-    "[Supabase] Missing Supabase URL or Publishable Key. Please check your .env configuration.",
+if (!supabaseUrl) {
+  console.error(
+    "[Supabase] CRITICAL: Missing VITE_SUPABASE_URL or SUPABASE_URL. Project URL must be configured in environment variables.",
   );
 }
 

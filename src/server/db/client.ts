@@ -620,7 +620,9 @@ export async function getDatabaseDiagnostics(): Promise<DatabaseDiagnostics> {
   return {
     status: "CONNECTED",
     databaseType: "Supabase (Cloud Managed PostgreSQL)",
-    host: "qvjcxoznvhoagclbyhad.supabase.co",
+    host: (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])
+      ? new URL(process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"]).host
+      : "gcpuuvhydtgmcpiumpfa.supabase.co",
     port: 443,
     databaseName: "postgres",
     user: "postgres",

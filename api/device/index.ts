@@ -43,9 +43,9 @@ export function getSupabaseClient() {
   }
 
   const url =
-    (typeof process !== "undefined" &&
-      (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])) ||
-    "https://qvjcxoznvhoagclbyhad.supabase.co";
+    typeof process !== "undefined"
+      ? (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"] || "").trim()
+      : "";
 
   const isProd =
     typeof process !== "undefined" &&
@@ -56,8 +56,12 @@ export function getSupabaseClient() {
       ? process.env["SUPABASE_SERVICE_ROLE_KEY"].trim()
       : undefined;
 
-  // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
+  // In production runtime, privileged server database access strictly requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
   if (isProd) {
+    if (!url) {
+      console.error("[DeviceGate] CRITICAL: SUPABASE_URL or VITE_SUPABASE_URL is required in environment configuration.");
+      throw new Error("CONFIGURATION_FAULT: SUPABASE_URL is required in production environment configuration.");
+    }
     if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
       console.error("[DeviceGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
       throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for privileged server database operations in production.");
@@ -835,87 +839,135 @@ export async function verifyAndConsumeChallenge(
 
     // 2. Distributed / Serverless Durable Replay Protection
     // Enforces genuine atomic single-use mutual exclusion across distributed serverless instances.
-    // Relies on public.attendance_challenges PRIMARY KEY (challenge) uniqueness constraint.
-    const supabase = getSupabaseClient();
+    // Relies on public.attendance_challenges PRIMARY KEY or durable public.security_events audit trail.
+    let supabase: any = null;
+    try {
+      supabase = getSupabaseClient();
+    } catch (e: any) {
+      console.error("[verifyAndConsumeChallenge] Database client init fault:", e?.message || e);
+    }
+
     const isProd = typeof process !== "undefined" && (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
     if (!supabase) {
       if (isProd) {
         return { valid: false, error: "DATABASE_UNAVAILABLE" };
       }
-    } else {
-      try {
-        // Step A: Attempt atomic state transition ACTIVE -> CONSUMED on pre-inserted challenge
-        const { data: updatedRows, error: updateErr } = await supabase
-          .from("attendance_challenges")
-          .update({
-            status: "CONSUMED",
-            consumed_at: new Date().toISOString(),
-          })
-          .eq("challenge", payload.nonce)
-          .eq("status", "ACTIVE")
-          .select("challenge");
+      consumedChallenges.set(payload.nonce, Date.now());
+      return { valid: true };
+    }
 
-        if (updateErr) {
-          console.error("[verifyAndConsumeChallenge] Database update error:", updateErr);
-          return { valid: false, error: "DATABASE_ERROR" };
-        }
+    let consumedDurably = false;
 
-        if (updatedRows && updatedRows.length > 0) {
-          // Successfully transitioned ACTIVE -> CONSUMED atomically
-        } else {
-          // Step B: Row was either already CONSUMED/EXPIRED, or was issued statelessly without pre-insert.
-          // Attempt atomic INSERT of CONSUMED marker. PRIMARY KEY (challenge) strictly prevents double-consumption.
-          const { data: insData, error: insErr } = await supabase
+    try {
+      // Step A: Attempt atomic state transition ACTIVE -> CONSUMED on pre-inserted challenge
+      const { data: updatedRows, error: updateErr } = await supabase
+        .from("attendance_challenges")
+        .update({
+          status: "CONSUMED",
+          consumed_at: new Date().toISOString(),
+        })
+        .eq("challenge", payload.nonce)
+        .eq("status", "ACTIVE")
+        .select("challenge");
+
+      const isTableMissing =
+        updateErr &&
+        (updateErr.code === "PGRST205" ||
+          updateErr.code === "42P01" ||
+          updateErr.message?.toLowerCase().includes("schema cache") ||
+          updateErr.message?.toLowerCase().includes("does not exist"));
+
+      if (!updateErr && updatedRows && updatedRows.length > 0) {
+        consumedDurably = true;
+      } else if (!isTableMissing && !updateErr) {
+        // Check existing row state to accurately reject expired, consumed, or invalid status
+        try {
+          const { data: existingRow } = await supabase
             .from("attendance_challenges")
-            .insert({
-              challenge: payload.nonce,
-              staff_code: payload.staffId,
-              device_id: "PENDING_REGISTRATION",
-              operation: payload.purpose || "device_registration",
-              issued_at: new Date(payload.issuedAt || Date.now()).toISOString(),
-              expires_at: new Date(payload.expiresAt).toISOString(),
-              consumed_at: new Date().toISOString(),
-              status: "CONSUMED",
-            })
-            .select("challenge");
+            .select("status, expires_at")
+            .eq("challenge", payload.nonce)
+            .maybeSingle();
 
-          if (insErr) {
-            const isUniqueViolation =
-              insErr.code === "23505" ||
-              insErr.message?.toLowerCase().includes("duplicate") ||
-              insErr.message?.toLowerCase().includes("unique");
-            if (isUniqueViolation) {
+          if (existingRow) {
+            if (existingRow.status === "EXPIRED" || new Date(existingRow.expires_at).getTime() < Date.now()) {
+              consumedChallenges.set(payload.nonce, Date.now());
+              return { valid: false, error: "CHALLENGE_EXPIRED" };
+            }
+            if (existingRow.status === "CONSUMED") {
               consumedChallenges.set(payload.nonce, Date.now());
               return { valid: false, error: "CHALLENGE_ALREADY_USED_DISTRIBUTED" };
             }
-            // Fail closed on any other database error
-            console.error("[verifyAndConsumeChallenge] Database insert error:", insErr);
-            return { valid: false, error: "DATABASE_ERROR" };
+            if (existingRow.status !== "ACTIVE") {
+              consumedChallenges.set(payload.nonce, Date.now());
+              return { valid: false, error: "CHALLENGE_INVALID_STATUS" };
+            }
           }
+        } catch {}
 
-          if (!insData || insData.length === 0) {
+        // Table exists, but row was not updated (issued statelessly or pre-insert missed).
+        // Attempt atomic insert:
+        const { data: insData, error: insErr } = await supabase
+          .from("attendance_challenges")
+          .insert({
+            challenge: payload.nonce,
+            staff_code: payload.staffId,
+            device_id: "PENDING_REGISTRATION",
+            operation: payload.purpose || "device_registration",
+            issued_at: new Date(payload.issuedAt || Date.now()).toISOString(),
+            expires_at: new Date(payload.expiresAt).toISOString(),
+            consumed_at: new Date().toISOString(),
+            status: "CONSUMED",
+          })
+          .select("challenge");
+
+        if (insErr) {
+          const isUniqueViolation =
+            insErr.code === "23505" ||
+            insErr.message?.toLowerCase().includes("duplicate") ||
+            insErr.message?.toLowerCase().includes("unique");
+          if (isUniqueViolation) {
             consumedChallenges.set(payload.nonce, Date.now());
             return { valid: false, error: "CHALLENGE_ALREADY_USED_DISTRIBUTED" };
           }
+          console.error("[verifyAndConsumeChallenge] Database insert error:", { code: insErr.code, message: insErr.message });
+          return { valid: false, error: "DATABASE_ERROR" };
         }
-
-        // Record append-only audit trail event in security_events table
-        try {
-          await supabase.from("security_events").insert({
-            time: new Date().toISOString(),
-            staff: payload.staffId,
-            event: `CHALLENGE_CONSUMED|${payload.nonce}`,
-            device: "device-registration-engine",
-            location: "Registration Gate",
-            result: "Allowed",
-            severity: "Low",
-          });
-        } catch {}
-      } catch (dbErr: any) {
-        console.error("[verifyAndConsumeChallenge] Durable replay database exception:", dbErr?.message || dbErr);
+        if (insData && insData.length > 0) {
+          consumedDurably = true;
+        }
+      } else if (isTableMissing) {
+        // public.attendance_challenges table is missing from database schema.
+        // Fail closed strictly: security_events does not provide a UNIQUE constraint on event,
+        // so concurrent requests cannot be atomically serialized without attendance_challenges.
+        console.error("[verifyAndConsumeChallenge] CRITICAL: public.attendance_challenges table is missing from database schema (PGRST205 / 42P01). Database migration required.");
+        return { valid: false, error: "DATABASE_UNAVAILABLE" };
+      } else if (updateErr) {
+        console.error("[verifyAndConsumeChallenge] Database update error:", { code: updateErr.code, message: updateErr.message });
         return { valid: false, error: "DATABASE_ERROR" };
       }
+    } catch (dbEx: any) {
+      console.error("[verifyAndConsumeChallenge] Database exception during challenge verification:", dbEx?.message || dbEx);
+      return { valid: false, error: "DATABASE_ERROR" };
     }
+
+    if (!consumedDurably && isProd) {
+      return { valid: false, error: "CHALLENGE_ALREADY_USED_DISTRIBUTED" };
+    }
+
+    consumedChallenges.set(payload.nonce, Date.now());
+
+    // Record append-only audit trail event in security_events table if not already inserted
+    try {
+      await supabase.from("security_events").insert({
+        time: new Date().toISOString(),
+        staff: payload.staffId,
+        event: `CHALLENGE_CONSUMED|${payload.nonce}`,
+        device: "device-registration-engine",
+        location: "Registration Gate",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch {}
 
     consumedChallenges.set(payload.nonce, Date.now());
     return { valid: true };
@@ -972,7 +1024,7 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
           } catch {}
         }
 
-        if (!pubKey) {
+        if (!pubKey && process.env["TEST_MODE"] !== "1") {
           try {
             const fs = await import("node:fs");
             const path = await import("node:path");
@@ -1015,7 +1067,10 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
     }
   }
 
-  // Fallback to local store file if available
+  // Fallback to local store file if available (only in development / local mode, never in isolated unit test mode)
+  if (process.env["TEST_MODE"] === "1") {
+    return null;
+  }
   try {
     const fs = await import("node:fs");
     const path = await import("node:path");
@@ -1073,7 +1128,10 @@ async function getAllDevicesForStaff(cleanCode: string, supabaseClient: any) {
     } catch {}
   }
 
-  // Fallback to local store file if available
+  // Fallback to local store file if available (only in development / local mode, never in isolated unit test mode)
+  if (process.env["TEST_MODE"] === "1") {
+    return [];
+  }
   try {
     const fs = await import("node:fs");
     const path = await import("node:path");
@@ -1199,8 +1257,8 @@ async function registerDeviceForStaff(params: {
     key_id: keyId,
     key_algorithm: params.keyAlgorithm || "ECDSA_P256",
     platform: params.platform || "android",
-    attestation_status: params.attestationStatus || "Verified",
-    attestation_type: params.attestationType || "HardwareKeystore",
+    attestation_status: params.attestationStatus || "Pending",
+    attestation_type: params.attestationType || "unknown",
     attestation_evidence: params.attestationEvidence,
     model: params.model || "Mobile Device",
     os: params.os || "Android",
@@ -1223,7 +1281,16 @@ async function registerDeviceForStaff(params: {
         platform: deviceRecord.platform,
         attestation_status: deviceRecord.attestation_status,
         attestation_type: deviceRecord.attestation_type,
-        attestation_evidence: deviceRecord.attestation_evidence,
+        attestation_evidence:
+          typeof deviceRecord.attestation_evidence === "string"
+            ? (function () {
+                try {
+                  return JSON.parse(deviceRecord.attestation_evidence);
+                } catch {
+                  return { raw: deviceRecord.attestation_evidence };
+                }
+              })()
+            : deviceRecord.attestation_evidence || {},
         model: deviceRecord.model,
         os: deviceRecord.os,
         status: "Active",
@@ -1257,11 +1324,23 @@ async function registerDeviceForStaff(params: {
           registered_at: now,
         }, { onConflict: "id" });
 
-        if (retryErr && (retryErr.code === "23505" || retryErr.message.includes("unique"))) {
+        if (retryErr) {
+          if (retryErr.code === "23505" || retryErr.message.includes("unique")) {
+            return {
+              success: false,
+              statusCode: 409,
+              error: "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices.",
+            };
+          }
+          console.error("[registerDeviceForStaff] Database persistence error:", {
+            code: retryErr.code,
+            message: retryErr.message,
+          });
           return {
             success: false,
-            statusCode: 409,
-            error: "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices.",
+            statusCode: 500,
+            error: "DATABASE_ERROR",
+            message: "Failed to persist device registration in database.",
           };
         }
       }
@@ -1482,6 +1561,9 @@ export default async function handler(req: any, res?: any) {
     const challengeData = createDeviceChallenge(staffCode, "device_registration", 300_000);
 
     if (supabase) {
+      let challengeSaved = false;
+      let dbErrorDetails: any = null;
+
       try {
         const { error: chalInsErr } = await supabase.from("attendance_challenges").insert({
           challenge: challengeData.challenge,
@@ -1492,27 +1574,41 @@ export default async function handler(req: any, res?: any) {
           expires_at: new Date(challengeData.expiresAt).toISOString(),
           status: "ACTIVE",
         });
-        if (chalInsErr) {
-          console.error("[createDeviceChallenge] Durable challenge insertion failed:", chalInsErr);
-          const isProd = typeof process !== "undefined" && (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
-          if (isProd) {
-            return sendJsonResponse(res, 500, {
-              success: false,
-              error: "DATABASE_UNAVAILABLE",
-              message: "Failed to persist registration challenge to durable storage.",
+
+        if (!chalInsErr) {
+          challengeSaved = true;
+        } else {
+          dbErrorDetails = { code: chalInsErr.code, message: chalInsErr.message };
+          const isTableMissing =
+            chalInsErr.code === "PGRST205" ||
+            chalInsErr.code === "42P01" ||
+            chalInsErr.message?.toLowerCase().includes("schema cache") ||
+            chalInsErr.message?.toLowerCase().includes("does not exist");
+
+          if (isTableMissing) {
+            console.error("[createDeviceChallenge] CRITICAL: public.attendance_challenges table is missing from database schema. Migration required.");
+          } else {
+            console.error("[createDeviceChallenge] Durable challenge insertion failed:", {
+              code: chalInsErr.code,
+              message: chalInsErr.message,
             });
           }
         }
       } catch (chalInsErr: any) {
-        console.error("[createDeviceChallenge] Durable challenge insertion exception:", chalInsErr);
-        const isProd = typeof process !== "undefined" && (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
-        if (isProd) {
-          return sendJsonResponse(res, 500, {
-            success: false,
-            error: "DATABASE_UNAVAILABLE",
-            message: "Failed to persist registration challenge to durable storage.",
-          });
-        }
+        console.error("[createDeviceChallenge] Durable challenge insertion exception:", {
+          message: chalInsErr?.message || String(chalInsErr),
+        });
+        dbErrorDetails = { message: chalInsErr?.message || String(chalInsErr) };
+      }
+
+      const isProd = typeof process !== "undefined" && (process.env["NODE_ENV"] === "production" || process.env["VERCEL"] === "1");
+      if (isProd && !challengeSaved) {
+        return sendJsonResponse(res, 500, {
+          success: false,
+          error: "DATABASE_UNAVAILABLE",
+          message: "Failed to persist registration challenge to durable storage.",
+          details: dbErrorDetails?.message || "Database connection error",
+        });
       }
     }
 
@@ -1565,12 +1661,44 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
+    // 1. Verify and consume the registration challenge BEFORE checking or returning any device state
+    const challengeCheck = await verifyAndConsumeChallenge(
+      challengeToken,
+      challenge,
+      staffCode,
+      "device_registration",
+    );
+
+    if (!challengeCheck.valid) {
+      const isDbFault =
+        challengeCheck.error === "DATABASE_ERROR" ||
+        challengeCheck.error === "DATABASE_UNAVAILABLE";
+      return sendJsonResponse(res, isDbFault ? 500 : 403, {
+        success: false,
+        error: challengeCheck.error || "INVALID_CHALLENGE",
+        message: isDbFault
+          ? "Database error occurred while verifying challenge."
+          : `Device registration rejected: Challenge verification failed (${challengeCheck.error || "expired or replayed"}).`,
+      });
+    }
+
+    // 2. Verify signature over the challenge
+    const isSignatureValid = verifyDeviceSignature(publicKey, challenge, signature, keyAlgorithm);
+    if (!isSignatureValid) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "INVALID_DEVICE_SIGNATURE",
+        message: "Device registration rejected: Cryptographic signature verification failed for provided public key.",
+      });
+    }
+
     const normalizedKey = normalizePublicKeyToPem(publicKey);
     const keyFingerprint = getDeviceKeyFingerprint(normalizedKey);
     const incomingKeyId =
       body.keyId ||
       `DEV_${(platform || "android").toUpperCase()}_${crypto.createHash("sha256").update(normalizedKey).digest("hex").slice(0, 16)}`;
 
+    // 3. Check for existing active registered device (One Faculty–One Phone policy)
     const existingActive = await getActiveDeviceForStaff(staffCode, supabase);
     if (existingActive) {
       const isSameDevice =
@@ -1606,37 +1734,13 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    const challengeCheck = await verifyAndConsumeChallenge(
-      challengeToken,
-      challenge,
-      staffCode,
-      "device_registration",
-    );
-
-    if (!challengeCheck.valid) {
-      return sendJsonResponse(res, 403, {
-        success: false,
-        error: challengeCheck.error || "INVALID_CHALLENGE",
-        message: `Device registration rejected: Challenge verification failed (${challengeCheck.error || "expired or replayed"}).`,
-      });
-    }
-
-    const isSignatureValid = verifyDeviceSignature(publicKey, challenge, signature, keyAlgorithm);
-    if (!isSignatureValid) {
-      return sendJsonResponse(res, 403, {
-        success: false,
-        error: "INVALID_DEVICE_SIGNATURE",
-        message: "Device registration rejected: Cryptographic signature verification failed for provided public key.",
-      });
-    }
-
     // -------------------------------------------------------------------------
     // Server-side Hardware Key Attestation Verification
     // Never trust client-reported isHardwareBacked or isStrongBox flags.
     // Derive security level strictly from verified X.509 extension.
     // -------------------------------------------------------------------------
-    let verifiedAttestationStatus: string = "Verified";
-    let verifiedAttestationType: string = "HardwareKeystore";
+    let verifiedAttestationStatus: string = "Pending";
+    let verifiedAttestationType: string = "unknown";
     let verifiedHardwareBacked = false;
     let verifiedAuditMetadata: Record<string, any> = {
       registeredVia: "device_register",
@@ -1681,6 +1785,21 @@ export default async function handler(req: any, res?: any) {
           isStrongBox: verifiedAttestationStatus === "StrongBox",
           isHardwareBacked: true,
           hardwareEnclaveVerified: true,
+        };
+      } else if (
+        body.attestationEvidence?.cryptoSystem?.includes("WebCrypto") ||
+        body.platform === "web" ||
+        body.os?.includes("Web")
+      ) {
+        // Mobile / Android browser (e.g. Chrome) using non-exportable WebCrypto ECDSA P-256
+        verifiedAttestationStatus = "WebCrypto_Platform";
+        verifiedAttestationType = body.attestationType || "WebCrypto_P256";
+        verifiedHardwareBacked = false;
+        verifiedAuditMetadata = {
+          ...verifiedAuditMetadata,
+          cryptoSystem: "WebCrypto non-exportable ECDSA P-256",
+          isStrongBox: false,
+          isHardwareBacked: false,
         };
       } else {
         // If attestation chain is missing for Android platform registration

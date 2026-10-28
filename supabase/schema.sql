@@ -1,9 +1,9 @@
 -- ====================================================================
 -- CampusAttend — Supabase Database Schema & Setup Script
--- Project URL: https://qvjcxoznvhoagclbyhad.supabase.co
+-- Project URL: https://gcpuuvhydtgmcpiumpfa.supabase.co
 --
 -- Instructions:
--- 1. Open your Supabase Dashboard: https://supabase.com/dashboard/project/qvjcxoznvhoagclbyhad
+-- 1. Open your Supabase Dashboard: https://supabase.com/dashboard/project/gcpuuvhydtgmcpiumpfa
 -- 2. Navigate to "SQL Editor" in the left sidebar
 -- 3. Click "New Query", paste this entire script, and click "Run"
 -- ====================================================================
