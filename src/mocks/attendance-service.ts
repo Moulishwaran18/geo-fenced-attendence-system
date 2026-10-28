@@ -246,15 +246,28 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
       credentials: "include",
       body: JSON.stringify({ action: "challenge" }),
     });
-    if (!chalRes.ok) {
-      const errData = await chalRes.json().catch(() => ({}));
-      throw new Error(
-        errData.message ||
-          errData.error ||
-          `Failed to obtain attendance challenge from server (HTTP ${chalRes.status}).`
-      );
+
+    let chalData: any = {};
+    const chalText = await chalRes.text().catch(() => "");
+    try {
+      chalData = chalText ? JSON.parse(chalText) : {};
+    } catch {
+      chalData = { message: chalText.slice(0, 200) || `Server returned HTTP ${chalRes.status}` };
     }
-    const chalData = await chalRes.json();
+
+    if (!chalRes.ok || chalData.success === false) {
+      const errMessage =
+        chalData.message ||
+        chalData.error ||
+        `Failed to obtain attendance challenge from server (HTTP ${chalRes.status}).`;
+      const err: any = new Error(errMessage);
+      err.code = chalData.error || `CHALLENGE_HTTP_${chalRes.status}`;
+      err.status = chalRes.status;
+      err.details = chalData.details;
+      console.error("[attendance-service] Challenge rejection:", err);
+      throw err;
+    }
+
     if (chalData.success && chalData.challenge) {
       payload.challenge = chalData.challenge;
       payload.challengeToken = chalData.challengeToken;
@@ -294,14 +307,25 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
     body: JSON.stringify(payload),
   });
 
-  const data = await res.json().catch(() => ({}));
+  let data: any = {};
+  const resText = await res.text().catch(() => "");
+  try {
+    data = resText ? JSON.parse(resText) : {};
+  } catch {
+    data = { message: resText.slice(0, 200) || `Server returned HTTP ${res.status}` };
+  }
 
   if (!res.ok || data.success === false) {
-    throw new Error(
+    const errMessage =
       data.message ||
-        data.error ||
-        `Attendance rejected by server (Status ${res.status}).`
-    );
+      data.error ||
+      `Attendance rejected by server (Status ${res.status}).`;
+    const err: any = new Error(errMessage);
+    err.code = data.error || `HTTP_${res.status}`;
+    err.status = res.status;
+    err.details = data.details;
+    console.error("[attendance-service] Attendance rejection:", err);
+    throw err;
   }
 
   if (data?.receipt) {

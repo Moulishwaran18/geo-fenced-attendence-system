@@ -187,6 +187,7 @@ export async function registerCurrentDevice(
   staffId: string,
   sessionToken?: string,
   password?: string,
+  options?: { reRegister?: boolean },
 ): Promise<DeviceRegistrationResult> {
   const cleanStaffId = staffId.trim().toUpperCase();
   const headers: Record<string, string> = {
@@ -198,7 +199,12 @@ export async function registerCurrentDevice(
   }
 
   // 1. Request fresh challenge from backend
-  const challengeBody: any = { staff_code: cleanStaffId, action: "challenge" };
+  const challengeBody: any = {
+    staff_code: cleanStaffId,
+    action: "challenge",
+    reRegister: Boolean(options?.reRegister),
+    isReRegistration: Boolean(options?.reRegister),
+  };
   if (password) challengeBody.password = password;
 
   const challengeRes = await fetch("/api/device/challenge", {
@@ -295,6 +301,10 @@ export async function registerCurrentDevice(
   registrationPayload["staff_code"] = cleanStaffId;
   if (password) registrationPayload["password"] = password;
   registrationPayload["action"] = "register";
+  if (options?.reRegister) {
+    registrationPayload["reRegister"] = true;
+    registrationPayload["isReRegistration"] = true;
+  }
 
   const regRes = await fetch("/api/device/register", {
     method: "POST",

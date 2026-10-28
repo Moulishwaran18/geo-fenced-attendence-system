@@ -107,6 +107,13 @@ function MarkAttendancePage() {
   const [faceResult, setFaceResult] = useState<FaceScanResult | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  const [submitError, setSubmitError] = useState<{
+    title: string;
+    message: string;
+    code?: string;
+    details?: string;
+    timestamp: string;
+  } | null>(null);
   const now = useIndiaTime();
 
   // Live Wi-Fi Status tracker
@@ -168,24 +175,42 @@ function MarkAttendancePage() {
     void checkDeviceStatus();
   }, [checkDeviceStatus]);
 
-  const handleRegisterDevice = async () => {
+  const handleRegisterDevice = async (isReRegister = false) => {
     if (!loggedInStaff?.staffId) return;
     setIsRegisteringDevice(true);
     try {
-      const res = await registerCurrentDevice(loggedInStaff.staffId, loggedInStaff.token);
+      const shouldReRegister = isReRegister || deviceStatus?.hasActiveDevice === true;
+      const res = await registerCurrentDevice(loggedInStaff.staffId, loggedInStaff.token, undefined, {
+        reRegister: shouldReRegister,
+      });
       if (res.success) {
         toast.success("Device Registered Successfully!", {
           description: `Bound to ${res.device?.model || "this device"} (${res.device?.attestationStatus}). You can now mark attendance.`,
         });
+        setSubmitError(null);
         await checkDeviceStatus();
       } else {
+        const errMsg = res.error || "Could not register device.";
+        setSubmitError({
+          title: "Device Registration Failed",
+          message: errMsg,
+          code: "DEVICE_REGISTRATION_FAILED",
+          timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+        });
         toast.error("Device Registration Failed", {
-          description: res.error || "Could not register device.",
+          description: errMsg,
         });
       }
     } catch (err: any) {
+      const errMsg = err?.message || "Device registration encountered an error.";
+      setSubmitError({
+        title: "Registration Error",
+        message: errMsg,
+        code: "DEVICE_REGISTRATION_ERROR",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      });
       toast.error("Registration Error", {
-        description: err?.message || "Device registration encountered an error.",
+        description: errMsg,
       });
     } finally {
       setIsRegisteringDevice(false);
@@ -620,25 +645,51 @@ function MarkAttendancePage() {
     }
 
     if (!loggedInStaff) {
+      const msg = "You must be signed in with a registered staff account to mark attendance.";
+      setSubmitError({
+        title: "Staff Authentication Required",
+        message: msg,
+        code: "UNAUTHENTICATED",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      });
       toast.error("Staff Authentication Required", {
-        description: "You must be signed in with a registered staff account to mark attendance.",
+        description: msg,
       });
       return;
     }
 
     if (!wifiAuthorized) {
+      const msg =
+        wifiStatus?.reason ||
+        "You must be connected to an authorized campus Wi-Fi network to mark attendance.";
+      setSubmitError({
+        title: "Wi-Fi Verification Failed (Factor 1)",
+        message: msg,
+        code: wifiStatus?.errorCode || "CAMPUS_NETWORK_UNAUTHORIZED",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      });
       toast.error("Wi-Fi Verification Failed", {
-        description: "You must be connected to an authorized campus Wi-Fi network to mark attendance.",
+        description: msg,
       });
       return;
     }
 
     if (!gpsInsideGeofence) {
-      toast.error("GPS Geofence Verification Failed", {
-        description:
+      const msg =
+        geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+          ? `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Acquiring a better GPS fix...`
+          : "Your device GPS position is outside the authoritative campus polygon.";
+      setSubmitError({
+        title: "GPS Geofence Verification Failed (Factor 2)",
+        message: msg,
+        code:
           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-            ? `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Acquiring a better GPS fix...`
-            : "Your device GPS position is outside the authoritative campus polygon.",
+            ? "GPS_ACCURACY_INSUFFICIENT"
+            : "GPS_OUTSIDE_CAMPUS",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      });
+      toast.error("GPS Geofence Verification Failed", {
+        description: msg,
       });
       return;
     }
@@ -651,20 +702,35 @@ function MarkAttendancePage() {
     );
 
     if (isMismatch) {
+      const msg = `Recognized identity (${currentFace?.staffCode || currentFace?.staffId}) does not match authenticated staff (${loggedInStaff.staffId}). Attendance rejected.`;
+      setSubmitError({
+        title: "Identity Mismatch (Factor 3)",
+        message: msg,
+        code: "IDENTITY_MISMATCH",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      });
       toast.error("Identity Mismatch", {
-        description: `Recognized identity (${currentFace?.staffCode || currentFace?.staffId}) does not match authenticated staff (${loggedInStaff.staffId}). Attendance rejected.`,
+        description: msg,
       });
       return;
     }
 
     if (!currentFace || !currentFace.verified) {
+      const msg = "Please complete face recognition first.";
+      setSubmitError({
+        title: "Identity Verification Required (Factor 3)",
+        message: msg,
+        code: "FACE_SCAN_REQUIRED",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      });
       toast.error("Identity Verification Required", {
-        description: "Please complete face recognition first.",
+        description: msg,
       });
       setScanOpen(true);
       return;
     }
 
+    setSubmitError(null);
     isSubmittingRef.current = true;
     setStatus("verifying");
     try {
@@ -694,13 +760,39 @@ function MarkAttendancePage() {
       });
       setReceipt(result);
       setStatus("success");
+      setSubmitError(null);
       toast.success("Attendance Recorded Successfully!", {
         description: `${currentFace?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
       });
     } catch (err: any) {
       setStatus("idle");
-      toast.error("Attendance Rejected by Server", {
-        description: err?.message || "Server rejected attendance verification.",
+      const errCode = err?.code || (err?.status ? `HTTP_${err.status}` : "SERVER_REJECTED");
+      const errMsg = err?.message || "Server rejected attendance verification.";
+      let errTitle = "Attendance Rejected by Server";
+      if (errCode === "INVALID_DEVICE_SIGNATURE" || errMsg.includes("signature") || errMsg.includes("Device digital signature")) {
+        errTitle = "Device Signature Rejected";
+      } else if (errCode === "CAMPUS_NETWORK_UNAUTHORIZED" || errMsg.includes("Wi-Fi") || errMsg.includes("network")) {
+        errTitle = "Campus Wi-Fi Verification Failed";
+      } else if (errCode === "GPS_OUTSIDE_CAMPUS" || errMsg.includes("boundary polygon")) {
+        errTitle = "Outside Campus Polygon";
+      } else if (errCode === "GPS_ACCURACY_INSUFFICIENT" || errMsg.includes("accuracy")) {
+        errTitle = "GPS Accuracy Insufficient";
+      } else if (errCode === "NO_REGISTERED_DEVICE" || errCode === "DEVICE_MISMATCH") {
+        errTitle = "Device Registration Error";
+      } else if (errCode === "UNAUTHORIZED") {
+        errTitle = "Session Authentication Expired";
+      }
+
+      const errorObj = {
+        title: errTitle,
+        message: errMsg,
+        code: errCode,
+        details: err?.details || undefined,
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+      };
+      setSubmitError(errorObj);
+      toast.error(errorObj.title, {
+        description: errMsg,
       });
     } finally {
       isSubmittingRef.current = false;
@@ -714,8 +806,15 @@ function MarkAttendancePage() {
       setScanOpen(false);
 
       if (!result.verified) {
+        const msg = "Biometric identity could not be verified against PostgreSQL staff database.";
+        setSubmitError({
+          title: "Face Unrecognized",
+          message: msg,
+          code: "FACE_UNRECOGNIZED",
+          timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+        });
         toast.error("Face Unrecognized", {
-          description: "Biometric identity could not be verified against PostgreSQL staff database.",
+          description: msg,
         });
         return;
       }
@@ -725,8 +824,15 @@ function MarkAttendancePage() {
           isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId),
       );
       if (!matchedIdentity) {
+        const msg = `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff?.staffId || "None"}). Attendance rejected.`;
+        setSubmitError({
+          title: "Identity Mismatch",
+          message: msg,
+          code: "IDENTITY_MISMATCH",
+          timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+        });
         toast.error("Identity Mismatch", {
-          description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff?.staffId || "None"}). Attendance rejected.`,
+          description: msg,
         });
         return;
       }
@@ -742,8 +848,15 @@ function MarkAttendancePage() {
         const reasons: string[] = [];
         if (!wifiAuthorized) reasons.push("Authorized Campus Wi-Fi");
         if (!gpsInsideGeofence) reasons.push("GPS Polygon Containment");
+        const msg = `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`;
+        setSubmitError({
+          title: "Attendance Blocked: Required Factors Not Satisfied",
+          message: msg,
+          code: "FACTORS_NOT_SATISFIED",
+          timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+        });
         toast.warning("Attendance Blocked: Required Factors Not Satisfied", {
-          description: `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`,
+          description: msg,
         });
       }
     },
@@ -823,6 +936,57 @@ function MarkAttendancePage() {
           />
 
           <div className="space-y-6">
+            {/* Top-Level High-Visibility Attendance Error Banner */}
+            {submitError && (
+              <AlertBanner
+                tone="error"
+                icon={ShieldAlert}
+                title={submitError.title}
+                description={`${submitError.message} (${submitError.code || "ERR_REJECTED"}) [${submitError.timestamp}]`}
+                action={
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void run()}
+                      disabled={status === "verifying"}
+                      className="h-8 gap-1.5"
+                    >
+                      <RefreshCw className="size-3.5" /> Retry Submission
+                    </Button>
+                    {(submitError.code === "INVALID_DEVICE_SIGNATURE" ||
+                      submitError.code === "NO_REGISTERED_DEVICE" ||
+                      submitError.code === "DEVICE_MISMATCH" ||
+                      submitError.code === "DEVICE_ALREADY_REGISTERED" ||
+                      submitError.message.toLowerCase().includes("device") ||
+                      submitError.message.toLowerCase().includes("signature")) && (
+                      <Button
+                        size="sm"
+                        onClick={() => void handleRegisterDevice()}
+                        disabled={isRegisteringDevice}
+                        className="h-8 gap-1.5"
+                      >
+                        {isRegisteringDevice ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="size-3.5" />
+                        )}
+                        Bind / Register This Phone
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSubmitError(null)}
+                      className="h-8 text-xs text-muted-foreground"
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                }
+              />
+            )}
+
             {/* Conditional Status Banners */}
             {!loggedInStaff && (
               <AlertBanner
@@ -864,11 +1028,23 @@ function MarkAttendancePage() {
           )}
 
           {!isUsingMockScenario && loggedInStaff && deviceStatus?.success === true && deviceStatus.hasActiveDevice === true && (
-            <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
-              <ShieldCheck className="size-4 shrink-0 text-primary" />
-              <span>
-                <strong>Bound Device:</strong> {deviceStatus.device?.model} ({deviceStatus.device?.attestationStatus}) · Hardware-bound cryptographic attendance active
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="size-4 shrink-0 text-primary" />
+                <span>
+                  <strong>Bound Device:</strong> {deviceStatus.device?.model} ({deviceStatus.device?.attestationStatus}) · Hardware-bound cryptographic attendance active
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleRegisterDevice()}
+                disabled={isRegisteringDevice}
+                className="h-7 text-[11px] gap-1 shrink-0"
+              >
+                {isRegisteringDevice ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                Re-bind / Switch Device
+              </Button>
             </div>
           )}
 
@@ -1346,6 +1522,59 @@ function MarkAttendancePage() {
                   </div>
                 )}
 
+                {/* Visible Persistent Submission Error Banner with Retry */}
+                {submitError && (
+                  <div id="attendance-decision-error-banner" className="space-y-2">
+                    <AlertBanner
+                      tone="error"
+                      icon={ShieldAlert}
+                      title={submitError.title}
+                      description={`${submitError.message} (${submitError.code || "ERR_REJECTED"}) [${submitError.timestamp}]`}
+                      action={
+                        <div className="flex flex-wrap items-center gap-2 mt-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void run()}
+                            disabled={status === "verifying"}
+                            className="h-8 gap-1.5"
+                          >
+                            <RefreshCw className="size-3.5" /> Retry Submission
+                          </Button>
+                          {(submitError.code === "INVALID_DEVICE_SIGNATURE" ||
+                            submitError.code === "NO_REGISTERED_DEVICE" ||
+                            submitError.code === "DEVICE_MISMATCH" ||
+                            submitError.code === "DEVICE_ALREADY_REGISTERED" ||
+                            submitError.message.toLowerCase().includes("device") ||
+                            submitError.message.toLowerCase().includes("signature")) && (
+                            <Button
+                              size="sm"
+                              onClick={() => void handleRegisterDevice()}
+                              disabled={isRegisteringDevice}
+                              className="h-8 gap-1.5"
+                            >
+                              {isRegisteringDevice ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <ShieldCheck className="size-3.5" />
+                              )}
+                              Bind / Register This Phone
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setSubmitError(null)}
+                            className="h-8 text-xs text-muted-foreground"
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      }
+                    />
+                  </div>
+                )}
+
                 {/* Submission CTA Button */}
                 <Button
                   id="mark-attendance-btn"
@@ -1364,44 +1593,89 @@ function MarkAttendancePage() {
                   }
                   onClick={() => {
                     if (geofence.status === "location_services_off" || geofence.status === "position_unavailable") {
+                      const msg = "Turn on Android Location and try again.";
+                      setSubmitError({
+                        title: "Location services are OFF",
+                        message: msg,
+                        code: "LOCATION_SERVICES_OFF",
+                        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+                      });
                       toast.error("Location services are OFF", {
-                        description: "Turn on Android Location and try again.",
+                        description: msg,
                       });
                       void geofence.refreshLocation();
                       return;
                     }
                     if (geofence.status === "permission_prompt") {
+                      const msg = "Please allow location access to continue.";
+                      setSubmitError({
+                        title: "Location permission required",
+                        message: msg,
+                        code: "PERMISSION_PROMPT",
+                        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+                      });
                       toast.info("Location permission required", {
-                        description: "Please allow location access to continue.",
+                        description: msg,
                       });
                       void geofence.refreshLocation();
                       return;
                     }
                     if (geofence.status === "permission_denied") {
+                      const msg = "Enable location permission for Chrome and try again.";
+                      setSubmitError({
+                        title: "Location permission denied",
+                        message: msg,
+                        code: "PERMISSION_DENIED",
+                        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+                      });
                       toast.error("Location permission denied", {
-                        description: "Enable location permission for Chrome and try again.",
+                        description: msg,
                       });
                       void geofence.refreshLocation();
                       return;
                     }
                     if (isWrongPerson) {
+                      const msg = `Recognized face does not match authenticated user (${loggedInStaff?.staffId || "Staff"}). Attendance rejected.`;
+                      setSubmitError({
+                        title: "Identity Mismatch",
+                        message: msg,
+                        code: "IDENTITY_MISMATCH",
+                        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+                      });
                       toast.error("Identity Mismatch", {
-                        description: `Recognized face does not match authenticated user (${loggedInStaff?.staffId || "Staff"}). Attendance rejected.`,
+                        description: msg,
                       });
                       return;
                     }
                     if (!wifiAuthorized) {
+                      const msg = "You must be connected to an authorized campus Wi-Fi network.";
+                      setSubmitError({
+                        title: "Wi-Fi Verification Blocked",
+                        message: msg,
+                        code: "CAMPUS_NETWORK_UNAUTHORIZED",
+                        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+                      });
                       toast.error("Wi-Fi Verification Blocked", {
-                        description: "You must be connected to an authorized campus Wi-Fi network.",
+                        description: msg,
                       });
                       return;
                     }
                     if (!gpsInsideGeofence) {
-                      toast.error("Outside Geofence", {
-                        description:
+                      const msg =
+                        geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
+                          ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤20m precision.`
+                          : "Your GPS coordinates must be inside the authoritative campus polygon.";
+                      setSubmitError({
+                        title: "Outside Geofence",
+                        message: msg,
+                        code:
                           geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-                            ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤20m precision.`
-                            : "Your GPS coordinates must be inside the authoritative campus polygon.",
+                            ? "GPS_ACCURACY_INSUFFICIENT"
+                            : "GPS_OUTSIDE_CAMPUS",
+                        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
+                      });
+                      toast.error("Outside Geofence", {
+                        description: msg,
                       });
                       return;
                     }
