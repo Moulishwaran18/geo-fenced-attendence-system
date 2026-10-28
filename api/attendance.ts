@@ -970,6 +970,40 @@ async function getActiveDeviceForStaff(cleanCode: string) {
           revocation_reason: data.revocation_reason,
         };
       }
+
+      // Check registered_devices if not in devices table
+      if (!data) {
+        try {
+          const { data: regDev } = await supabase
+            .from("registered_devices")
+            .select("*")
+            .ilike("staff_id", code)
+            .eq("status", "Active")
+            .order("registered_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (regDev) {
+            return {
+              id: regDev.device_id,
+              staff_id: null,
+              staff_code: regDev.staff_id || code,
+              staff_name: regDev.staff_name,
+              public_key: "",
+              key_id: regDev.device_id,
+              key_algorithm: "ECDSA_P256",
+              platform: "android",
+              model: "Registered Mobile Device",
+              os: "Android",
+              status: "Active",
+              registered_at: regDev.registered_at || regDev.created_at,
+              last_verified_at: regDev.updated_at || regDev.created_at,
+              revoked_at: null,
+              revocation_reason: null,
+            };
+          }
+        } catch {}
+      }
     } catch {}
   }
 

@@ -98,6 +98,22 @@ async function registerDeviceForStaff(params: {
           error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${conflictingDevice.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
+
+      // Check registered_devices for Rule 2 conflict
+      const { data: regConflict } = await supabaseClient
+        .from("registered_devices")
+        .select("staff_id, device_id, status")
+        .eq("status", "Active")
+        .eq("device_id", keyId)
+        .maybeSingle();
+
+      if (regConflict && regConflict.staff_id?.toUpperCase() !== cleanStaffCode) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_id}). One physical device can only be bound to one staff account at a time.`,
+        };
+      }
     } catch (e: any) {
       console.warn("[registerDeviceForStaff] Check error:", e?.message);
     }
@@ -171,6 +187,35 @@ async function registerDeviceForStaff(params: {
             error: "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices.",
           };
         }
+      }
+
+      // Persist to public.registered_devices
+      try {
+        let staffDept = params.auditMetadata?.department || "General";
+        if (staffDept === "General") {
+          const { data: stRow } = await supabaseClient
+            .from("staff")
+            .select("department")
+            .ilike("staff_code", cleanStaffCode)
+            .maybeSingle();
+          if (stRow?.department) staffDept = stRow.department;
+        }
+
+        await supabaseClient.from("registered_devices").upsert(
+          {
+            staff_id: cleanStaffCode,
+            staff_code: cleanStaffCode,
+            staff_name: params.staffName,
+            department: staffDept,
+            device_id: keyId,
+            status: "Active",
+            registered_at: now,
+            updated_at: now,
+          },
+          { onConflict: "staff_id" }
+        );
+      } catch (regDevErr: any) {
+        console.warn("[registerDeviceForStaff] registered_devices persistence notice:", regDevErr?.message);
       }
 
       const cleanB64Key = normalizedKey

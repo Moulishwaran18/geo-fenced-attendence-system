@@ -988,6 +988,40 @@ export async function getActiveDeviceForStaff(staffCode: string): Promise<Device
           audit_metadata: data.audit_metadata,
         };
       }
+
+      // Check registered_devices if not found in devices table
+      if (!data) {
+        try {
+          const { data: regDev } = await supabase
+            .from("registered_devices")
+            .select("*")
+            .ilike("staff_id", cleanCode)
+            .eq("status", "Active")
+            .order("registered_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (regDev) {
+            return {
+              id: regDev.device_id,
+              staff_id: null,
+              staff_code: regDev.staff_id || cleanCode,
+              staff_name: regDev.staff_name,
+              public_key: "",
+              key_id: regDev.device_id,
+              key_algorithm: "ECDSA_P256",
+              platform: "android",
+              attestation_status: "Verified",
+              attestation_type: "AdminRegistration",
+              model: "Registered Mobile Device",
+              os: "Android",
+              status: "Active",
+              registered_at: regDev.registered_at || regDev.created_at,
+              last_verified_at: regDev.updated_at || regDev.created_at,
+            };
+          }
+        } catch {}
+      }
     } catch (sbErr) {
       console.warn("[device-binding] Supabase getActiveDevice error:", sbErr);
     }
@@ -1166,6 +1200,22 @@ export async function registerDeviceForStaff(params: {
           error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${conflictingDevice.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
+
+      // Check registered_devices for Rule 2 conflict
+      const { data: regConflict } = await supabase
+        .from("registered_devices")
+        .select("staff_id, device_id, status")
+        .eq("status", "Active")
+        .eq("device_id", keyId)
+        .maybeSingle();
+
+      if (regConflict && regConflict.staff_id?.toUpperCase() !== cleanStaffCode) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_id}). One physical device can only be bound to one staff account at a time.`,
+        };
+      }
     } catch (e: any) {
       console.warn("[device-binding] Supabase Rule 2 check notice:", e?.message);
     }
@@ -1303,6 +1353,35 @@ export async function registerDeviceForStaff(params: {
             error: "DEVICE_ALREADY_EXISTS: Database unique constraint prevents binding multiple active devices.",
           };
         }
+      }
+
+      // Persist to public.registered_devices
+      try {
+        let staffDept = params.auditMetadata?.department || "General";
+        if (staffDept === "General") {
+          const { data: stRow } = await supabase
+            .from("staff")
+            .select("department")
+            .ilike("staff_code", cleanStaffCode)
+            .maybeSingle();
+          if (stRow?.department) staffDept = stRow.department;
+        }
+
+        await supabase.from("registered_devices").upsert(
+          {
+            staff_id: cleanStaffCode,
+            staff_code: cleanStaffCode,
+            staff_name: params.staffName,
+            department: staffDept,
+            device_id: keyId,
+            status: "Active",
+            registered_at: now,
+            updated_at: now,
+          },
+          { onConflict: "staff_id" }
+        );
+      } catch (regDevErr: any) {
+        console.warn("[device-binding] registered_devices persistence notice:", regDevErr?.message);
       }
 
       // Record detailed cryptographic audit record in security_events
@@ -1488,6 +1567,17 @@ export async function revokeDevice(params: {
           .ilike("staff_code", targetDevice.staff_code)
           .eq("status", "Active");
       }
+
+      // Synchronize revocation in registered_devices
+      try {
+        await supabase
+          .from("registered_devices")
+          .update({
+            status: "Revoked",
+            updated_at: now,
+          })
+          .or(`device_id.eq.${targetDevice.id},staff_id.ilike.${targetDevice.staff_code || ""}`);
+      } catch {}
 
       // Audit log revocation
       await supabase.from("security_events").insert({

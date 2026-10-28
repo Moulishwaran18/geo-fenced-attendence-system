@@ -1062,6 +1062,38 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
           last_verified_at: data.last_verified_at || data.registered_at,
         };
       }
+
+      // Query registered_devices if not found in devices table
+      if (!data) {
+        try {
+          const { data: regDev } = await supabaseClient
+            .from("registered_devices")
+            .select("*")
+            .ilike("staff_id", code)
+            .eq("status", "Active")
+            .order("registered_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (regDev) {
+            return {
+              id: regDev.device_id,
+              staff_id: null,
+              staff_code: regDev.staff_id || code,
+              staff_name: regDev.staff_name,
+              public_key: "",
+              key_id: regDev.device_id,
+              key_algorithm: "ECDSA_P256",
+              platform: "android",
+              model: "Registered Mobile Device",
+              os: "Android",
+              status: "Active",
+              registered_at: regDev.registered_at || regDev.created_at,
+              last_verified_at: regDev.updated_at || regDev.created_at,
+            };
+          }
+        } catch {}
+      }
     } catch (e) {
       console.warn("[getActiveDeviceForStaff] Error:", e);
     }
@@ -1212,6 +1244,22 @@ async function registerDeviceForStaff(params: {
           error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${conflictingDevice.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
+
+      // Check registered_devices for Rule 2 conflict
+      const { data: regConflict } = await supabaseClient
+        .from("registered_devices")
+        .select("staff_id, device_id, status")
+        .eq("status", "Active")
+        .eq("device_id", keyId)
+        .maybeSingle();
+
+      if (regConflict && regConflict.staff_id?.toUpperCase() !== cleanStaffCode) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_id}). One physical device can only be bound to one staff account at a time.`,
+        };
+      }
     } catch (e: any) {
       console.warn("[api/device] Supabase Rule 2 check error:", e?.message);
     }
@@ -1343,6 +1391,35 @@ async function registerDeviceForStaff(params: {
             message: "Failed to persist device registration in database.",
           };
         }
+      }
+
+      // Persist to public.registered_devices
+      try {
+        let staffDept = params.auditMetadata?.department || "General";
+        if (staffDept === "General") {
+          const { data: stRow } = await supabaseClient
+            .from("staff")
+            .select("department")
+            .ilike("staff_code", cleanStaffCode)
+            .maybeSingle();
+          if (stRow?.department) staffDept = stRow.department;
+        }
+
+        await supabaseClient.from("registered_devices").upsert(
+          {
+            staff_id: cleanStaffCode,
+            staff_code: cleanStaffCode,
+            staff_name: params.staffName,
+            department: staffDept,
+            device_id: keyId,
+            status: "Active",
+            registered_at: now,
+            updated_at: now,
+          },
+          { onConflict: "staff_id" }
+        );
+      } catch (regDevErr: any) {
+        console.warn("[api/device] registered_devices persistence notice:", regDevErr?.message);
       }
 
       const cleanB64Key = normalizedKey

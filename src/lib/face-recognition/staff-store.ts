@@ -215,7 +215,8 @@ export async function createNewStaff(data: {
   department: string;
   designation: string;
   active?: boolean;
-}): Promise<boolean> {
+  device_id?: string;
+}): Promise<{ success: boolean; error?: string }> {
   try {
     const res = await fetch("/api/admin/staff", {
       method: "POST",
@@ -223,10 +224,14 @@ export async function createNewStaff(data: {
       credentials: "include",
       body: JSON.stringify(data),
     });
-    return res.ok;
-  } catch (err) {
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.success === false) {
+      return { success: false, error: json.error || `HTTP ${res.status}` };
+    }
+    return { success: true };
+  } catch (err: any) {
     console.error("Create staff error:", err);
-    return false;
+    return { success: false, error: err?.message || "Connection failed" };
   }
 }
 

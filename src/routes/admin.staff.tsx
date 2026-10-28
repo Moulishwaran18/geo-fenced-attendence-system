@@ -93,6 +93,7 @@ function AdminStaffPage() {
   const [newEmail, setNewEmail] = useState("");
   const [newDept, setNewDept] = useState(DEPARTMENTS[0]!);
   const [newDesig, setNewDesig] = useState("Assistant Professor");
+  const [newDeviceId, setNewDeviceId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const loadData = useCallback(async () => {
@@ -167,25 +168,33 @@ function AdminStaffPage() {
     }
 
     setIsSubmitting(true);
-    const success = await createNewStaff({
+    const result = await createNewStaff({
       staff_code: newStaffCode.trim().toUpperCase(),
       name: newName.trim(),
       email: newEmail.trim().toLowerCase(),
       department: newDept,
       designation: newDesig,
+      device_id: newDeviceId.trim() || undefined,
       active: true,
     });
     setIsSubmitting(false);
 
-    if (success) {
-      toast.success(`Staff member ${newStaffCode} created successfully`);
+    if (result.success) {
+      toast.success(`Staff member ${newStaffCode} registered successfully`, {
+        description: newDeviceId.trim()
+          ? `Device ${newDeviceId.trim()} bound in public.registered_devices`
+          : "Staff record created.",
+      });
       setAddOpen(false);
       setNewStaffCode("");
       setNewName("");
       setNewEmail("");
+      setNewDeviceId("");
       void loadData();
     } else {
-      toast.error("Failed to create staff member");
+      toast.error("Failed to register staff member", {
+        description: result.error || "Please check the information and try again.",
+      });
     }
   };
 
@@ -472,6 +481,18 @@ function AdminStaffPage() {
                 value={newDesig}
                 onChange={(e) => setNewDesig(e.target.value)}
               />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="new-device-id">Registered Device ID (Optional)</Label>
+              <Input
+                id="new-device-id"
+                placeholder="e.g. DEV_ANDROID_a1b2c3d4e5f6 or device hardware serial"
+                value={newDeviceId}
+                onChange={(e) => setNewDeviceId(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Saves initial device binding into public.registered_devices. If left blank, faculty will bind their phone on initial attendance login.
+              </p>
             </div>
           </div>
           <DialogFooter>

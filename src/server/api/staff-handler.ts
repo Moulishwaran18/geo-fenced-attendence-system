@@ -249,11 +249,16 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
         department?: string;
         designation?: string;
         active?: boolean;
+        device_id?: string;
+        deviceId?: string;
+        registered_device_id?: string;
       };
 
       if (!body.staff_code || !body.name || !body.email) {
         return errorResponse("Missing required fields: staff_code, name, email are required.", 400);
       }
+
+      const rawDeviceId = (body.device_id || body.deviceId || body.registered_device_id || "").toString().trim();
 
       const created = await createStaff({
         staff_code: body.staff_code.trim().toUpperCase(),
@@ -262,6 +267,7 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
         department: body.department?.trim() || "General Administration",
         designation: body.designation?.trim() || "Staff",
         active: body.active !== undefined ? body.active : true,
+        device_id: rawDeviceId || undefined,
       });
 
       return jsonResponse({ success: true, data: created }, 201);

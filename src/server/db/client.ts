@@ -402,6 +402,7 @@ export async function createStaff(data: {
   department: string;
   designation: string;
   active?: boolean;
+  device_id?: string;
 }): Promise<StaffRecord> {
   const p = getPgPool();
   if (p) {
@@ -449,6 +450,24 @@ export async function createStaff(data: {
         .single();
 
       if (!error && resData) {
+        if (data.device_id) {
+          try {
+            await supabase.from("registered_devices").upsert(
+              {
+                staff_id: data.staff_code,
+                staff_code: data.staff_code,
+                staff_name: data.name,
+                department: data.department,
+                device_id: data.device_id,
+                status: "Active",
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "staff_id" }
+            );
+          } catch (regErr) {
+            console.warn("Supabase registered_devices insert notice:", regErr);
+          }
+        }
         return resData;
       }
     } catch (sbErr) {

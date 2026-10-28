@@ -75,6 +75,17 @@ async function revokeDevice(params: {
           .ilike("staff_code", targetDevice.staff_code)
           .eq("status", "Active");
       }
+
+      // Also synchronize revocation in registered_devices
+      try {
+        await supabase
+          .from("registered_devices")
+          .update({
+            status: "Revoked",
+            updated_at: now,
+          })
+          .or(`device_id.eq.${deviceId},staff_id.ilike.${targetDevice?.staff_code || ""}`);
+      } catch {}
     } catch {}
 
     try {
@@ -826,17 +837,92 @@ export default async function handler(req: any, res?: any) {
         });
       }
 
+      const cleanStaffCode = body.staff_code.trim().toUpperCase();
+      const cleanName = body.name.trim();
+      const cleanEmail = body.email.trim().toLowerCase();
+      const cleanDept = body.department?.trim() || "General";
+      const cleanDesig = body.designation?.trim() || "Staff";
+      const rawDeviceId = (body.device_id || body.deviceId || body.registered_device_id || "").toString().trim();
+      const nowIso = new Date().toISOString();
+
+      // Rule 1 & Rule 2 hardware uniqueness checks if deviceId is provided
+      if (rawDeviceId) {
+        // Check Rule 1: Does this staff member already have an active registered device?
+        const { data: existingRegDev } = await supabase
+          .from("registered_devices")
+          .select("id, staff_id, device_id, status")
+          .eq("status", "Active")
+          .ilike("staff_id", cleanStaffCode)
+          .maybeSingle();
+
+        if (existingRegDev && existingRegDev.device_id !== rawDeviceId) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            code: "DEVICE_ALREADY_EXISTS",
+            error: `DEVICE_ALREADY_EXISTS: Faculty member '${cleanStaffCode}' already has an active registered device (ID: ${existingRegDev.device_id}). One Faculty ID = One Phone policy prohibits registering a second device. Contact administration for device replacement.`,
+          });
+        }
+
+        const { data: existingDev } = await supabase
+          .from("devices")
+          .select("id, staff_code, status")
+          .eq("status", "Active")
+          .ilike("staff_code", cleanStaffCode)
+          .maybeSingle();
+
+        if (existingDev && existingDev.id !== rawDeviceId) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            code: "DEVICE_ALREADY_EXISTS",
+            error: `DEVICE_ALREADY_EXISTS: Faculty member '${cleanStaffCode}' already has an active registered device (${existingDev.model || "Mobile Device"}, ID: ${existingDev.id}). One Faculty ID = One Phone policy prohibits registering a second device.`,
+          });
+        }
+
+        // Check Rule 2: Is this physical device already bound to another staff account?
+        const { data: conflictRegDev } = await supabase
+          .from("registered_devices")
+          .select("id, staff_id, device_id, status")
+          .eq("status", "Active")
+          .eq("device_id", rawDeviceId)
+          .maybeSingle();
+
+        if (conflictRegDev && conflictRegDev.staff_id?.toUpperCase() !== cleanStaffCode) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            code: "DEVICE_BOUND_TO_ANOTHER_ACCOUNT",
+            error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${rawDeviceId}) is already bound to another staff account (${conflictRegDev.staff_id}). One physical device can only be bound to one staff account at a time.`,
+          });
+        }
+
+        const { data: conflictDev } = await supabase
+          .from("devices")
+          .select("id, staff_code, status")
+          .eq("status", "Active")
+          .or(`id.eq.${rawDeviceId},key_id.eq.${rawDeviceId}`)
+          .maybeSingle();
+
+        if (conflictDev && conflictDev.staff_code?.toUpperCase() !== cleanStaffCode) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            code: "DEVICE_BOUND_TO_ANOTHER_ACCOUNT",
+            error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${rawDeviceId}) is already bound to another staff account (${conflictDev.staff_code}). One physical device can only be bound to one staff account at a time.`,
+          });
+        }
+      }
+
       const { data, error } = await supabase
         .from("staff")
         .upsert(
           {
-            staff_code: body.staff_code.trim().toUpperCase(),
-            name: body.name.trim(),
-            email: body.email.trim(),
-            department: body.department?.trim() || "General",
-            designation: body.designation?.trim() || "Staff",
+            staff_code: cleanStaffCode,
+            name: cleanName,
+            email: cleanEmail,
+            department: cleanDept,
+            designation: cleanDesig,
+            device: rawDeviceId ? `device_id:${rawDeviceId}` : undefined,
+            device_status: rawDeviceId ? "Active" : "Pending",
             active: body.active !== undefined ? body.active : true,
-            updated_at: new Date().toISOString(),
+            updated_at: nowIso,
           },
           { onConflict: "staff_code" },
         )
@@ -844,10 +930,87 @@ export default async function handler(req: any, res?: any) {
         .single();
 
       if (error) {
+        if (error.code === "23505" || error.message.includes("unique")) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            code: "STAFF_ALREADY_EXISTS",
+            error: `STAFF_ALREADY_EXISTS: Staff code '${cleanStaffCode}' or email '${cleanEmail}' is already registered in the system.`,
+          });
+        }
         return sendJsonResponse(res, 500, { success: false, error: error.message });
       }
 
-      return sendJsonResponse(res, 201, { success: true, data });
+      // If rawDeviceId is provided, save into public.registered_devices AND public.devices
+      if (rawDeviceId) {
+        try {
+          const { error: regDevErr } = await supabase
+            .from("registered_devices")
+            .upsert(
+              {
+                staff_id: cleanStaffCode,
+                staff_code: cleanStaffCode,
+                staff_name: cleanName,
+                department: cleanDept,
+                device_id: rawDeviceId,
+                status: "Active",
+                registered_at: nowIso,
+                updated_at: nowIso,
+              },
+              { onConflict: "staff_id" }
+            );
+
+          if (regDevErr) {
+            console.error("[admin/staff] registered_devices persistence error:", regDevErr.message);
+          }
+        } catch (e: any) {
+          console.warn("[admin/staff] registered_devices insert notice:", e?.message);
+        }
+
+        try {
+          await supabase.from("devices").upsert(
+            {
+              id: rawDeviceId,
+              staff_id: data.id,
+              staff_code: cleanStaffCode,
+              staff_name: cleanName,
+              model: body.device_model || "Admin Registered Device",
+              os: body.device_os || "Mobile",
+              status: "Active",
+              registered_at: nowIso,
+              last_verified_at: nowIso,
+            },
+            { onConflict: "id" }
+          );
+        } catch (e: any) {
+          console.warn("[admin/staff] devices insert notice:", e?.message);
+        }
+
+        try {
+          await supabase.from("security_events").insert({
+            time: nowIso,
+            staff: cleanStaffCode,
+            event: `DEVICE_REGISTERED|${rawDeviceId}`,
+            device: JSON.stringify({
+              deviceId: rawDeviceId,
+              staffId: cleanStaffCode,
+              registeredBy: "admin",
+              department: cleanDept,
+            }),
+            location: "Admin Staff Management Console",
+            result: "Allowed",
+            severity: "Low",
+          });
+        } catch {}
+      }
+
+      return sendJsonResponse(res, 201, {
+        success: true,
+        data,
+        device_id: rawDeviceId || null,
+        message: rawDeviceId
+          ? `Staff member ${cleanStaffCode} created and device ${rawDeviceId} registered successfully.`
+          : `Staff member ${cleanStaffCode} created successfully.`,
+      });
     }
 
     // 3. Database diagnostics: /api/admin/db-diagnostic
@@ -992,7 +1155,37 @@ export default async function handler(req: any, res?: any) {
       if (urlStaff) query = query.ilike("staff_code", urlStaff.trim().toUpperCase());
       const { data: devices, error: devErr } = await query;
       if (devErr) return sendJsonResponse(res, 500, { success: false, error: devErr.message });
-      return sendJsonResponse(res, 200, { success: true, count: (devices || []).length, devices: devices || [] });
+
+      // Merge records from registered_devices
+      let regQuery = supabase.from("registered_devices").select("*");
+      if (urlStaff) regQuery = regQuery.ilike("staff_id", urlStaff.trim().toUpperCase());
+      const { data: regDevices } = await regQuery;
+
+      const deviceList = [...(devices || [])];
+      if (Array.isArray(regDevices)) {
+        for (const rd of regDevices) {
+          const alreadyPresent = deviceList.some(
+            (d) => d.id === rd.device_id || d.key_id === rd.device_id || (d.staff_code?.toUpperCase() === rd.staff_id?.toUpperCase() && d.status === "Active")
+          );
+          if (!alreadyPresent) {
+            deviceList.push({
+              id: rd.device_id,
+              key_id: rd.device_id,
+              staff_code: rd.staff_id,
+              staff_name: rd.staff_name,
+              model: "Registered Mobile Device",
+              os: "Android",
+              platform: "android",
+              attestation_status: "Verified",
+              status: rd.status,
+              registered_at: rd.registered_at || rd.created_at,
+              last_verified_at: rd.updated_at || rd.created_at,
+            });
+          }
+        }
+      }
+
+      return sendJsonResponse(res, 200, { success: true, count: deviceList.length, devices: deviceList });
     }
 
     // 7. Device Revocation: POST /api/admin/devices/revoke
