@@ -1398,14 +1398,14 @@ async function registerDeviceForStaff(params: {
 
       // Persist to public.registered_devices
       try {
-        let staffDept = params.auditMetadata?.department || "General";
+        let staffDept = params.auditMetadata?.["department"] || "General";
         if (staffDept === "General") {
           const { data: stRow } = await supabaseClient
             .from("staff")
             .select("department")
             .ilike("staff_code", cleanStaffCode)
             .maybeSingle();
-          if (stRow?.department) staffDept = stRow.department;
+          if (stRow?.["department"]) staffDept = stRow["department"];
         }
 
         await supabaseClient.from("registered_devices").upsert(

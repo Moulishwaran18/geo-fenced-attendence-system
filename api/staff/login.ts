@@ -682,19 +682,6 @@ async function handleSession(req: any, res?: any, supabase?: any) {
     };
   }
 
-  if (staffErr && !resolvedStaff) {
-    return sendJsonResponse(
-      res,
-      401,
-      {
-        success: false,
-        error: "STAFF_NOT_FOUND",
-        message: `Staff account '${staffCode}' not found.`,
-      },
-      { "Set-Cookie": "staff_session=; Path=/; HttpOnly; Max-Age=0" },
-    );
-  }
-
   if (!resolvedStaff) {
     return sendJsonResponse(
       res,

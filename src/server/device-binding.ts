@@ -42,6 +42,8 @@ export interface DeviceRecord {
   revocation_reason?: string | null | undefined;
   revoked_by?: string | null | undefined;
   audit_metadata?: Record<string, any> | undefined;
+  device_locked?: boolean | undefined;
+  is_active?: boolean | undefined;
 }
 
 export interface DeviceChallengeTokenPayload {
@@ -1375,7 +1377,7 @@ export async function registerDeviceForStaff(params: {
 
       // Persist to public.registered_devices
       try {
-        let staffDept = params.auditMetadata?.department || "General";
+        let staffDept = params.auditMetadata?.["department"] || "General";
         if (staffDept === "General") {
           try {
             const { data: stRow } = await supabase
@@ -1383,7 +1385,7 @@ export async function registerDeviceForStaff(params: {
               .select("department")
               .ilike("staff_code", cleanStaffCode)
               .maybeSingle();
-            if (stRow?.department) staffDept = stRow.department;
+            if (stRow?.["department"]) staffDept = stRow["department"];
           } catch {}
         }
 

@@ -191,7 +191,7 @@ async function registerDeviceForStaff(params: {
 
       // Persist to public.registered_devices (exact schema)
       try {
-        let staffDept = params.auditMetadata?.department || "General";
+        let staffDept = params.auditMetadata?.["department"] || "General";
         if (staffDept === "General") {
           try {
             const { data: stRow } = await supabaseClient
@@ -199,7 +199,7 @@ async function registerDeviceForStaff(params: {
               .select("department")
               .ilike("staff_code", cleanStaffCode)
               .maybeSingle();
-            if (stRow?.department) staffDept = stRow.department;
+            if (stRow?.["department"]) staffDept = stRow["department"];
           } catch {}
         }
 
