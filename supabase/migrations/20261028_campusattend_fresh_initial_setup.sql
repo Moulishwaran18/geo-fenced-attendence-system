@@ -103,22 +103,20 @@ CREATE INDEX IF NOT EXISTS idx_devices_staff_code ON public.devices(staff_code);
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.registered_devices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    staff_id VARCHAR(64) NOT NULL,
-    staff_code VARCHAR(64),
+    staff_code VARCHAR(64) UNIQUE NOT NULL,
     staff_name VARCHAR(255) NOT NULL,
     department VARCHAR(128) NOT NULL,
-    device_id VARCHAR(128) NOT NULL,
-    status VARCHAR(32) DEFAULT 'Active' NOT NULL CHECK (status IN ('Active', 'Revoked', 'Pending', 'Blocked')),
-    registered_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    CONSTRAINT uq_registered_devices_staff UNIQUE (staff_id),
-    CONSTRAINT uq_registered_devices_device UNIQUE (device_id)
+    device_id VARCHAR(128) UNIQUE NOT NULL,
+    device_locked BOOLEAN NOT NULL DEFAULT true,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_registered_devices_staff_id ON public.registered_devices(staff_id);
+CREATE INDEX IF NOT EXISTS idx_registered_devices_staff_code ON public.registered_devices(staff_code);
 CREATE INDEX IF NOT EXISTS idx_registered_devices_device_id ON public.registered_devices(device_id);
-CREATE INDEX IF NOT EXISTS idx_registered_devices_status ON public.registered_devices(status);
+CREATE INDEX IF NOT EXISTS idx_registered_devices_is_active ON public.registered_devices(is_active);
+CREATE INDEX IF NOT EXISTS idx_registered_devices_device_locked ON public.registered_devices(device_locked);
 
 -- ---------------------------------------------------------------------
 -- 1.3 TABLE: public.attendance_records (Punch Logs & Tamper Verification)

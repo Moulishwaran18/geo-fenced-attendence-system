@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { registerDeviceForStaff, getActiveDeviceForStaff, revokeDevice } from "../src/server/device-binding";
 
 console.log("=================================================================");
@@ -40,6 +42,40 @@ async function runTests() {
   const dept2 = "Electronics and Communication Engineering";
   const deviceId2 = "DEV_ANDROID_TEST_PHONE_002";
 
+  const staffDbPath = path.resolve(process.cwd(), "data", "staff-db.json");
+  const initialStaffDb = fs.existsSync(staffDbPath) ? fs.readFileSync(staffDbPath, "utf-8") : null;
+
+  const cleanupTestData = (restoreExact = false) => {
+    try {
+      if (restoreExact && initialStaffDb !== null) {
+        fs.writeFileSync(staffDbPath, initialStaffDb, "utf-8");
+      } else {
+        for (const relPath of [path.join("data", "staff-db.json"), path.join(".gemini", "device-store.json")]) {
+          const p = path.resolve(process.cwd(), relPath);
+          if (fs.existsSync(p)) {
+            const store = JSON.parse(fs.readFileSync(p, "utf-8"));
+            if (Array.isArray(store.devices)) {
+              store.devices = store.devices.filter(
+                (d: any) =>
+                  d.staff_code !== staffId1 &&
+                  d.staff_code !== staffId2 &&
+                  d.id !== deviceId1 &&
+                  d.id !== deviceId2 &&
+                  d.key_id !== deviceId1 &&
+                  d.key_id !== deviceId2
+              );
+              fs.writeFileSync(p, JSON.stringify(store, null, 2), "utf-8");
+            }
+          }
+        }
+      }
+    } catch {}
+  };
+
+  // Clean any test artifacts from prior runs to ensure hermetic test execution
+  cleanupTestData(false);
+
+  try {
   console.log("--- TEST 1: Initial Registration & Persistence ---");
   const reg1 = await registerDeviceForStaff({
     staffId: staffId1,
@@ -152,6 +188,10 @@ async function runTests() {
 
   assert(replacementReg.success === true, "Replacement device registration succeeded after authorized revocation");
   assert(replacementReg.device?.id === deviceId2, "Replacement device ID matches");
+
+  } finally {
+    cleanupTestData(true);
+  }
 
   console.log(`\n=================================================================`);
   console.log(`   TEST RESULTS: ${passed} / ${total} PASSED`);

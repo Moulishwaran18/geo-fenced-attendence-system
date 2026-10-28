@@ -102,16 +102,16 @@ async function registerDeviceForStaff(params: {
       // Check registered_devices for Rule 2 conflict
       const { data: regConflict } = await supabaseClient
         .from("registered_devices")
-        .select("staff_id, device_id, status")
-        .eq("status", "Active")
+        .select("id, staff_code, device_id, device_locked, is_active")
+        .eq("is_active", true)
         .eq("device_id", keyId)
         .maybeSingle();
 
-      if (regConflict && regConflict.staff_id?.toUpperCase() !== cleanStaffCode) {
+      if (regConflict && regConflict.staff_code?.toUpperCase() !== cleanStaffCode) {
         return {
           success: false,
           statusCode: 409,
-          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_id}). One physical device can only be bound to one staff account at a time.`,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
     } catch (e: any) {
@@ -189,30 +189,31 @@ async function registerDeviceForStaff(params: {
         }
       }
 
-      // Persist to public.registered_devices
+      // Persist to public.registered_devices (exact schema)
       try {
         let staffDept = params.auditMetadata?.department || "General";
         if (staffDept === "General") {
-          const { data: stRow } = await supabaseClient
-            .from("staff")
-            .select("department")
-            .ilike("staff_code", cleanStaffCode)
-            .maybeSingle();
-          if (stRow?.department) staffDept = stRow.department;
+          try {
+            const { data: stRow } = await supabaseClient
+              .from("staff")
+              .select("department")
+              .ilike("staff_code", cleanStaffCode)
+              .maybeSingle();
+            if (stRow?.department) staffDept = stRow.department;
+          } catch {}
         }
 
         await supabaseClient.from("registered_devices").upsert(
           {
-            staff_id: cleanStaffCode,
             staff_code: cleanStaffCode,
             staff_name: params.staffName,
             department: staffDept,
             device_id: keyId,
-            status: "Active",
-            registered_at: now,
+            device_locked: true,
+            is_active: true,
             updated_at: now,
           },
-          { onConflict: "staff_id" }
+          { onConflict: "staff_code" }
         );
       } catch (regDevErr: any) {
         console.warn("[registerDeviceForStaff] registered_devices persistence notice:", regDevErr?.message);
@@ -502,28 +503,95 @@ export default async function handler(req: any, res?: any) {
   }
 
   try {
-    // 3. Check for existing staff with this Staff ID
-    const { data: existingStaff, error: checkError } = await supabase
-      .from("staff")
-      .select("id, staff_code, email")
-      .eq("staff_code", cleanStaffCode)
+    const rawClientDeviceId = (body?.deviceId || body?.device_id || "").toString().trim();
+
+    // 3. Check for existing staff with this Staff ID in public.registered_devices first
+    const { data: existingReg } = await supabase
+      .from("registered_devices")
+      .select("id, staff_code, device_id, device_locked, is_active")
+      .ilike("staff_code", cleanStaffCode)
       .maybeSingle();
 
-    if (checkError && checkError.code !== "PGRST116") {
-      console.error("[register] Supabase check error:", checkError);
-    }
-
-    if (existingStaff) {
-      return sendJsonResponse(res, 409, {
-        success: false,
-        error: `Staff account with Staff ID '${cleanStaffCode}' is already registered.`,
+    if (existingReg) {
+      const isSameDevice = rawClientDeviceId && existingReg.device_id === rawClientDeviceId;
+      if (!isSameDevice) {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          code: "DEVICE_ALREADY_EXISTS",
+          error: `Staff account with Staff ID '${cleanStaffCode}' is already registered with another device (${existingReg.device_id}).`,
+        });
+      }
+      // Permit idempotent retry for the exact same staff code and same device ID
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message: `Staff member '${cleanStaffCode}' is already registered with this device.`,
+        staff: {
+          id: existingReg.id,
+          staff_code: existingReg.staff_code,
+          device_id: existingReg.device_id,
+        },
       });
+    }
+    if (rawClientDeviceId) {
+      const { data: conflictDev } = await supabase
+        .from("registered_devices")
+        .select("id, staff_code, device_id, device_locked, is_active")
+        .eq("is_active", true)
+        .eq("device_id", rawClientDeviceId)
+        .maybeSingle();
+
+      if (conflictDev && conflictDev.staff_code?.toUpperCase() !== cleanStaffCode) {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${rawClientDeviceId}) is already bound to another staff account (${conflictDev.staff_code}). One physical device can only be bound to one staff account at a time.`,
+        });
+      }
     }
 
     // 4. Securely hash password with PBKDF2-SHA512 and unique salt
     const { authString } = hashPassword(passwordCandidate);
+    const nowIso = new Date().toISOString();
+    const targetDeviceId = rawClientDeviceId || `DEV_PENDING_${cleanStaffCode}`;
+    const deviceStatus = rawClientDeviceId ? "Active" : "Pending";
 
-    // 5. Insert new staff record
+    // 5. Insert new staff record: Primary write to public.registered_devices (exact schema)
+    let registeredRecord: any = null;
+    const { data: regData, error: regError } = await supabase
+      .from("registered_devices")
+      .upsert(
+        {
+          staff_code: cleanStaffCode,
+          staff_name: cleanName,
+          department: cleanDepartment,
+          device_id: targetDeviceId,
+          device_locked: true,
+          is_active: true,
+          updated_at: nowIso,
+        },
+        { onConflict: "staff_code" }
+      )
+      .select()
+      .maybeSingle();
+
+    if (regError) {
+      if (regError.code === "23505" || regError.message.includes("unique")) {
+        const isDevConflict = regError.message.includes("device_id");
+        return sendJsonResponse(res, 409, {
+          success: false,
+          error: isDevConflict
+            ? `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device is already bound to another staff account.`
+            : `A staff member with Staff ID '${cleanStaffCode}' is already registered.`,
+        });
+      }
+      return sendJsonResponse(res, 500, {
+        success: false,
+        error: `Database registration error: ${regError.message}`,
+      });
+    } else {
+      registeredRecord = regData;
+    }
+
+    // Secondary write: sync to public.staff if present (gracefully ignore if missing from schema cache)
     const newStaffPayload = {
       staff_code: cleanStaffCode,
       name: cleanName,
@@ -531,33 +599,22 @@ export default async function handler(req: any, res?: any) {
       department: cleanDepartment,
       designation: cleanDesignation,
       device: authString, // Encodes auth:pbkdf2$<salt>$<hash> securely
-      device_status: "Active",
+      device_status: deviceStatus,
       status: "Active",
       active: true,
       inside_campus: false,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
-    const { data: insertedStaff, error: insertError } = await supabase
-      .from("staff")
-      .insert(newStaffPayload)
-      .select("id, staff_code, name, email, department, designation, active, created_at")
-      .single();
-
-    if (insertError) {
-      console.error("[register] Supabase insert error:", insertError);
-      // Check if duplicate key violation
-      if (insertError.code === "23505" || insertError.message.includes("unique")) {
-        return sendJsonResponse(res, 409, {
-          success: false,
-          error: `A staff member with this Staff ID or email already exists.`,
-        });
-      }
-      return sendJsonResponse(res, 500, {
-        success: false,
-        error: `Database registration error: ${insertError.message}`,
-      });
-    }
+    let insertedStaff: any = null;
+    try {
+      const { data: sData } = await supabase
+        .from("staff")
+        .upsert(newStaffPayload, { onConflict: "staff_code" })
+        .select("id, staff_code, name, email, department, designation, active, created_at")
+        .maybeSingle();
+      if (sData) insertedStaff = sData;
+    } catch {}
 
     // 6. Bind device on initial registration if public key is provided
     let registeredDevice: any = undefined;
@@ -566,7 +623,7 @@ export default async function handler(req: any, res?: any) {
       try {
         const regRes = await registerDeviceForStaff({
           staffCode: cleanStaffCode,
-          staffId: insertedStaff.id,
+          staffId: insertedStaff?.id || registeredRecord?.id || cleanStaffCode,
           staffName: cleanName,
           publicKey: clientPublicKey,
           keyAlgorithm: body?.keyAlgorithm || "ECDSA_P256",
@@ -595,13 +652,13 @@ export default async function handler(req: any, res?: any) {
       success: true,
       message: "Staff account created successfully! Please sign in with your Staff ID and personal password.",
       staff: {
-        id: insertedStaff.id,
-        staff_code: insertedStaff.staff_code,
-        staffId: insertedStaff.staff_code,
-        name: insertedStaff.name,
-        email: insertedStaff.email,
-        department: insertedStaff.department,
-        designation: insertedStaff.designation,
+        id: insertedStaff?.id || registeredRecord?.id || cleanStaffCode,
+        staff_code: cleanStaffCode,
+        staffId: cleanStaffCode,
+        name: cleanName,
+        email: cleanEmail,
+        department: cleanDepartment,
+        designation: cleanDesignation,
         role: "staff",
       },
       device: registeredDevice

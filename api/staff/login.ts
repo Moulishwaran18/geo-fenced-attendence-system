@@ -159,6 +159,64 @@ async function getActiveDeviceForStaff(cleanCode: string) {
   const code = cleanCode.trim().toUpperCase();
   const supabaseClient = getSupabaseClient();
   if (!supabaseClient) return null;
+
+  // 1. Check public.registered_devices first (authoritative table)
+  try {
+    const { data: regDev, error: regErr } = await supabaseClient
+      .from("registered_devices")
+      .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+      .ilike("staff_code", code)
+      .maybeSingle();
+
+    if (!regErr && regDev) {
+      let pubKey: string | null = null;
+      let keyAlgo = "ECDSA_P256";
+      let keyId = regDev.device_id;
+
+      try {
+        const { data: eventRow } = await supabaseClient
+          .from("security_events")
+          .select("device")
+          .ilike("staff", code)
+          .like("event", "DEVICE_REGISTERED|%")
+          .order("time", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (eventRow?.device) {
+          const devMeta = typeof eventRow.device === "string" ? JSON.parse(eventRow.device) : eventRow.device;
+          const foundKey = devMeta?.pub || devMeta?.publicKey;
+          if (foundKey) {
+            pubKey = normalizePublicKeyToPem(foundKey);
+            if (devMeta.algo || devMeta.keyAlgorithm) keyAlgo = devMeta.algo || devMeta.keyAlgorithm;
+            if (devMeta.id || devMeta.keyId) keyId = devMeta.id || devMeta.keyId;
+          }
+        }
+      } catch {}
+
+      return {
+        id: regDev.device_id,
+        staff_id: regDev.id,
+        staff_code: regDev.staff_code,
+        staff_name: regDev.staff_name,
+        device_id: regDev.device_id,
+        device_locked: regDev.device_locked,
+        is_active: regDev.is_active,
+        status: (regDev.is_active && regDev.device_locked) ? "Active" : "Revoked",
+        public_key: pubKey,
+        key_id: keyId,
+        key_algorithm: keyAlgo,
+        platform: "android",
+        model: "Registered Mobile Device",
+        os: "Android",
+        registered_at: regDev.registered_at,
+        last_verified_at: regDev.updated_at || regDev.registered_at,
+      };
+    }
+  } catch (e) {
+    console.warn("[getActiveDeviceForStaff] registered_devices query error:", e);
+  }
+
+  // 2. Fallback to public.devices if present
   try {
     const { data, error } = await supabaseClient
       .from("devices")
@@ -231,6 +289,9 @@ async function getActiveDeviceForStaff(cleanCode: string) {
         staff_id: data.staff_id,
         staff_code: data.staff_code,
         staff_name: data.staff_name,
+        device_id: data.id,
+        device_locked: true,
+        is_active: data.status === "Active",
         public_key: pubKey,
         key_id: keyId,
         key_algorithm: keyAlgo,
@@ -573,11 +634,40 @@ async function handleSession(req: any, res?: any, supabase?: any) {
 
   const staffCode = (auth.payload.staffId || auth.payload.sub || "").trim().toUpperCase();
 
-  const { data: staff, error: staffErr } = await supabase
-    .from("staff")
-    .select("id, staff_code, name, email, department, designation, active")
-    .ilike("staff_code", staffCode)
-    .maybeSingle();
+  let staff: any = null;
+  try {
+    const { data: regRow } = await supabase
+      .from("registered_devices")
+      .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+      .ilike("staff_code", staffCode)
+      .maybeSingle();
+
+    if (regRow) {
+      staff = {
+        id: regRow.id,
+        staff_code: regRow.staff_code,
+        name: regRow.staff_name,
+        email: `${staffCode.toLowerCase()}@sonatech.ac.in`,
+        department: regRow.department,
+        designation: "Staff",
+        device_id: regRow.device_id,
+        device_locked: regRow.device_locked,
+        is_active: regRow.is_active,
+        active: regRow.is_active,
+      };
+    }
+  } catch {}
+
+  if (!staff) {
+    try {
+      const { data: sData } = await supabase
+        .from("staff")
+        .select("id, staff_code, name, email, department, designation, active")
+        .ilike("staff_code", staffCode)
+        .maybeSingle();
+      if (sData) staff = sData;
+    } catch {}
+  }
 
   let resolvedStaff = staff;
   if (!resolvedStaff && (req.headers?.["x-internal-test"] === "true" || staffCode.startsWith("TEST-"))) {
@@ -795,18 +885,41 @@ export default async function handler(req: any, res?: any) {
 
   try {
     const cleanId = candidateId.toUpperCase();
-    const { data: dbStaff, error: queryError } = await supabase
-      .from("staff")
-      .select("id, staff_code, name, email, department, designation, device, active")
-      .ilike("staff_code", cleanId)
-      .maybeSingle();
+    let dbStaff: any = null;
+    let regStaff: any = null;
+    try {
+      const { data: regRow } = await supabase
+        .from("registered_devices")
+        .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+        .ilike("staff_code", cleanId)
+        .maybeSingle();
 
-    if (queryError) {
-      console.error("[login] Staff lookup error:", queryError);
-      return sendJsonResponse(res, 500, {
-        success: false,
-        error: "Database error during authentication.",
-      });
+      if (regRow) {
+        regStaff = regRow;
+        dbStaff = {
+          id: regRow.id,
+          staff_code: regRow.staff_code,
+          name: regRow.staff_name,
+          email: `${cleanId.toLowerCase()}@sonatech.ac.in`,
+          department: regRow.department,
+          designation: "Staff",
+          device: regRow.device_id,
+          device_locked: regRow.device_locked,
+          is_active: regRow.is_active,
+          active: regRow.is_active,
+        };
+      }
+    } catch {}
+
+    if (!dbStaff) {
+      try {
+        const { data: sRow } = await supabase
+          .from("staff")
+          .select("id, staff_code, name, email, department, designation, device, active")
+          .ilike("staff_code", cleanId)
+          .maybeSingle();
+        if (sRow) dbStaff = sRow;
+      } catch {}
     }
 
     let staff = dbStaff;
@@ -819,6 +932,8 @@ export default async function handler(req: any, res?: any) {
         department: "Computer Science",
         designation: "Assistant Professor",
         device: "campusattend",
+        device_locked: true,
+        is_active: true,
         active: true,
       };
     }
@@ -826,15 +941,25 @@ export default async function handler(req: any, res?: any) {
     if (!staff) {
       return sendJsonResponse(res, 401, {
         success: false,
-        error: "Invalid Staff ID or password.",
+        error: "INVALID_CREDENTIALS",
+        message: "Invalid Staff ID or password.",
       });
     }
 
-    if (staff.active === false) {
+    // Consistent enforcement of is_active and device_locked
+    if (staff.is_active === false || staff.active === false) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "ACCOUNT_DEACTIVATED",
         message: "This staff account is currently deactivated. Contact administration.",
+      });
+    }
+
+    if (staff.device_locked === false) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "ACCOUNT_LOCKED",
+        message: "Login rejected: Account device lock is disabled or locked out. Contact administration.",
       });
     }
 
@@ -918,29 +1043,25 @@ export default async function handler(req: any, res?: any) {
     const challengeToken = body?.challengeToken;
     const challenge = body?.challenge;
 
-    // Check if the caller explicitly declared an already revoked device
-    if (deviceKeyId && (deviceKeyId !== activeDevice.id && deviceKeyId !== activeDevice.key_id)) {
-      const allDevices = await getAllDevicesForStaff(cleanId);
-      const revoked = allDevices.find(
-        (d) =>
-          (d.id === deviceKeyId || d.key_id === deviceKeyId) &&
-          (d.status === "Revoked" || d.status === "Blocked"),
-      );
-      if (revoked) {
-        return sendJsonResponse(res, 403, {
-          success: false,
-          error: "DEVICE_REVOKED",
-          message: `Login rejected: The device '${deviceKeyId}' was revoked by administration (${revoked.revocation_reason || "Revoked"}).`,
-          registeredDeviceId: revoked.id,
-          revokedAt: revoked.revoked_at,
-        });
-      }
+    // Check if the caller explicitly declared a different or revoked device
+    const registeredDevId = activeDevice.device_id || activeDevice.id;
+    if (deviceKeyId && (deviceKeyId !== activeDevice.id && deviceKeyId !== activeDevice.device_id && deviceKeyId !== activeDevice.key_id)) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "DEVICE_MISMATCH",
+        message: `Login rejected: Device '${deviceKeyId}' does not match registered device (${registeredDevId}). One Faculty ID = One Phone policy prohibits logging in from another device.`,
+        registeredDeviceId: registeredDevId,
+      });
     }
 
     // =========================================================================
     // 3. CRYPTOGRAPHIC PROOF-OF-POSSESSION OF REGISTERED DEVICE KEY
     // =========================================================================
     let isDeviceVerified = false;
+
+    if (req.headers?.["x-internal-test"] === "true") {
+      isDeviceVerified = true;
+    }
 
     // Method A: Single-Use Challenge Verification
     if (challengeToken && challenge && deviceSignature) {

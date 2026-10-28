@@ -976,9 +976,10 @@ async function getActiveDeviceForStaff(cleanCode: string) {
         try {
           const { data: regDev } = await supabase
             .from("registered_devices")
-            .select("*")
-            .ilike("staff_id", code)
-            .eq("status", "Active")
+            .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+            .ilike("staff_code", code)
+            .eq("is_active", true)
+            .eq("device_locked", true)
             .order("registered_at", { ascending: false })
             .limit(1)
             .maybeSingle();
@@ -986,8 +987,8 @@ async function getActiveDeviceForStaff(cleanCode: string) {
           if (regDev) {
             return {
               id: regDev.device_id,
-              staff_id: null,
-              staff_code: regDev.staff_id || code,
+              staff_id: regDev.id,
+              staff_code: regDev.staff_code || code,
               staff_name: regDev.staff_name,
               public_key: "",
               key_id: regDev.device_id,
@@ -996,8 +997,10 @@ async function getActiveDeviceForStaff(cleanCode: string) {
               model: "Registered Mobile Device",
               os: "Android",
               status: "Active",
-              registered_at: regDev.registered_at || regDev.created_at,
-              last_verified_at: regDev.updated_at || regDev.created_at,
+              device_locked: regDev.device_locked,
+              is_active: regDev.is_active,
+              registered_at: regDev.registered_at,
+              last_verified_at: regDev.updated_at || regDev.registered_at,
               revoked_at: null,
               revocation_reason: null,
             };
@@ -1965,6 +1968,16 @@ export default async function handler(req: any, res?: any) {
         if (sRow) {
           if (sRow.name) staffName = sRow.name;
           if (sRow.department) department = sRow.department || department;
+        } else {
+          const { data: regRow } = await supabase
+            .from("registered_devices")
+            .select("staff_name, department")
+            .ilike("staff_code", canonicalStaffCode)
+            .maybeSingle();
+          if (regRow) {
+            if (regRow.staff_name) staffName = regRow.staff_name;
+            if (regRow.department) department = regRow.department || department;
+          }
         }
       } catch {}
     }

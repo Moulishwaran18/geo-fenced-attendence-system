@@ -304,6 +304,30 @@ export async function getAllStaff(): Promise<StaffWithEmbeddings[]> {
           referenceSamples: [],
         }));
       }
+
+      // Primary query to public.registered_devices (exact schema)
+      const { data: regData, error: regError } = await supabase
+        .from("registered_devices")
+        .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+        .order("staff_code", { ascending: true });
+
+      if (!regError && Array.isArray(regData)) {
+        return regData.map((s: any) => ({
+          id: s.id,
+          staff_code: s.staff_code,
+          name: s.staff_name,
+          email: `${s.staff_code.toLowerCase()}@sonatech.ac.in`,
+          department: s.department,
+          designation: "Staff",
+          active: s.is_active,
+          device_locked: s.device_locked,
+          is_active: s.is_active,
+          created_at: s.registered_at,
+          updated_at: s.updated_at,
+          embeddingCount: 0,
+          referenceSamples: [],
+        }));
+      }
     } catch (sbErr) {
       console.warn("Supabase getAllStaff failed:", sbErr);
     }
@@ -373,6 +397,34 @@ export async function getStaffById(idOrCode: string): Promise<StaffWithEmbedding
           referenceSamples: [],
         };
       }
+
+      // Primary query to public.registered_devices (exact schema)
+      let regQuery = supabase
+        .from("registered_devices")
+        .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at");
+      if (isUuid) {
+        regQuery = regQuery.eq("id", idOrCode);
+      } else {
+        regQuery = regQuery.ilike("staff_code", idOrCode);
+      }
+      const { data: regStaff } = await regQuery.maybeSingle();
+      if (regStaff) {
+        return {
+          id: regStaff.id,
+          staff_code: regStaff.staff_code,
+          name: regStaff.staff_name,
+          email: `${regStaff.staff_code.toLowerCase()}@sonatech.ac.in`,
+          department: regStaff.department,
+          designation: "Staff",
+          active: regStaff.is_active,
+          device_locked: regStaff.device_locked,
+          is_active: regStaff.is_active,
+          created_at: regStaff.registered_at,
+          updated_at: regStaff.updated_at,
+          embeddingCount: 0,
+          referenceSamples: [],
+        };
+      }
     } catch (sbErr) {
       console.warn("Supabase getStaffById failed:", sbErr);
     }
@@ -432,43 +484,70 @@ export async function createStaff(data: {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data: resData, error } = await supabase
-        .from("staff")
+      const cleanStaffCode = data.staff_code.toUpperCase();
+      const targetDeviceId = data.device_id || `DEV_PENDING_${cleanStaffCode}`;
+      const deviceStatus = data.device_id ? "Active" : "Pending";
+      const nowIso = new Date().toISOString();
+
+      let regResult: any = null;
+      // Primary write: public.registered_devices (exact schema)
+      const { data: regData, error: regErr } = await supabase
+        .from("registered_devices")
         .upsert(
           {
-            staff_code: data.staff_code,
-            name: data.name,
-            email: data.email,
+            staff_code: cleanStaffCode,
+            staff_name: data.name,
             department: data.department,
-            designation: data.designation,
-            active: data.active !== undefined ? data.active : true,
-            updated_at: new Date().toISOString(),
+            device_id: targetDeviceId,
+            device_locked: true,
+            is_active: data.active !== undefined ? Boolean(data.active) : true,
+            updated_at: nowIso,
           },
-          { onConflict: "staff_code" },
+          { onConflict: "staff_code" }
         )
         .select()
-        .single();
+        .maybeSingle();
 
-      if (!error && resData) {
-        if (data.device_id) {
-          try {
-            await supabase.from("registered_devices").upsert(
-              {
-                staff_id: data.staff_code,
-                staff_code: data.staff_code,
-                staff_name: data.name,
-                department: data.department,
-                device_id: data.device_id,
-                status: "Active",
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: "staff_id" }
-            );
-          } catch (regErr) {
-            console.warn("Supabase registered_devices insert notice:", regErr);
-          }
-        }
-        return resData;
+      if (!regErr && regData) {
+        regResult = regData;
+      }
+
+      // Secondary write: sync to public.staff if present (gracefully ignore if table missing from schema cache)
+      let staffResult: any = null;
+      try {
+        const { data: sData } = await supabase
+          .from("staff")
+          .upsert(
+            {
+              staff_code: cleanStaffCode,
+              name: data.name,
+              email: data.email,
+              department: data.department,
+              designation: data.designation,
+              device: data.device_id ? `device_id:${data.device_id}` : undefined,
+              device_status: deviceStatus,
+              active: data.active !== undefined ? data.active : true,
+              updated_at: nowIso,
+            },
+            { onConflict: "staff_code" }
+          )
+          .select()
+          .maybeSingle();
+        if (sData) staffResult = sData;
+      } catch {}
+
+      if (regResult || staffResult) {
+        return {
+          id: regResult?.id || staffResult?.id || cleanStaffCode,
+          staff_code: cleanStaffCode,
+          name: data.name,
+          email: data.email,
+          department: data.department,
+          designation: data.designation,
+          active: data.active !== undefined ? data.active : true,
+          created_at: regResult?.created_at || nowIso,
+          updated_at: regResult?.updated_at || nowIso,
+        };
       }
     } catch (sbErr) {
       console.warn("Supabase createStaff failed:", sbErr);
@@ -538,14 +617,33 @@ export async function updateStaffStatus(idOrCode: string, active: boolean): Prom
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      let query = supabase.from("staff").update({ active, updated_at: new Date().toISOString() });
+      const nowIso = new Date().toISOString();
+      let regQuery = supabase
+        .from("registered_devices")
+        .update({ is_active: active, updated_at: nowIso });
       if (isUuid) {
-        query = query.eq("id", idOrCode);
+        regQuery = regQuery.eq("id", idOrCode);
       } else {
-        query = query.eq("staff_code", idOrCode.toUpperCase());
+        regQuery = regQuery.ilike("staff_code", idOrCode);
       }
-      const { data, error } = await query.select().single();
-      if (!error && data) return data;
+      const { data: regUpdated } = await regQuery.select().maybeSingle();
+
+      // Gracefully attempt staff update if present
+      let staffUpdated: any = null;
+      try {
+        let query = supabase.from("staff").update({ active, updated_at: nowIso });
+        if (isUuid) {
+          query = query.eq("id", idOrCode);
+        } else {
+          query = query.eq("staff_code", idOrCode.toUpperCase());
+        }
+        const { data: sUp } = await query.select().maybeSingle();
+        staffUpdated = sUp;
+      } catch {}
+
+      if (regUpdated || staffUpdated) {
+        return regUpdated || staffUpdated;
+      }
     } catch (sbErr) {
       console.warn("Supabase updateStaffStatus failed:", sbErr);
     }

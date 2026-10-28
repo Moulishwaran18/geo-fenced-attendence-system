@@ -994,18 +994,17 @@ export async function getActiveDeviceForStaff(staffCode: string): Promise<Device
         try {
           const { data: regDev } = await supabase
             .from("registered_devices")
-            .select("*")
-            .ilike("staff_id", cleanCode)
-            .eq("status", "Active")
-            .order("registered_at", { ascending: false })
-            .limit(1)
+            .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+            .ilike("staff_code", cleanCode)
+            .eq("is_active", true)
+            .eq("device_locked", true)
             .maybeSingle();
 
           if (regDev) {
             return {
               id: regDev.device_id,
-              staff_id: null,
-              staff_code: regDev.staff_id || cleanCode,
+              staff_id: regDev.id,
+              staff_code: regDev.staff_code,
               staff_name: regDev.staff_name,
               public_key: "",
               key_id: regDev.device_id,
@@ -1016,8 +1015,10 @@ export async function getActiveDeviceForStaff(staffCode: string): Promise<Device
               model: "Registered Mobile Device",
               os: "Android",
               status: "Active",
-              registered_at: regDev.registered_at || regDev.created_at,
-              last_verified_at: regDev.updated_at || regDev.created_at,
+              device_locked: regDev.device_locked,
+              is_active: regDev.is_active,
+              registered_at: regDev.registered_at,
+              last_verified_at: regDev.updated_at || regDev.registered_at,
             };
           }
         } catch {}
@@ -1204,16 +1205,16 @@ export async function registerDeviceForStaff(params: {
       // Check registered_devices for Rule 2 conflict
       const { data: regConflict } = await supabase
         .from("registered_devices")
-        .select("staff_id, device_id, status")
-        .eq("status", "Active")
+        .select("id, staff_code, device_id, device_locked, is_active")
+        .eq("is_active", true)
         .eq("device_id", keyId)
         .maybeSingle();
 
-      if (regConflict && regConflict.staff_id?.toUpperCase() !== cleanStaffCode) {
+      if (regConflict && regConflict.staff_code?.toUpperCase() !== cleanStaffCode) {
         return {
           success: false,
           statusCode: 409,
-          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_id}). One physical device can only be bound to one staff account at a time.`,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
     } catch (e: any) {
@@ -1284,11 +1285,28 @@ export async function registerDeviceForStaff(params: {
         .limit(1)
         .maybeSingle();
 
-      if (doubleCheck) {
+      if (doubleCheck && doubleCheck.id !== keyId) {
         return {
           success: false,
           statusCode: 409,
           error: "DEVICE_ALREADY_EXISTS: Concurrent registration detected: An active device was already registered for this account.",
+        };
+      }
+
+      const { data: doubleCheckReg } = await supabase
+        .from("registered_devices")
+        .select("device_id")
+        .ilike("staff_code", cleanStaffCode)
+        .eq("is_active", true)
+        .eq("device_locked", true)
+        .limit(1)
+        .maybeSingle();
+
+      if (doubleCheckReg && doubleCheckReg.device_id !== keyId) {
+        return {
+          success: false,
+          statusCode: 409,
+          error: `DEVICE_ALREADY_EXISTS: Concurrent registration detected: An active device (${doubleCheckReg.device_id}) was already registered for this account.`,
         };
       }
 
@@ -1359,26 +1377,27 @@ export async function registerDeviceForStaff(params: {
       try {
         let staffDept = params.auditMetadata?.department || "General";
         if (staffDept === "General") {
-          const { data: stRow } = await supabase
-            .from("staff")
-            .select("department")
-            .ilike("staff_code", cleanStaffCode)
-            .maybeSingle();
-          if (stRow?.department) staffDept = stRow.department;
+          try {
+            const { data: stRow } = await supabase
+              .from("staff")
+              .select("department")
+              .ilike("staff_code", cleanStaffCode)
+              .maybeSingle();
+            if (stRow?.department) staffDept = stRow.department;
+          } catch {}
         }
 
         await supabase.from("registered_devices").upsert(
           {
-            staff_id: cleanStaffCode,
             staff_code: cleanStaffCode,
             staff_name: params.staffName,
             department: staffDept,
             device_id: keyId,
-            status: "Active",
-            registered_at: now,
+            device_locked: true,
+            is_active: true,
             updated_at: now,
           },
-          { onConflict: "staff_id" }
+          { onConflict: "staff_code" }
         );
       } catch (regDevErr: any) {
         console.warn("[device-binding] registered_devices persistence notice:", regDevErr?.message);
@@ -1428,6 +1447,13 @@ export async function registerDeviceForStaff(params: {
       (d: DeviceRecord) => d.staff_code?.toUpperCase() === cleanStaffCode && d.status === "Active",
     );
     if (localActive) {
+      if (localActive.id === keyId || localActive.key_id === keyId) {
+        return {
+          success: true,
+          statusCode: 200,
+          device: localActive,
+        };
+      }
       return {
         success: false,
         statusCode: 409,
@@ -1570,13 +1596,18 @@ export async function revokeDevice(params: {
 
       // Synchronize revocation in registered_devices
       try {
+        const staffCode = targetDevice?.staff_code || "";
+        const orFilter = staffCode
+          ? `device_id.eq.${targetDevice.id},staff_code.ilike.${staffCode}`
+          : `device_id.eq.${targetDevice.id}`;
         await supabase
           .from("registered_devices")
           .update({
-            status: "Revoked",
+            device_locked: false,
+            is_active: false,
             updated_at: now,
           })
-          .or(`device_id.eq.${targetDevice.id},staff_id.ilike.${targetDevice.staff_code || ""}`);
+          .or(orFilter);
       } catch {}
 
       // Audit log revocation

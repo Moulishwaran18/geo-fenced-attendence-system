@@ -81,10 +81,11 @@ async function revokeDevice(params: {
         await supabase
           .from("registered_devices")
           .update({
-            status: "Revoked",
+            device_locked: false,
+            is_active: false,
             updated_at: now,
           })
-          .or(`device_id.eq.${deviceId},staff_id.ilike.${targetDevice?.staff_code || ""}`);
+          .or(`device_id.eq.${deviceId},staff_code.ilike.${targetDevice?.staff_code || ""}`);
       } catch {}
     } catch {}
 
@@ -765,15 +766,46 @@ export default async function handler(req: any, res?: any) {
 
     // 1. GET /api/admin/staff — List all staff with enrollment metadata
     if ((pathname === "/api/admin/staff" || pathname === "/api/admin/staff/") && method === "GET") {
-      const { data, error } = await supabase
-        .from("staff")
-        .select(
-          "id, staff_code, name, email, department, designation, active, created_at, updated_at",
-        )
+      let rawStaff: any[] = [];
+      // Query public.registered_devices as primary authoritative staff directory
+      const { data: regData, error: regError } = await supabase
+        .from("registered_devices")
+        .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
         .order("staff_code", { ascending: true });
 
-      if (error) {
-        return sendJsonResponse(res, 500, { success: false, error: error.message });
+      if (!regError && Array.isArray(regData)) {
+        rawStaff = regData.map((r: any) => ({
+          id: r.id,
+          staff_code: r.staff_code,
+          name: r.staff_name,
+          email: `${r.staff_code.toLowerCase()}@sonatech.ac.in`,
+          department: r.department,
+          designation: "Staff",
+          active: r.is_active,
+          device_locked: r.device_locked,
+          is_active: r.is_active,
+          created_at: r.registered_at,
+          updated_at: r.updated_at,
+          device_id: r.device_id,
+        }));
+      } else {
+        // Fallback to public.staff if registered_devices failed or is not available
+        try {
+          const { data: staffData, error: staffError } = await supabase
+            .from("staff")
+            .select("id, staff_code, name, email, department, designation, active, created_at, updated_at")
+            .order("staff_code", { ascending: true });
+
+          if (!staffError && Array.isArray(staffData)) {
+            rawStaff = staffData;
+          } else if (regError) {
+            return sendJsonResponse(res, 500, { success: false, error: regError.message });
+          }
+        } catch {
+          if (regError) {
+            return sendJsonResponse(res, 500, { success: false, error: regError.message });
+          }
+        }
       }
 
       // Query device enrollment events from security_events
@@ -798,7 +830,7 @@ export default async function handler(req: any, res?: any) {
         }
       });
 
-      const staffList = (data || []).map((s: any) => {
+      const staffList = (rawStaff || []).map((s: any) => {
         const staffKey = (s.staff_code || "").toUpperCase();
         const enrollInfo = enrollMap.get(staffKey);
         const count = enrollInfo ? enrollInfo.count : 0;
@@ -815,7 +847,7 @@ export default async function handler(req: any, res?: any) {
           embeddingCount: count,
           templateCount: count,
           isEnrolled: count > 0,
-          deviceId: enrollInfo ? enrollInfo.deviceId : null,
+          deviceId: enrollInfo ? enrollInfo.deviceId : (s.device_id || null),
           enrolledAt: enrollInfo ? enrollInfo.enrolledAt : null,
           referenceSamples: [], // Device-only policy: zero raw photos or vectors stored/returned
         };
@@ -850,9 +882,9 @@ export default async function handler(req: any, res?: any) {
         // Check Rule 1: Does this staff member already have an active registered device?
         const { data: existingRegDev } = await supabase
           .from("registered_devices")
-          .select("id, staff_id, device_id, status")
-          .eq("status", "Active")
-          .ilike("staff_id", cleanStaffCode)
+          .select("id, staff_code, device_id, device_locked, is_active")
+          .eq("is_active", true)
+          .ilike("staff_code", cleanStaffCode)
           .maybeSingle();
 
         if (existingRegDev && existingRegDev.device_id !== rawDeviceId) {
@@ -881,16 +913,16 @@ export default async function handler(req: any, res?: any) {
         // Check Rule 2: Is this physical device already bound to another staff account?
         const { data: conflictRegDev } = await supabase
           .from("registered_devices")
-          .select("id, staff_id, device_id, status")
-          .eq("status", "Active")
+          .select("id, staff_code, device_id, device_locked, is_active")
+          .eq("is_active", true)
           .eq("device_id", rawDeviceId)
           .maybeSingle();
 
-        if (conflictRegDev && conflictRegDev.staff_id?.toUpperCase() !== cleanStaffCode) {
+        if (conflictRegDev && conflictRegDev.staff_code?.toUpperCase() !== cleanStaffCode) {
           return sendJsonResponse(res, 409, {
             success: false,
             code: "DEVICE_BOUND_TO_ANOTHER_ACCOUNT",
-            error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${rawDeviceId}) is already bound to another staff account (${conflictRegDev.staff_id}). One physical device can only be bound to one staff account at a time.`,
+            error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${rawDeviceId}) is already bound to another staff account (${conflictRegDev.staff_code}). One physical device can only be bound to one staff account at a time.`,
           });
         }
 
@@ -910,67 +942,77 @@ export default async function handler(req: any, res?: any) {
         }
       }
 
-      const { data, error } = await supabase
-        .from("staff")
-        .upsert(
-          {
-            staff_code: cleanStaffCode,
-            name: cleanName,
-            email: cleanEmail,
-            department: cleanDept,
-            designation: cleanDesig,
-            device: rawDeviceId ? `device_id:${rawDeviceId}` : undefined,
-            device_status: rawDeviceId ? "Active" : "Pending",
-            active: body.active !== undefined ? body.active : true,
-            updated_at: nowIso,
-          },
-          { onConflict: "staff_code" },
-        )
+      // Determine device binding:
+      // If rawDeviceId is given, bind it. Otherwise assign deterministic DEV_PENDING_<STAFF_CODE>.
+      const targetDeviceId = rawDeviceId || `DEV_PENDING_${cleanStaffCode}`;
+
+      // 1. Primary write: public.registered_devices (strictly matching existing 9 columns: id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at)
+      let registeredRecord: any = null;
+      const regPayload = {
+        staff_code: cleanStaffCode,
+        staff_name: cleanName,
+        department: cleanDept,
+        device_id: targetDeviceId,
+        device_locked: true,
+        is_active: body.active !== undefined ? Boolean(body.active) : true,
+        updated_at: nowIso,
+      };
+
+      const { data: regData, error: regError } = await supabase
+        .from("registered_devices")
+        .upsert(regPayload, { onConflict: "staff_code" })
         .select()
         .single();
 
-      if (error) {
-        if (error.code === "23505" || error.message.includes("unique")) {
+      if (regError) {
+        if (
+          regError.code === "23505" ||
+          regError.message.includes("unique") ||
+          regError.message.includes("device_id")
+        ) {
           return sendJsonResponse(res, 409, {
             success: false,
-            code: "STAFF_ALREADY_EXISTS",
-            error: `STAFF_ALREADY_EXISTS: Staff code '${cleanStaffCode}' or email '${cleanEmail}' is already registered in the system.`,
+            code: "DEVICE_BOUND_TO_ANOTHER_ACCOUNT",
+            error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${targetDeviceId}) is already bound to another staff account. One physical device can only be bound to one staff account at a time.`,
           });
         }
-        return sendJsonResponse(res, 500, { success: false, error: error.message });
+        return sendJsonResponse(res, 500, { success: false, error: regError.message });
+      }
+      registeredRecord = regData;
+
+      // 2. Secondary write: sync to public.staff if present (gracefully ignore if public.staff is missing from schema cache)
+      let staffTableRecord: any = null;
+      try {
+        const { data: sData, error: sError } = await supabase
+          .from("staff")
+          .upsert(
+            {
+              staff_code: cleanStaffCode,
+              name: cleanName,
+              email: cleanEmail,
+              department: cleanDept,
+              designation: cleanDesig,
+              device: rawDeviceId ? `device_id:${rawDeviceId}` : undefined,
+              device_status: rawDeviceId ? "Active" : "Pending",
+              active: body.active !== undefined ? body.active : true,
+              updated_at: nowIso,
+            },
+            { onConflict: "staff_code" },
+          )
+          .select()
+          .single();
+        if (!sError) staffTableRecord = sData;
+      } catch (err: any) {
+        console.warn("[admin/staff] public.staff sync notice:", err?.message);
       }
 
-      // If rawDeviceId is provided, save into public.registered_devices AND public.devices
+      // 3. Secondary write: sync to public.devices if rawDeviceId was provided
       if (rawDeviceId) {
-        try {
-          const { error: regDevErr } = await supabase
-            .from("registered_devices")
-            .upsert(
-              {
-                staff_id: cleanStaffCode,
-                staff_code: cleanStaffCode,
-                staff_name: cleanName,
-                department: cleanDept,
-                device_id: rawDeviceId,
-                status: "Active",
-                registered_at: nowIso,
-                updated_at: nowIso,
-              },
-              { onConflict: "staff_id" }
-            );
-
-          if (regDevErr) {
-            console.error("[admin/staff] registered_devices persistence error:", regDevErr.message);
-          }
-        } catch (e: any) {
-          console.warn("[admin/staff] registered_devices insert notice:", e?.message);
-        }
-
         try {
           await supabase.from("devices").upsert(
             {
               id: rawDeviceId,
-              staff_id: data.id,
+              staff_id: staffTableRecord?.id || registeredRecord?.id,
               staff_code: cleanStaffCode,
               staff_name: cleanName,
               model: body.device_model || "Admin Registered Device",
@@ -1003,19 +1045,45 @@ export default async function handler(req: any, res?: any) {
         } catch {}
       }
 
+      const deviceStatus = rawDeviceId ? "Active" : "Pending";
+      const responsePayload = {
+        id: registeredRecord?.id || staffTableRecord?.id || cleanStaffCode,
+        staff_code: cleanStaffCode,
+        name: cleanName,
+        email: cleanEmail,
+        department: cleanDept,
+        designation: cleanDesig,
+        device_id: rawDeviceId || targetDeviceId,
+        status: deviceStatus,
+        active: body.active !== undefined ? body.active : true,
+        created_at: registeredRecord?.created_at || nowIso,
+        updated_at: registeredRecord?.updated_at || nowIso,
+      };
+
       return sendJsonResponse(res, 201, {
         success: true,
-        data,
+        data: responsePayload,
         device_id: rawDeviceId || null,
         message: rawDeviceId
-          ? `Staff member ${cleanStaffCode} created and device ${rawDeviceId} registered successfully.`
-          : `Staff member ${cleanStaffCode} created successfully.`,
+          ? `Staff member ${cleanStaffCode} registered and device ${rawDeviceId} bound in public.registered_devices successfully.`
+          : `Staff member ${cleanStaffCode} registered successfully in public.registered_devices.`,
       });
     }
 
     // 3. Database diagnostics: /api/admin/db-diagnostic
     if (pathname.includes("/db-diagnostic") && method === "GET") {
-      const { count: staffCount } = await supabase.from("staff").select("*", { count: "exact", head: true });
+      let staffCount: number = 0;
+      try {
+        const { count: sCount, error: sErr } = await supabase.from("staff").select("*", { count: "exact", head: true });
+        if (!sErr && typeof sCount === "number") staffCount = sCount;
+      } catch {}
+
+      if (staffCount === 0) {
+        try {
+          const { count: rCount } = await supabase.from("registered_devices").select("*", { count: "exact", head: true });
+          if (typeof rCount === "number") staffCount = rCount;
+        } catch {}
+      }
 
       const currentUrl =
         (typeof process !== "undefined" &&
@@ -1079,17 +1147,32 @@ export default async function handler(req: any, res?: any) {
       const idOrCode = decodeURIComponent(statusMatch[1]!);
       const active = typeof body?.active === "boolean" ? body.active : true;
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
+      const nowIso = new Date().toISOString();
 
-      let query = supabase.from("staff").update({ active, updated_at: new Date().toISOString() });
+      let regQuery = supabase
+        .from("registered_devices")
+        .update({ is_active: active, updated_at: nowIso });
       if (isUuid) {
-        query = query.eq("id", idOrCode);
+        regQuery = regQuery.eq("id", idOrCode);
       } else {
-        query = query.eq("staff_code", idOrCode.toUpperCase());
+        regQuery = regQuery.ilike("staff_code", idOrCode);
       }
-      const { data: updated, error: statErr } = await query.select().single();
-      if (statErr) {
-        return sendJsonResponse(res, 500, { success: false, error: statErr.message });
-      }
+      const { data: regUpdated } = await regQuery.select().maybeSingle();
+
+      // Gracefully update staff table if present
+      let staffUpdated: any = null;
+      try {
+        let sQuery = supabase.from("staff").update({ active, updated_at: nowIso });
+        if (isUuid) {
+          sQuery = sQuery.eq("id", idOrCode);
+        } else {
+          sQuery = sQuery.eq("staff_code", idOrCode.toUpperCase());
+        }
+        const { data: sUp } = await sQuery.select().maybeSingle();
+        staffUpdated = sUp;
+      } catch {}
+
+      const updated = regUpdated || staffUpdated || { id: idOrCode, active };
       return sendJsonResponse(res, 200, { success: true, data: updated });
     }
 
@@ -1099,16 +1182,49 @@ export default async function handler(req: any, res?: any) {
       const idOrCode = decodeURIComponent(singleMatch[1]!);
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
 
-      let query = supabase
-        .from("staff")
-        .select("id, staff_code, name, email, department, designation, active, created_at, updated_at");
+      let staffMember: any = null;
+      let regQuery = supabase
+        .from("registered_devices")
+        .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at");
       if (isUuid) {
-        query = query.eq("id", idOrCode);
+        regQuery = regQuery.eq("id", idOrCode);
       } else {
-        query = query.eq("staff_code", idOrCode.toUpperCase());
+        regQuery = regQuery.ilike("staff_code", idOrCode);
       }
-      const { data: staffMember, error: findErr } = await query.single();
-      if (findErr || !staffMember) {
+      const { data: regRow } = await regQuery.maybeSingle();
+      if (regRow) {
+        staffMember = {
+          id: regRow.id,
+          staff_code: regRow.staff_code,
+          name: regRow.staff_name,
+          email: `${regRow.staff_code.toLowerCase()}@sonatech.ac.in`,
+          department: regRow.department,
+          designation: "Staff",
+          active: regRow.is_active,
+          device_locked: regRow.device_locked,
+          is_active: regRow.is_active,
+          created_at: regRow.registered_at,
+          updated_at: regRow.updated_at,
+          device_id: regRow.device_id,
+        };
+      }
+
+      if (!staffMember) {
+        try {
+          let query = supabase
+            .from("staff")
+            .select("id, staff_code, name, email, department, designation, active, created_at, updated_at");
+          if (isUuid) {
+            query = query.eq("id", idOrCode);
+          } else {
+            query = query.eq("staff_code", idOrCode.toUpperCase());
+          }
+          const { data: sRow, error: findErr } = await query.single();
+          if (!findErr && sRow) staffMember = sRow;
+        } catch {}
+      }
+
+      if (!staffMember) {
         return sendJsonResponse(res, 404, { success: false, error: "Staff member not found" });
       }
 
@@ -1157,29 +1273,36 @@ export default async function handler(req: any, res?: any) {
       if (devErr) return sendJsonResponse(res, 500, { success: false, error: devErr.message });
 
       // Merge records from registered_devices
-      let regQuery = supabase.from("registered_devices").select("*");
-      if (urlStaff) regQuery = regQuery.ilike("staff_id", urlStaff.trim().toUpperCase());
+      let regQuery = supabase
+        .from("registered_devices")
+        .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at");
+      if (urlStaff) regQuery = regQuery.ilike("staff_code", urlStaff.trim().toUpperCase());
       const { data: regDevices } = await regQuery;
 
       const deviceList = [...(devices || [])];
       if (Array.isArray(regDevices)) {
         for (const rd of regDevices) {
           const alreadyPresent = deviceList.some(
-            (d) => d.id === rd.device_id || d.key_id === rd.device_id || (d.staff_code?.toUpperCase() === rd.staff_id?.toUpperCase() && d.status === "Active")
+            (d) =>
+              d.id === rd.device_id ||
+              d.key_id === rd.device_id ||
+              (d.staff_code?.toUpperCase() === rd.staff_code?.toUpperCase() && d.status === "Active")
           );
           if (!alreadyPresent) {
             deviceList.push({
               id: rd.device_id,
               key_id: rd.device_id,
-              staff_code: rd.staff_id,
+              staff_code: rd.staff_code,
               staff_name: rd.staff_name,
               model: "Registered Mobile Device",
               os: "Android",
               platform: "android",
               attestation_status: "Verified",
-              status: rd.status,
-              registered_at: rd.registered_at || rd.created_at,
-              last_verified_at: rd.updated_at || rd.created_at,
+              status: rd.is_active && rd.device_locked ? "Active" : "Revoked",
+              device_locked: rd.device_locked,
+              is_active: rd.is_active,
+              registered_at: rd.registered_at,
+              last_verified_at: rd.updated_at || rd.registered_at,
             });
           }
         }

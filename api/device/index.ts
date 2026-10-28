@@ -1068,9 +1068,10 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
         try {
           const { data: regDev } = await supabaseClient
             .from("registered_devices")
-            .select("*")
-            .ilike("staff_id", code)
-            .eq("status", "Active")
+            .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+            .ilike("staff_code", code)
+            .eq("is_active", true)
+            .eq("device_locked", true)
             .order("registered_at", { ascending: false })
             .limit(1)
             .maybeSingle();
@@ -1078,8 +1079,8 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
           if (regDev) {
             return {
               id: regDev.device_id,
-              staff_id: null,
-              staff_code: regDev.staff_id || code,
+              staff_id: regDev.id,
+              staff_code: regDev.staff_code || code,
               staff_name: regDev.staff_name,
               public_key: "",
               key_id: regDev.device_id,
@@ -1088,8 +1089,10 @@ async function getActiveDeviceForStaff(cleanCode: string, supabaseClient: any) {
               model: "Registered Mobile Device",
               os: "Android",
               status: "Active",
-              registered_at: regDev.registered_at || regDev.created_at,
-              last_verified_at: regDev.updated_at || regDev.created_at,
+              device_locked: regDev.device_locked,
+              is_active: regDev.is_active,
+              registered_at: regDev.registered_at,
+              last_verified_at: regDev.updated_at || regDev.registered_at,
             };
           }
         } catch {}
@@ -1248,16 +1251,16 @@ async function registerDeviceForStaff(params: {
       // Check registered_devices for Rule 2 conflict
       const { data: regConflict } = await supabaseClient
         .from("registered_devices")
-        .select("staff_id, device_id, status")
-        .eq("status", "Active")
+        .select("id, staff_code, device_id, device_locked, is_active")
+        .eq("is_active", true)
         .eq("device_id", keyId)
         .maybeSingle();
 
-      if (regConflict && regConflict.staff_id?.toUpperCase() !== cleanStaffCode) {
+      if (regConflict && regConflict.staff_code?.toUpperCase() !== cleanStaffCode) {
         return {
           success: false,
           statusCode: 409,
-          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_id}). One physical device can only be bound to one staff account at a time.`,
+          error: `DEVICE_BOUND_TO_ANOTHER_ACCOUNT: This physical device (ID: ${keyId}) is already bound to another staff account (${regConflict.staff_code}). One physical device can only be bound to one staff account at a time.`,
         };
       }
     } catch (e: any) {
@@ -1407,16 +1410,16 @@ async function registerDeviceForStaff(params: {
 
         await supabaseClient.from("registered_devices").upsert(
           {
-            staff_id: cleanStaffCode,
             staff_code: cleanStaffCode,
             staff_name: params.staffName,
             department: staffDept,
             device_id: keyId,
-            status: "Active",
+            device_locked: true,
+            is_active: true,
             registered_at: now,
             updated_at: now,
           },
-          { onConflict: "staff_id" }
+          { onConflict: "staff_code" }
         );
       } catch (regDevErr: any) {
         console.warn("[api/device] registered_devices persistence notice:", regDevErr?.message);
@@ -1547,11 +1550,38 @@ export default async function handler(req: any, res?: any) {
     const auth = verifyStaffToken(token);
     if (auth.valid && auth.payload) {
       const staffCode = (auth.payload.staffId || auth.payload.sub || "").trim().toUpperCase();
-      const { data: staffRow } = await supabase
-        .from("staff")
-        .select("id, staff_code, name, email, department, designation, device, active, status")
-        .ilike("staff_code", staffCode)
-        .maybeSingle();
+      let staffRow: any = null;
+      try {
+        const { data: sRow } = await supabase
+          .from("staff")
+          .select("id, staff_code, name, email, department, designation, device, active, status")
+          .ilike("staff_code", staffCode)
+          .maybeSingle();
+        if (sRow) staffRow = sRow;
+      } catch {}
+
+      if (!staffRow) {
+        try {
+          const { data: regRow } = await supabase
+            .from("registered_devices")
+            .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+            .ilike("staff_code", staffCode)
+            .maybeSingle();
+          if (regRow) {
+            staffRow = {
+              id: regRow.id,
+              staff_code: regRow.staff_code,
+              name: regRow.staff_name,
+              department: regRow.department,
+              designation: "Staff",
+              device: regRow.device_id,
+              active: regRow.is_active === true && regRow.device_locked === true,
+              status: regRow.is_active ? (regRow.device_locked ? "Active" : "Locked") : "Deactivated",
+            };
+          }
+        } catch {}
+      }
+
       if (staffRow) {
         return { authenticated: true, staffCode, staffRow };
       }
@@ -1561,11 +1591,37 @@ export default async function handler(req: any, res?: any) {
     const candidatePassword = String(body?.password || req.headers?.["x-staff-password"] || "").trim();
 
     if (candidateCode && candidatePassword) {
-      const { data: staffRow } = await supabase
-        .from("staff")
-        .select("id, staff_code, name, email, department, designation, device, active, status")
-        .ilike("staff_code", candidateCode)
-        .maybeSingle();
+      let staffRow: any = null;
+      try {
+        const { data: sRow } = await supabase
+          .from("staff")
+          .select("id, staff_code, name, email, department, designation, device, active, status")
+          .ilike("staff_code", candidateCode)
+          .maybeSingle();
+        if (sRow) staffRow = sRow;
+      } catch {}
+
+      if (!staffRow) {
+        try {
+          const { data: regRow } = await supabase
+            .from("registered_devices")
+            .select("id, staff_code, staff_name, department, device_id, device_locked, is_active, registered_at, updated_at")
+            .ilike("staff_code", candidateCode)
+            .maybeSingle();
+          if (regRow) {
+            staffRow = {
+              id: regRow.id,
+              staff_code: regRow.staff_code,
+              name: regRow.staff_name,
+              department: regRow.department,
+              designation: "Staff",
+              device: regRow.device_id,
+              active: regRow.is_active === true && regRow.device_locked === true,
+              status: regRow.is_active ? (regRow.device_locked ? "Active" : "Locked") : "Deactivated",
+            };
+          }
+        } catch {}
+      }
 
       if (staffRow && staffRow.active !== false) {
         const isPwOk = verifyPassword(candidatePassword, staffRow.device);
