@@ -267,7 +267,7 @@ export async function handleStaffApi(request: Request, pathname: string): Promis
         department: body.department?.trim() || "General Administration",
         designation: body.designation?.trim() || "Staff",
         active: body.active !== undefined ? body.active : true,
-        device_id: rawDeviceId || undefined,
+        ...(rawDeviceId ? { device_id: rawDeviceId } : {}),
       });
 
       return jsonResponse({ success: true, data: created }, 201);

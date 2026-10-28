@@ -174,8 +174,8 @@ function AdminStaffPage() {
       email: newEmail.trim().toLowerCase(),
       department: newDept,
       designation: newDesig,
-      device_id: newDeviceId.trim() || undefined,
       active: true,
+      ...(newDeviceId.trim() ? { device_id: newDeviceId.trim() } : {}),
     });
     setIsSubmitting(false);
 

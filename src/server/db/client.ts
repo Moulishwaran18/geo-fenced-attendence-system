@@ -39,6 +39,8 @@ export interface FaceEmbeddingRecord {
 export interface StaffWithEmbeddings extends StaffRecord {
   referenceSamples: FaceEmbeddingRecord[];
   embeddingCount: number;
+  device_locked?: boolean | undefined;
+  is_active?: boolean | undefined;
 }
 
 export interface VectorSearchResult {
@@ -726,6 +728,7 @@ export interface DatabaseDiagnostics {
  */
 export async function getDatabaseDiagnostics(): Promise<DatabaseDiagnostics> {
   const supabase = getSupabaseClient();
+  const supabaseUrl = process.env["SUPABASE_URL"] ?? process.env["VITE_SUPABASE_URL"];
   let staffCount = 0;
   if (supabase) {
     try {
@@ -737,8 +740,8 @@ export async function getDatabaseDiagnostics(): Promise<DatabaseDiagnostics> {
   return {
     status: "CONNECTED",
     databaseType: "Supabase (Cloud Managed PostgreSQL)",
-    host: (process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"])
-      ? new URL(process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"]).host
+    host: supabaseUrl
+      ? new URL(supabaseUrl).host
       : "gcpuuvhydtgmcpiumpfa.supabase.co",
     port: 443,
     databaseName: "postgres",
