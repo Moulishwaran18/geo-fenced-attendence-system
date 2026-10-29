@@ -368,7 +368,7 @@ export default async function handler(req: any, res?: any) {
       let isEnrolled = Boolean(priorEvents && priorEvents.length > 0);
       if (!isEnrolled && staffRecord.device && (staffRecord.device.includes("device_id:") || staffRecord.device.includes("auth:"))) {
         const { data: attCheck } = await supabase
-          .from("attendance_records")
+          .from("attendance_record")
           .select("id")
           .eq("staff_code", staffCode)
           .limit(1);
@@ -378,7 +378,7 @@ export default async function handler(req: any, res?: any) {
       }
       if (!isEnrolled) {
         const { data: attCheck } = await supabase
-          .from("attendance_records")
+          .from("attendance_record")
           .select("id")
           .eq("staff_code", staffCode)
           .limit(1);
@@ -801,7 +801,7 @@ export default async function handler(req: any, res?: any) {
       let isEnrolled = Boolean(priorEvents && priorEvents.length > 0);
       if (!isEnrolled && staffRecord.device && (staffRecord.device.includes("device_id:") || staffRecord.device.includes("auth:"))) {
         const { data: attCheck } = await supabase
-          .from("attendance_records")
+          .from("attendance_record")
           .select("id")
           .eq("staff_code", staffCode)
           .limit(1);
@@ -811,7 +811,7 @@ export default async function handler(req: any, res?: any) {
       }
       if (!isEnrolled) {
         const { data: attCheck } = await supabase
-          .from("attendance_records")
+          .from("attendance_record")
           .select("id")
           .eq("staff_code", staffCode)
           .limit(1);
@@ -1194,7 +1194,7 @@ export default async function handler(req: any, res?: any) {
       }
       if (!hasEnrollment) {
         const { data: attCheck } = await supabase
-          .from("attendance_records")
+          .from("attendance_record")
           .select("id")
           .eq("staff_code", staffCode)
           .limit(1);

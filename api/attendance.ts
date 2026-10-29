@@ -961,7 +961,7 @@ async function handleGetAttendance(req: any, res?: any) {
   const pool = getPgPool();
   if (pool) {
     try {
-      let q = "SELECT * FROM public.attendance_records WHERE 1=1";
+      let q = "SELECT * FROM public.attendance_record WHERE 1=1";
       const params: any[] = [];
       if (targetStaffCode) {
         params.push(targetStaffCode);
@@ -1000,7 +1000,7 @@ async function handleGetAttendance(req: any, res?: any) {
     return sendJsonResponse(res, 500, { success: false, error: "DATABASE_UNAVAILABLE" });
   }
 
-  let query = supabase.from("attendance_records").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }).limit(limit);
+  let query = supabase.from("attendance_record").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }).limit(limit);
   if (targetStaffCode) query = query.ilike("staff_code", targetStaffCode);
   if (filterDate) query = query.eq("date", filterDate);
   if (filterStatus && filterStatus.toLowerCase() !== "all") query = query.ilike("status", filterStatus);
@@ -1125,14 +1125,14 @@ async function handleCorrectionRequest(req: any, res: any, body: any) {
   const pool = getPgPool();
   if (pool) {
     try {
-      const origRes = await pool.query("SELECT * FROM public.attendance_records WHERE id = $1", [attendanceId]);
+      const origRes = await pool.query("SELECT * FROM public.attendance_record WHERE id = $1", [attendanceId]);
       if (origRes.rows.length > 0) originalRecord = origRes.rows[0];
     } catch {}
   }
   if (!originalRecord) {
     const supabase = getSupabaseClient();
     if (supabase) {
-      const { data } = await supabase.from("attendance_records").select("*").eq("id", attendanceId).maybeSingle();
+      const { data } = await supabase.from("attendance_record").select("*").eq("id", attendanceId).maybeSingle();
       if (data) originalRecord = data;
     }
   }
@@ -1595,7 +1595,7 @@ export default async function handler(req: any, res?: any) {
   if (pool) {
     try {
       const existing = await pool.query(
-        "SELECT * FROM public.attendance_records WHERE UPPER(staff_code) = $1 AND date = $2 LIMIT 1",
+        "SELECT * FROM public.attendance_record WHERE UPPER(staff_code) = $1 AND date = $2 LIMIT 1",
         [canonicalStaffCode, istDateStr]
       );
       if (existing.rows.length > 0) {
@@ -1616,19 +1616,63 @@ export default async function handler(req: any, res?: any) {
         });
       }
     } catch {}
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data: existingRec } = await supabase
+          .from("attendance_record")
+          .select("*")
+          .ilike("staff_code", canonicalStaffCode)
+          .eq("date", istDateStr)
+          .maybeSingle();
+
+        if (existingRec) {
+          return sendJsonResponse(res, 200, {
+            success: true,
+            alreadyMarked: true,
+            message: `Attendance already recorded for today (${existingRec.date} at ${existingRec.time}).`,
+            receipt: {
+              attendanceId: existingRec.id,
+              time: existingRec.time,
+              date: displayDateStr.replace(/-/g, " "),
+              staffCode: existingRec.staff_code,
+              staffName: existingRec.staff_name,
+              department: existingRec.department,
+              recordHash: existingRec.record_hash,
+            },
+          });
+        }
+      } catch {}
+    }
   }
 
   // 2. Fetch canonical staff information
-  let staffName = activeDevice.staff_name || "Faculty Member";
-  let department = "General";
+  let staffName = body.staffName || activeDevice.staff_name || "Faculty Member";
+  let department = body.department || "General";
   if (pool) {
     try {
       const sRow = await pool.query("SELECT name, department FROM public.staff WHERE UPPER(staff_code) = $1", [canonicalStaffCode]);
       if (sRow.rows.length > 0) {
-        staffName = sRow.rows[0].name;
-        department = sRow.rows[0].department || department;
+        if (sRow.rows[0].name) staffName = sRow.rows[0].name;
+        if (sRow.rows[0].department) department = sRow.rows[0].department;
       }
     } catch {}
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data: sRow } = await supabase
+          .from("staff")
+          .select("name, department")
+          .ilike("staff_code", canonicalStaffCode)
+          .maybeSingle();
+        if (sRow) {
+          if (sRow.name) staffName = sRow.name;
+          if (sRow.department) department = sRow.department;
+        }
+      } catch {}
+    }
   }
 
   // 3. Compute tamper-evident record HMAC
@@ -1650,24 +1694,24 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  // 4. Atomic Insert into public.attendance_records
+  // 4. Atomic Insert into public.attendance_record
   let insertedId: string | null = null;
   if (pool) {
     try {
       const insRes = await pool.query(
-        `INSERT INTO public.attendance_records 
-         (staff_code, staff_name, department, date, day, time, status, location, verification, latitude, longitude, device_id, record_hash, tamper_status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Present', 'Main Campus, Sona College', 'Verified', $7, $8, $9, $10, 'VERIFIED')
+        `INSERT INTO public.attendance_record 
+         (staff_code, staff_name, department, date, day, time, status, location, verification, verification_method, latitude, longitude, accuracy, device_id, record_hash, tamper_status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Present', 'Main Campus, Sona College', 'Verified', 'Face + GPS + Network', $7, $8, $9, $10, $11, 'VERIFIED')
          ON CONFLICT (staff_code, date) DO NOTHING
          RETURNING id`,
-        [canonicalStaffCode, staffName, department, istDateStr, dayStr, timeStr, latitude, longitude, activeDevice.id, recordHash]
+        [canonicalStaffCode, staffName, department, istDateStr, dayStr, timeStr, latitude, longitude, accuracy || null, activeDevice.id, recordHash]
       );
       if (insRes.rows.length > 0) {
         insertedId = insRes.rows[0].id;
       } else {
         // Race condition: concurrent punch succeeded and conflict DO NOTHING was triggered
         const existRes = await pool.query(
-          "SELECT * FROM public.attendance_records WHERE UPPER(staff_code) = $1 AND date = $2 LIMIT 1",
+          "SELECT * FROM public.attendance_record WHERE UPPER(staff_code) = $1 AND date = $2 LIMIT 1",
           [canonicalStaffCode, istDateStr]
         );
         if (existRes.rows.length > 0) {
@@ -1696,24 +1740,28 @@ export default async function handler(req: any, res?: any) {
   if (!insertedId) {
     const supabase = getSupabaseClient();
     if (supabase) {
+      const recordPayload = {
+        staff_code: canonicalStaffCode,
+        staff_name: staffName,
+        department,
+        date: istDateStr,
+        day: dayStr || "",
+        time: timeStr,
+        status: "Present",
+        location: "Main Campus, Sona College",
+        verification: "Verified",
+        verification_method: "Face + GPS + Network",
+        latitude: latitude || null,
+        longitude: longitude || null,
+        accuracy: accuracy || null,
+        device_id: activeDevice.id,
+        record_hash: recordHash,
+        tamper_status: "VERIFIED",
+      };
+
       const { data: insData, error: insErr } = await supabase
-        .from("attendance_records")
-        .insert({
-          staff_code: canonicalStaffCode,
-          staff_name: staffName,
-          department,
-          date: istDateStr,
-          day: dayStr,
-          time: timeStr,
-          status: "Present",
-          location: "Main Campus, Sona College",
-          verification: "Verified",
-          latitude,
-          longitude,
-          device_id: activeDevice.id,
-          record_hash: recordHash,
-          tamper_status: "VERIFIED",
-        })
+        .from("attendance_record")
+        .insert(recordPayload)
         .select()
         .single();
 
@@ -1721,7 +1769,7 @@ export default async function handler(req: any, res?: any) {
         if (insErr.code === "23505" || insErr.message.includes("unique")) {
           // Idempotent duplicate handled cleanly
           const { data: existData } = await supabase
-            .from("attendance_records")
+            .from("attendance_record")
             .select("*")
             .ilike("staff_code", canonicalStaffCode)
             .eq("date", istDateStr)
@@ -1744,10 +1792,11 @@ export default async function handler(req: any, res?: any) {
             });
           }
         }
+        console.error("[attendance] Supabase insert failed:", insErr);
         return sendJsonResponse(res, 500, {
           success: false,
           error: "DATABASE_PERSISTENCE_FAILED",
-          message: "Database insertion failed. Attendance was not recorded.",
+          message: "Database insertion failed: " + insErr.message,
           details: insErr.message,
         });
       }

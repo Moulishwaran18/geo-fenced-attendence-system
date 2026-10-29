@@ -158,7 +158,7 @@ export function useAttendance(targetStaffCode?: string) {
       if (!rawRows) {
         try {
           let sbQuery = supabase
-            .from("attendance_records")
+            .from("attendance_record")
             .select("*")
             .order("date", { ascending: false })
             .order("created_at", { ascending: false });
@@ -236,10 +236,10 @@ export function useAttendance(targetStaffCode?: string) {
 
     // 1. Supabase Realtime channel subscription
     const channel = supabase
-      .channel("attendance_records_realtime")
+      .channel("attendance_record_realtime")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "attendance_records" },
+        { event: "*", schema: "public", table: "attendance_record" },
         () => {
           void fetchRecords();
         },
