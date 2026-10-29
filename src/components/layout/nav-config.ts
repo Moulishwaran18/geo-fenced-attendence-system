@@ -37,6 +37,7 @@ export const adminNav: NavItem[] = [
   { label: "Staff", to: "/admin/staff", icon: Users },
   { label: "Attendance", to: "/admin/attendance", icon: ClipboardList },
   { label: "Campus Map", to: "/admin/campus-map", icon: Map },
+  { label: "Coordinate Points", to: "/admin/coordinate-points", icon: MapPin },
   { label: "Face Enrollment", to: "/admin/face-enrollment", icon: ScanFace },
   { label: "Face Change Approvals", to: "/admin/face-requests", icon: UserCheck },
   { label: "Devices", to: "/admin/devices", icon: Smartphone },

@@ -503,35 +503,108 @@ function verifyNetworkAuthToken(token?: string | null): { valid: boolean; payloa
   }
 }
 
-// Authoritative 13-point Campus Polygon Coordinates (Strict Order C1 -> ... -> C13)
-const AUTHORIZED_GEOFENCE_POLYGON = [
-  { lat: 11.675651510482604, lng: 78.12402220170895 }, // C1
-  { lat: 11.675657082681333, lng: 78.12382305416799 }, // C2
-  { lat: 11.675768526632474, lng: 78.12359545697831 }, // C3
-  { lat: 11.675857681761121, lng: 78.12339630943734 }, // C4
-  { lat: 11.676125146975094, lng: 78.1228443862524 },  // C5
-  { lat: 11.676370323194567, lng: 78.12244609117047 }, // C6
-  { lat: 11.676414900665728, lng: 78.12241764152176 }, // C7
-  { lat: 11.676448333764391, lng: 78.12143897360616 }, // C8
-  { lat: 11.676905252375372, lng: 78.12147880311436 }, // C9
-  { lat: 11.676977690622595, lng: 78.12159260170921 }, // C10
-  { lat: 11.67708913404289,  lng: 78.12222418391055 }, // C11
-  { lat: 11.677990932044441, lng: 78.12235439874642 }, // C12
-  { lat: 11.677979915759753, lng: 78.1237830407748 },  // C13
+// ---------------------------------------------------------------------------
+// Dynamic Geofence: DB-backed polygon with in-memory cache (5-minute TTL)
+// ---------------------------------------------------------------------------
+
+type PolygonPoint = { lat: number; lng: number };
+
+/** Hardcoded fallback polygon (used if DB is unavailable) */
+const FALLBACK_GEOFENCE_POLYGON: PolygonPoint[] = [
+  { lat: 11.680008217328185, lng: 78.12153017811703 }, // P1
+  { lat: 11.68027965716829,  lng: 78.12143270844324 }, // P2
+  { lat: 11.680658479357865, lng: 78.1219139649576  }, // P3
+  { lat: 11.680401954152238, lng: 78.12220332805167 }, // P4
+  { lat: 11.680020148755307, lng: 78.12218809841514 }, // P5
+  { lat: 11.67993961161223,  lng: 78.12173730117385 }, // P6
 ];
 
-function isPointInPolygon(point: { lat: number; lng: number }): boolean {
+interface GeofenceCache {
+  points: PolygonPoint[];
+  centroid: { lat: number; lng: number };
+  updatedAt: number;
+}
+
+let geofenceCache: GeofenceCache | null = null;
+const GEOFENCE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function computeCentroid(points: PolygonPoint[]): { lat: number; lng: number } {
+  const n = points.length;
+  return {
+    lat: points.reduce((s, p) => s + p.lat, 0) / n,
+    lng: points.reduce((s, p) => s + p.lng, 0) / n,
+  };
+}
+
+async function getActiveGeofencePolygon(): Promise<PolygonPoint[]> {
+  // Return cached result if still fresh
+  if (geofenceCache && Date.now() - geofenceCache.updatedAt < GEOFENCE_CACHE_TTL_MS) {
+    return geofenceCache.points;
+  }
+
+  try {
+    const url =
+      process.env["SUPABASE_URL"] ||
+      process.env["VITE_SUPABASE_URL"] ||
+      "https://qvjcxoznvhoagclbyhad.supabase.co";
+
+    const anonKey =
+      process.env["SUPABASE_ANON_KEY"] ||
+      process.env["VITE_SUPABASE_ANON_KEY"] ||
+      process.env["VITE_SUPABASE_PUBLISHABLE_KEY"] ||
+      "sb_publishable_S7pR3uyZmQkR9krOVueWfQ_W4dV1vo9";
+
+    const sbPublic = createClient(url, anonKey, { auth: { persistSession: false } });
+    const { data, error } = await sbPublic
+      .from("geofence_zones")
+      .select("polygon_coords, center_lat, center_lng")
+      .eq("active", true)
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data?.polygon_coords) {
+      const raw: [number, number][] =
+        typeof data.polygon_coords === "string"
+          ? JSON.parse(data.polygon_coords)
+          : data.polygon_coords;
+
+      if (Array.isArray(raw) && raw.length >= 3) {
+        const points = raw.map(([lat, lng]) => ({ lat, lng }));
+        const centroid =
+          data.center_lat && data.center_lng
+            ? { lat: data.center_lat, lng: data.center_lng }
+            : computeCentroid(points);
+        geofenceCache = { points, centroid, updatedAt: Date.now() };
+        return points;
+      }
+    }
+  } catch (err) {
+    console.warn("[GeofenceCache] Failed to fetch polygon from DB, using fallback:", err);
+  }
+
+  // Fallback: use hardcoded polygon
+  const fallback = FALLBACK_GEOFENCE_POLYGON;
+  geofenceCache = { points: fallback, centroid: computeCentroid(fallback), updatedAt: Date.now() };
+  return fallback;
+}
+
+/** Invalidate the in-memory geofence cache (called after admin updates polygon) */
+function invalidateGeofenceCache() {
+  geofenceCache = null;
+}
+
+function isPointInPolygonPoints(point: PolygonPoint, polygon: PolygonPoint[]): boolean {
   if (!point || typeof point.lat !== "number" || typeof point.lng !== "number" || isNaN(point.lat) || isNaN(point.lng)) {
     return false;
   }
   const x = point.lng;
   const y = point.lat;
   let inside = false;
-  for (let i = 0, j = AUTHORIZED_GEOFENCE_POLYGON.length - 1; i < AUTHORIZED_GEOFENCE_POLYGON.length; j = i++) {
-    const xi = AUTHORIZED_GEOFENCE_POLYGON[i]!.lng;
-    const yi = AUTHORIZED_GEOFENCE_POLYGON[i]!.lat;
-    const xj = AUTHORIZED_GEOFENCE_POLYGON[j]!.lng;
-    const yj = AUTHORIZED_GEOFENCE_POLYGON[j]!.lat;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i]!.lng;
+    const yi = polygon[i]!.lat;
+    const xj = polygon[j]!.lng;
+    const yj = polygon[j]!.lat;
     if (xi === xj && yi === yj) continue;
     const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
     if (intersect) inside = !inside;
@@ -1198,6 +1271,125 @@ async function handleCorrectionRequest(req: any, res: any, body: any) {
 }
 
 // ---------------------------------------------------------------------------
+// Handler: GET /api/attendance?action=geofence  (Public - returns active polygon)
+// ---------------------------------------------------------------------------
+async function handleGetGeofence(_req: any, res: any) {
+  try {
+    const points = await getActiveGeofencePolygon();
+    const centroid = computeCentroid(points);
+    return sendJsonResponse(res, 200, {
+      success: true,
+      polygon: points,
+      centroid,
+      pointCount: points.length,
+      updatedAt: geofenceCache?.updatedAt ? new Date(geofenceCache.updatedAt).toISOString() : null,
+    });
+  } catch (err: any) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "GEOFENCE_FETCH_FAILED",
+      message: err?.message || "Failed to load geofence polygon.",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Handler: POST /api/attendance?action=geofence  (Admin - update polygon)
+// ---------------------------------------------------------------------------
+async function handlePostGeofence(req: any, res: any, body: any) {
+  const token = extractBearerOrCookieToken(req);
+  const adminCheck = verifyAdminToken(token);
+
+  if (!adminCheck.valid || !adminCheck.payload) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "FORBIDDEN",
+      message: "Administrator authorization required to update geofence coordinates.",
+    });
+  }
+
+  const { points } = body as { points?: Array<{ lat: number; lng: number }> };
+
+  if (!Array.isArray(points) || points.length < 3) {
+    return sendJsonResponse(res, 400, {
+      success: false,
+      error: "INVALID_POLYGON",
+      message: "At least 3 coordinate points are required to define a valid polygon.",
+    });
+  }
+
+  for (const p of points) {
+    if (
+      typeof p.lat !== "number" || typeof p.lng !== "number" ||
+      isNaN(p.lat) || isNaN(p.lng) ||
+      p.lat < -90 || p.lat > 90 || p.lng < -180 || p.lng > 180
+    ) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "INVALID_COORDINATES",
+        message: "All points must have valid numeric lat/lng values.",
+      });
+    }
+  }
+
+  const centroid = computeCentroid(points);
+  const coordArray = points.map(p => [p.lat, p.lng]);
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_UNAVAILABLE",
+      message: "Cannot update geofence: database connection unavailable.",
+    });
+  }
+
+  const { error: upsertErr } = await supabase
+    .from("geofence_zones")
+    .update({
+      polygon_coords: JSON.stringify(coordArray),
+      center_lat: centroid.lat,
+      center_lng: centroid.lng,
+      name: "Main Campus",
+      campus_name: "Sona College of Technology",
+    })
+    .eq("active", true);
+
+  if (upsertErr) {
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_UPDATE_FAILED",
+      message: upsertErr.message,
+    });
+  }
+
+  // Invalidate cache so next request fetches fresh polygon
+  invalidateGeofenceCache();
+
+  const adminUsername =
+    adminCheck.payload.username || adminCheck.payload.sub || "admin";
+
+  // Audit log
+  void supabase.from("security_events").insert({
+    time: new Date().toISOString(),
+    staff: adminUsername,
+    event: "GEOFENCE_POLYGON_UPDATED",
+    device: JSON.stringify({ pointCount: points.length, centroid }),
+    location: "Admin Panel",
+    result: "Allowed",
+    severity: "Medium",
+  });
+
+  return sendJsonResponse(res, 200, {
+    success: true,
+    message: "Geofence polygon updated successfully.",
+    polygon: points,
+    centroid,
+    pointCount: points.length,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main Handler
 // ---------------------------------------------------------------------------
 export default async function handler(req: any, res?: any) {
@@ -1208,6 +1400,16 @@ export default async function handler(req: any, res?: any) {
   }
 
   if (method === "GET") {
+    // Check if this is a geofence read request
+    const getUrl = req.url || "";
+    let getAction = "";
+    try {
+      const parsedGet = new URL(getUrl, "http://localhost");
+      getAction = (parsedGet.searchParams.get("action") || "").toLowerCase();
+    } catch { /**/ }
+    if (getAction === "geofence") {
+      return handleGetGeofence(req, res);
+    }
     return handleGetAttendance(req, res);
   }
 
@@ -1264,6 +1466,11 @@ export default async function handler(req: any, res?: any) {
   // Route to administrator correction
   if (action === "correct") {
     return handleCorrectionRequest(req, res, body);
+  }
+
+  // Route to geofence management
+  if (action === "geofence") {
+    return handlePostGeofence(req, res, body);
   }
 
   // =========================================================================
@@ -1377,7 +1584,8 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
-  if (!isPointInPolygon({ lat: latitude, lng: longitude })) {
+  const activePolygon = await getActiveGeofencePolygon();
+  if (!isPointInPolygonPoints({ lat: latitude, lng: longitude }, activePolygon)) {
     return sendJsonResponse(res, 403, {
       success: false,
       error: "GPS_OUTSIDE_CAMPUS",

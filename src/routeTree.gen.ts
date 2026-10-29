@@ -21,6 +21,7 @@ import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
 import { Route as AdminAuditLogsRouteImport } from './routes/admin.audit-logs'
 import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
+import { Route as AdminCoordinatePointsRouteImport } from './routes/admin.coordinate-points'
 import { Route as AdminFaceEnrollmentRouteImport } from './routes/admin.face-enrollment'
 import { Route as AdminFaceRequestsRouteImport } from './routes/admin.face-requests'
 import { Route as AdminStaffRouteImport } from './routes/admin.staff'
@@ -85,6 +86,11 @@ const AdminCampusMapRoute = AdminCampusMapRouteImport.update({
   path: '/admin/campus-map',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminCoordinatePointsRoute = AdminCoordinatePointsRouteImport.update({
+  id: '/admin/coordinate-points',
+  path: '/admin/coordinate-points',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminFaceEnrollmentRoute = AdminFaceEnrollmentRouteImport.update({
   id: '/admin/face-enrollment',
   path: '/admin/face-enrollment',
@@ -113,6 +119,7 @@ export interface FileRoutesByFullPath {
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -130,6 +137,7 @@ export interface FileRoutesByTo {
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -148,6 +156,7 @@ export interface FileRoutesById {
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -167,6 +176,7 @@ export interface FileRouteTypes {
     | '/admin/attendance'
     | '/admin/audit-logs'
     | '/admin/campus-map'
+    | '/admin/coordinate-points'
     | '/admin/face-enrollment'
     | '/admin/face-requests'
     | '/admin/staff'
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
     | '/admin/attendance'
     | '/admin/audit-logs'
     | '/admin/campus-map'
+    | '/admin/coordinate-points'
     | '/admin/face-enrollment'
     | '/admin/face-requests'
     | '/admin/staff'
@@ -201,6 +212,7 @@ export interface FileRouteTypes {
     | '/admin/attendance'
     | '/admin/audit-logs'
     | '/admin/campus-map'
+    | '/admin/coordinate-points'
     | '/admin/face-enrollment'
     | '/admin/face-requests'
     | '/admin/staff'
@@ -219,6 +231,7 @@ export interface RootRouteChildren {
   AdminAttendanceRoute: typeof AdminAttendanceRoute
   AdminAuditLogsRoute: typeof AdminAuditLogsRoute
   AdminCampusMapRoute: typeof AdminCampusMapRoute
+  AdminCoordinatePointsRoute: typeof AdminCoordinatePointsRoute
   AdminFaceEnrollmentRoute: typeof AdminFaceEnrollmentRoute
   AdminFaceRequestsRoute: typeof AdminFaceRequestsRoute
   AdminStaffRoute: typeof AdminStaffRoute
@@ -311,6 +324,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCampusMapRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/coordinate-points': {
+      id: '/admin/coordinate-points'
+      path: '/admin/coordinate-points'
+      fullPath: '/admin/coordinate-points'
+      preLoaderRoute: typeof AdminCoordinatePointsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/face-enrollment': {
       id: '/admin/face-enrollment'
       path: '/admin/face-enrollment'
@@ -347,6 +367,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminAttendanceRoute: AdminAttendanceRoute,
   AdminAuditLogsRoute: AdminAuditLogsRoute,
   AdminCampusMapRoute: AdminCampusMapRoute,
+  AdminCoordinatePointsRoute: AdminCoordinatePointsRoute,
   AdminFaceEnrollmentRoute: AdminFaceEnrollmentRoute,
   AdminFaceRequestsRoute: AdminFaceRequestsRoute,
   AdminStaffRoute: AdminStaffRoute,

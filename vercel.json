@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/api/geofence",
+      "destination": "/api/attendance?action=geofence"
+    },
+    {
+      "source": "/api/admin/geofence",
+      "destination": "/api/attendance?action=geofence"
+    },
+    {
       "source": "/api/staff/session",
       "destination": "/api/staff/login"
     },

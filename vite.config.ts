@@ -44,7 +44,10 @@ function apiMiddlewarePlugin(): Plugin {
 
         if (
           req.url &&
-          (req.url.startsWith("/api/attendance") || req.url.startsWith("/api/mark-attendance"))
+          (req.url.startsWith("/api/attendance") ||
+            req.url.startsWith("/api/mark-attendance") ||
+            req.url.startsWith("/api/geofence") ||
+            req.url.startsWith("/api/admin/geofence"))
         ) {
           await attendanceHandler(req, res);
           return;
