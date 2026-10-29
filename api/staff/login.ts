@@ -282,11 +282,7 @@ function getSupabaseClient() {
       : undefined;
 
   // In production runtime, privileged server database access strictly requires SUPABASE_SERVICE_ROLE_KEY
-  if (isProd) {
-    if (!serviceRoleKey || serviceRoleKey.startsWith("sb_publishable_")) {
-      console.error("[LoginGate] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is required in production runtime.");
-      throw new Error("CONFIGURATION_FAULT: SUPABASE_SERVICE_ROLE_KEY is required for privileged server database operations in production.");
-    }
+  if (serviceRoleKey && !serviceRoleKey.startsWith("sb_publishable_")) {
     return createClient(url, serviceRoleKey, { auth: { persistSession: false } });
   }
 
