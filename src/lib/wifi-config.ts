@@ -14,6 +14,11 @@ export const AUTHORIZED_SSID_KEYWORD = "sona" as const;
 export const AUTHORIZED_SSIDS = ["SONA-WIFI"] as const;
 
 export const REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30" as const;
+export const SECONDARY_APPROVED_BSSID = "72:CD:0D:E8:D4:B0" as const;
+export const APPROVED_CAMPUS_BSSIDS = [
+  "B0:1F:8C:29:6B:30",
+  "72:CD:0D:E8:D4:B0",
+] as const;
 export const CAMPUS_WIFI_FAILURE_MESSAGE =
   "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi." as const;
 
@@ -30,9 +35,11 @@ export function normalizeBssid(bssid?: string | null | undefined): string {
 
 /**
  * Authoritative Campus BSSID validation function:
- * 1. Normalizes connected BSSID and registered campus BSSID to UPPERCASE.
+ * 1. Normalizes connected BSSID and approved campus BSSIDs to UPPERCASE.
  * 2. Rejects empty, null, undefined, unavailable, or dummy/redacted values (02:00:00:00:00:00, 00:00:00:00:00:00).
- * 3. Compares strictly against registered campus BSSID: B0:1F:8C:29:6B:30.
+ * 3. Compares strictly against approved campus BSSID allowlist:
+ *    - B0:1F:8C:29:6B:30 (Campus Wi-Fi AP)
+ *    - 72:CD:0D:E8:D4:B0 (Secondary Approved AP / Hotspot)
  */
 export function isAuthorizedCampusBssid(bssid?: string | null | undefined): boolean {
   const clean = normalizeBssid(bssid);
@@ -50,7 +57,7 @@ export function isAuthorizedCampusBssid(bssid?: string | null | undefined): bool
   if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(clean)) {
     return false;
   }
-  return clean === REGISTERED_CAMPUS_BSSID.toUpperCase();
+  return APPROVED_CAMPUS_BSSIDS.some((approved) => approved.toUpperCase() === clean);
 }
 
 /**

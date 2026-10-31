@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
 import { Button } from "@/components/ui/button";
+import { APPROVED_CAMPUS_BSSIDS } from "@/lib/wifi-config";
 
 interface WifiGatekeeperProps {
   children: ReactNode;
@@ -109,7 +110,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                 Authorized Wi-Fi Connection Required
               </p>
               <p className="mt-2.5 max-w-md text-sm text-muted-foreground leading-relaxed">
-                CampusAttend is protected by institutional network security. This system can only be accessed when your device is connected to the registered campus Wi-Fi access point (<strong className="text-foreground font-mono">B0:1F:8C:29:6B:30</strong>).
+                CampusAttend is protected by institutional network security. This system can only be accessed when your device is connected to an approved campus Wi-Fi access point (<strong className="text-foreground font-mono">{APPROVED_CAMPUS_BSSIDS.join(" or ")}</strong>).
               </p>
             </div>
 
@@ -130,8 +131,8 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Campus AP BSSID:</span>
-                  <span className="font-mono text-primary font-medium">B0:1F:8C:29:6B:30</span>
+                  <span className="text-muted-foreground">Approved Campus BSSIDs:</span>
+                  <span className="font-mono text-primary font-medium text-[11px]">{APPROVED_CAMPUS_BSSIDS.join(" | ")}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Connected BSSID:</span>
@@ -176,7 +177,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside pl-1">
                 <li>Open your device Wi-Fi settings.</li>
                 <li>
-                  Connect to the official campus Wi-Fi network (AP BSSID: <strong className="text-foreground font-mono">B0:1F:8C:29:6B:30</strong>).
+                  Connect to an official campus Wi-Fi network (AP BSSID: <strong className="text-foreground font-mono">{APPROVED_CAMPUS_BSSIDS.join(" or ")}</strong>).
                 </li>
                 <li>
                   Ensure you are using the <strong className="text-foreground">CampusAttend Android APK</strong> with Location permissions enabled.

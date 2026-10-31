@@ -20,7 +20,7 @@ import type {
   SingleFactorResult,
   FactorStatus,
 } from "@/lib/parallel-verification";
-import { REGISTERED_CAMPUS_BSSID } from "@/lib/wifi-config";
+import { REGISTERED_CAMPUS_BSSID, APPROVED_CAMPUS_BSSIDS } from "@/lib/wifi-config";
 
 interface ParallelVerificationPanelProps {
   report: ParallelVerificationReport;
@@ -159,7 +159,7 @@ export function ParallelVerificationPanel({
             <div className="space-y-1 text-xs">
               <p className="font-medium text-foreground">{wifi.detail}</p>
               <div className="font-mono text-[10px] text-muted-foreground/90 space-y-0.5 pt-1">
-                <p>Target BSSID: {REGISTERED_CAMPUS_BSSID}</p>
+                <p>Approved APs: {APPROVED_CAMPUS_BSSIDS.join(" | ")}</p>
                 <p>Connected: {wifi.data?.bssid || "Unavailable"}</p>
                 {wifi.data?.ssid && <p>SSID: {wifi.data.ssid}</p>}
               </div>
@@ -315,7 +315,7 @@ export function ParallelVerificationPanel({
             </p>
             <p className="leading-relaxed">
               {overallDecision === "ALLOWED"
-                ? "All 3 independent verification factors have passed (Wi-Fi AP B0:1F:8C:29:6B:30 + GPS Geofence Polygon + Face Biometrics). Attendance can now be recorded."
+                ? `All 3 independent verification factors have passed (Approved Wi-Fi AP [${APPROVED_CAMPUS_BSSIDS.join(" / ")}] + GPS Geofence Polygon + Face Biometrics). Attendance can now be recorded.`
                 : overallDecision === "REJECTED"
                   ? `Attendance requires all 3 factors to pass. Currently missing: ${failedFactors.join(", ")}. (${passedFactors.length > 0 ? `Passed: ${passedFactors.join(", ")}` : "No factors passed yet"}).`
                   : "Please initiate verification or complete missing checks to evaluate attendance eligibility."}

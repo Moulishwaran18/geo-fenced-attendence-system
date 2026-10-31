@@ -18,6 +18,8 @@
 import crypto from "node:crypto";
 import {
   REGISTERED_CAMPUS_BSSID,
+  SECONDARY_APPROVED_BSSID,
+  APPROVED_CAMPUS_BSSIDS,
   CAMPUS_WIFI_FAILURE_MESSAGE,
   normalizeBssid,
   isAuthorizedCampusBssid,
@@ -115,6 +117,11 @@ async function runTests() {
 
   // Test 5: Lowercase Match
   assert("isAuthorizedCampusBssid: Lowercase match b0:1f:8c:29:6b:30 -> true", isAuthorizedCampusBssid("b0:1f:8c:29:6b:30"));
+
+  // Test 5B: Secondary Approved BSSID (Laptop Hotspot)
+  assert("isAuthorizedCampusBssid: Secondary BSSID exact match 72:CD:0D:E8:D4:B0 -> true", isAuthorizedCampusBssid("72:CD:0D:E8:D4:B0"));
+  assert("isAuthorizedCampusBssid: Secondary BSSID lowercase match 72:cd:0d:e8:d4:b0 -> true", isAuthorizedCampusBssid("72:cd:0d:e8:d4:b0"));
+  assert("isAuthorizedCampusBssid: Secondary BSSID hyphen match 72-cd-0d-e8-d4-b0 -> true", isAuthorizedCampusBssid("72-cd-0d-e8-d4-b0"));
 
   // Test 6: Different BSSID -> false
   assert("isAuthorizedCampusBssid: Different BSSID 00:11:22:33:44:55 -> false", !isAuthorizedCampusBssid("00:11:22:33:44:55"));
@@ -217,6 +224,30 @@ async function runTests() {
     case7.authorized === true && case7.bssid === "B0:1F:8C:29:6B:30"
   );
 
+  // Case 7B: Secondary Approved BSSID (Laptop Hotspot) -> PASS
+  const case7B = verifyCampusWifi({
+    transport: "wifi",
+    connected: true,
+    ssid: "Laptop-Hotspot",
+    bssid: "72:CD:0D:E8:D4:B0",
+  });
+  assert(
+    "Case 7B: Secondary Approved BSSID (72:CD:0D:E8:D4:B0) -> PASS",
+    case7B.authorized === true && case7B.bssid === "72:CD:0D:E8:D4:B0"
+  );
+
+  // Case 7C: Secondary Approved BSSID lowercase -> PASS
+  const case7C = verifyCampusWifi({
+    transport: "wifi",
+    connected: true,
+    ssid: "Laptop-Hotspot",
+    bssid: "72:cd:0d:e8:d4:b0",
+  });
+  assert(
+    "Case 7C: Secondary Approved BSSID lowercase (72:cd:0d:e8:d4:b0) -> PASS",
+    case7C.authorized === true && case7C.bssid === "72:CD:0D:E8:D4:B0"
+  );
+
   // ---------------------------------------------------------------------------
   // Suite 3: Serverless /api/wifi-status Native Bridge Integration
   // ---------------------------------------------------------------------------
@@ -248,6 +279,32 @@ async function runTests() {
   assert(
     "HMAC-SHA256 Token contains validated campus BSSID payload",
     tokenVerify.valid === true && tokenVerify.payload?.bssid === "B0:1F:8C:29:6B:30"
+  );
+
+  // API 1B: Secondary Approved BSSID (Hotspot) on Native Bridge
+  const reqApi1B = {
+    method: "POST",
+    body: {
+      isNativeBridge: true,
+      transport: "wifi",
+      connected: true,
+      ssid: "Laptop-Hotspot",
+      bssid: "72:cd:0d:e8:d4:b0", // lowercase to test normalization
+    },
+  };
+  const resApi1B = new MockResponse();
+  await wifiStatusHandler(reqApi1B, resApi1B);
+  assert(
+    "/api/wifi-status: Secondary BSSID (72:cd:0d:e8:d4:b0) mints valid networkAuthToken and authorizes",
+    resApi1B.body.authorized === true &&
+      resApi1B.body.bssid === "72:CD:0D:E8:D4:B0" &&
+      typeof resApi1B.body.networkAuthToken === "string" &&
+      resApi1B.body.networkAuthToken.length > 20
+  );
+  const tokenVerify1B = verifyNetworkAuthToken(resApi1B.body.networkAuthToken);
+  assert(
+    "HMAC-SHA256 Token contains validated secondary campus BSSID payload",
+    tokenVerify1B.valid === true && tokenVerify1B.payload?.bssid === "72:CD:0D:E8:D4:B0"
   );
 
   // API 2: Different BSSID on Native Bridge
@@ -397,6 +454,34 @@ async function runTests() {
     "/api/attendance: With valid campus BSSID & token, Factor 1 passes (proceeds to Factor 2 GPS polygon)",
     resAtt4.statusCode === 403 && (resAtt4.body?.error === "GPS_OUTSIDE_CAMPUS" || resAtt4.body?.error === "GEOFENCE_OUTSIDE"),
     `Expected GEOFENCE_OUTSIDE (proving Factor 1 passed), got: ${resAtt4.body?.error} (status ${resAtt4.statusCode})`
+  );
+
+  // Attendance 4B: Legitimate request with signed networkAuthToken for secondary BSSID (72:CD:0D:E8:D4:B0)
+  const validToken2 = createNetworkAuthToken("Laptop-Hotspot", "72:CD:0D:E8:D4:B0");
+  const reqAtt4B = {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${validStaffToken}`,
+      "x-network-auth-token": validToken2,
+      "x-wifi-bssid": "72:cd:0d:e8:d4:b0",
+    },
+    body: {
+      staffCode: "SCT-001",
+      token: validStaffToken,
+      networkAuthToken: validToken2,
+      bssid: "72:CD:0D:E8:D4:B0",
+      latitude: 0.0,
+      longitude: 0.0,
+      accuracy: 10,
+    },
+  };
+  const resAtt4B = new MockResponse();
+  await attendanceHandler(reqAtt4B, resAtt4B);
+  assert(
+    "/api/attendance: With secondary approved BSSID (72:CD:0D:E8:D4:B0) & token, Factor 1 passes",
+    resAtt4B.statusCode === 403 && (resAtt4B.body?.error === "GPS_OUTSIDE_CAMPUS" || resAtt4B.body?.error === "GEOFENCE_OUTSIDE"),
+    `Expected GEOFENCE_OUTSIDE (proving Factor 1 passed), got: ${resAtt4B.body?.error} (status ${resAtt4B.statusCode})`
   );
 
   console.log("\n================================================================================");

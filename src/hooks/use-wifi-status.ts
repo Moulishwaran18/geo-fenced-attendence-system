@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { verifyCampusWifi, type WifiStatus } from "@/lib/wifi-config";
+import { verifyCampusWifi, isAuthorizedCampusBssid, type WifiStatus } from "@/lib/wifi-config";
 import {
   getNativeConnectedWifi,
   isNativeWifiBridgeAvailable,
@@ -206,9 +206,9 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
           return bssidUnavailableStatus;
         }
 
-        // 1G. BSSID Mismatch check (Compare normalized uppercase BSSID against B0:1F:8C:29:6B:30)
+        // 1G. BSSID Mismatch check (Compare normalized uppercase BSSID against approved campus BSSIDs)
         const cleanBssid = nativeWifi.bssid.trim().replace(/^["']|["']$/g, "").toUpperCase();
-        if (cleanBssid !== "B0:1F:8C:29:6B:30") {
+        if (!isAuthorizedCampusBssid(cleanBssid)) {
           const bssidMismatchStatus: WifiStatus = {
             isSonaWifi: false,
             authorized: false,

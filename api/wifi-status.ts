@@ -25,6 +25,11 @@ const TOKEN_SECRET =
 const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export const REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30" as const;
+export const SECONDARY_APPROVED_BSSID = "72:CD:0D:E8:D4:B0" as const;
+export const APPROVED_CAMPUS_BSSIDS = [
+  "B0:1F:8C:29:6B:30",
+  "72:CD:0D:E8:D4:B0",
+] as const;
 export const CAMPUS_WIFI_FAILURE_MESSAGE =
   "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi." as const;
 
@@ -48,7 +53,7 @@ export function isAuthorizedCampusBssid(bssid?: string | null | undefined): bool
   if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(clean)) {
     return false;
   }
-  return clean === REGISTERED_CAMPUS_BSSID.toUpperCase();
+  return APPROVED_CAMPUS_BSSIDS.some((app) => app.toUpperCase() === clean);
 }
 
 /**

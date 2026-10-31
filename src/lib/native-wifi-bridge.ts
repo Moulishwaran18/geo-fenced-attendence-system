@@ -9,6 +9,8 @@
  * - Handles runtime permission checks and device location requirements
  */
 
+import { isAuthorizedCampusBssid } from "./wifi-config";
+
 export interface NativeConnectedWifi {
   connected: boolean;
   transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
@@ -191,7 +193,7 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
           rawBssid = null;
         }
 
-        const isBssidMatched = rawBssid === "B0:1F:8C:29:6B:30";
+        const isBssidMatched = isAuthorizedCampusBssid(rawBssid);
 
         return {
           connected: Boolean(parsed.connected),
@@ -229,7 +231,7 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
       }
 
       if (valid || directBssid) {
-        const isBssidMatched = directBssid === "B0:1F:8C:29:6B:30";
+        const isBssidMatched = isAuthorizedCampusBssid(directBssid);
         return {
           connected: true,
           transport: "wifi",
@@ -257,7 +259,7 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
         const validSsid = rawSsid && rawSsid !== "<unknown ssid>" && rawSsid !== "0x" ? rawSsid : null;
         let rawBssid = parsed.bssid ? String(parsed.bssid).trim().replace(/^["']|["']$/g, "").toUpperCase() : null;
         if (rawBssid === "02:00:00:00:00:00" || rawBssid === "00:00:00:00:00:00") rawBssid = null;
-        const isBssidMatched = rawBssid === "B0:1F:8C:29:6B:30";
+        const isBssidMatched = isAuthorizedCampusBssid(rawBssid);
 
         return {
           connected: isWifi,
@@ -344,7 +346,7 @@ export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
           isWifi: Boolean(parsed.isWifi),
           ssid: parsed.ssid || null,
           bssid: bssid || null,
-          bssidVerified: Boolean(parsed.bssidVerified ?? (bssid === "B0:1F:8C:29:6B:30")),
+          bssidVerified: Boolean(parsed.bssidVerified ?? isAuthorizedCampusBssid(bssid)),
           bssidSource: parsed.bssidSource || undefined,
           ipv4: parsed.ipv4 || null,
           ipv4Subnet: parsed.ipv4Subnet || null,

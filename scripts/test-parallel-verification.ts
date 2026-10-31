@@ -33,7 +33,11 @@ import {
   type FactorStatus,
   type ParallelVerificationReport,
 } from "../src/lib/parallel-verification";
-import { REGISTERED_CAMPUS_BSSID } from "../src/lib/wifi-config";
+import {
+  REGISTERED_CAMPUS_BSSID,
+  SECONDARY_APPROVED_BSSID,
+  APPROVED_CAMPUS_BSSIDS,
+} from "../src/lib/wifi-config";
 import type { WifiStatus } from "../src/lib/wifi-config";
 import type { FaceScanResult } from "../src/components/common/FaceScanDialog";
 import type { GeofenceEvaluation } from "../src/lib/geofence/geofence-service";
@@ -66,6 +70,15 @@ const makeWifiPass = (): Partial<WifiStatus> => ({
   ssid: "SONA-WIFI",
   state: "connected",
   network: "SONA",
+});
+
+const makeWifiPassSecondary = (): Partial<WifiStatus> => ({
+  authorized: true,
+  isSonaWifi: true,
+  bssid: SECONDARY_APPROVED_BSSID,
+  ssid: "Laptop-Hotspot",
+  state: "connected",
+  network: "Hotspot",
 });
 
 const makeWifiFailMismatch = (): Partial<WifiStatus> => ({
@@ -175,6 +188,32 @@ async function runTestSuite() {
       gpsStatus: gps.status,
       faceStatus: face.status,
       notes: "All 3 factors passed -> Attendance ALLOWED",
+    });
+  }
+
+  // Test 1B: Wi-Fi PASS (Secondary Approved BSSID 72:CD:0D:E8:D4:B0), GPS PASS, Face PASS -> ALLOWED
+  {
+    const wifi = evaluateWifiFactor(makeWifiPassSecondary());
+    const gps = evaluateGpsFactor(makeGpsPass());
+    const face = evaluateFaceFactor(makeFacePass(targetStaff), targetStaff);
+    const decision = computeParallelDecision(wifi, gps, face);
+
+    const passed =
+      wifi.status === "PASS" &&
+      gps.status === "PASS" &&
+      face.status === "PASS" &&
+      decision.decision === "ALLOWED";
+
+    results.push({
+      scenarioNumber: 101,
+      name: "Wi-Fi PASS (Secondary AP 72:CD:0D:E8:D4:B0), GPS PASS, Face PASS",
+      passed,
+      expectedDecision: "ALLOWED",
+      actualDecision: decision.decision,
+      wifiStatus: wifi.status,
+      gpsStatus: gps.status,
+      faceStatus: face.status,
+      notes: "Secondary approved BSSID (Hotspot) passed -> Attendance ALLOWED",
     });
   }
 

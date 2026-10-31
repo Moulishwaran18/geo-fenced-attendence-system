@@ -14,6 +14,7 @@ import {
   isAuthorizedCampusBssid,
   normalizeBssid,
   REGISTERED_CAMPUS_BSSID,
+  APPROVED_CAMPUS_BSSIDS,
   type WifiStatus,
 } from "./wifi-config";
 import type { FaceScanResult } from "@/components/common/FaceScanDialog";
@@ -225,7 +226,7 @@ export function evaluateWifiFactor(
   return {
     status: "FAIL",
     label: "FAIL – BSSID Mismatch",
-    detail: `Connected BSSID (${rawBssid}) does not match campus access point (${REGISTERED_CAMPUS_BSSID})`,
+    detail: `Connected BSSID (${rawBssid}) does not match approved campus access points (${APPROVED_CAMPUS_BSSIDS.join(" or ")})`,
     data: {
       bssid: rawBssid,
       ssid: wifiStatus.ssid || undefined,

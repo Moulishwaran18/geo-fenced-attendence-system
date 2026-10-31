@@ -49,6 +49,11 @@ class AndroidWifiBridge(
 
     companion object {
         const val REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30"
+        const val SECONDARY_APPROVED_BSSID = "72:CD:0D:E8:D4:B0"
+        val APPROVED_CAMPUS_BSSIDS = listOf(
+            REGISTERED_CAMPUS_BSSID,
+            SECONDARY_APPROVED_BSSID
+        )
         const val REDACTED_MAC_ADDRESS = "02:00:00:00:00:00"
         const val DEFAULT_ZERO_MAC = "00:00:00:00:00:00"
         const val CAMPUS_WIFI_FAILURE_MESSAGE =
@@ -74,6 +79,22 @@ class AndroidWifiBridge(
             }
             val macRegex = Regex("^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
             return if (macRegex.matches(clean)) clean else ""
+        }
+
+        @JvmStatic
+        fun isAuthorizedBssid(bssid: String?): Boolean {
+            if (bssid.isNullOrBlank()) return false
+            val clean = sanitizeBssidStatic(bssid)
+            if (clean.isEmpty() ||
+                clean == REDACTED_MAC_ADDRESS ||
+                clean == DEFAULT_ZERO_MAC ||
+                clean == "UNKNOWN" ||
+                clean == "BSSID_UNAVAILABLE" ||
+                clean == "NULL"
+            ) {
+                return false
+            }
+            return APPROVED_CAMPUS_BSSIDS.any { it.equals(clean, ignoreCase = true) }
         }
     }
 
@@ -429,13 +450,15 @@ class AndroidWifiBridge(
 
             val (detectedSsid, source) = extractCurrentSsid(caps)
             val (detectedBssid, bSource) = extractCurrentBssid(caps)
-            val isBssidMatched = detectedBssid.isNotEmpty() && detectedBssid == REGISTERED_CAMPUS_BSSID
+            val isBssidMatched = isAuthorizedBssid(detectedBssid)
             json.put("ssid", if (detectedSsid.isNotEmpty()) detectedSsid else JSONObject.NULL)
             json.put("ssidSource", source)
             json.put("bssid", if (detectedBssid.isNotEmpty()) detectedBssid else JSONObject.NULL)
             json.put("bssidSource", bSource)
             json.put("bssidVerified", isBssidMatched)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
+            json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
+            json.put("approvedCampusBssids", JSONArray(APPROVED_CAMPUS_BSSIDS))
             json.put("ipv4", if (ipv4.isNotEmpty()) ipv4 else JSONObject.NULL)
             json.put("ipv4Subnet", if (ipv4Subnet.isNotEmpty()) ipv4Subnet else JSONObject.NULL)
             json.put("prefixLength", prefixLength)
@@ -524,6 +547,12 @@ class AndroidWifiBridge(
     @JavascriptInterface
     fun getRegisteredCampusBssid(): String = REGISTERED_CAMPUS_BSSID
 
+    @JavascriptInterface
+    fun getSecondaryApprovedBssid(): String = SECONDARY_APPROVED_BSSID
+
+    @JavascriptInterface
+    fun getApprovedCampusBssids(): String = JSONArray(APPROVED_CAMPUS_BSSIDS).toString()
+
     /**
      * Core method: Returns structured status of the connected network and safe diagnostics.
      */
@@ -538,6 +567,8 @@ class AndroidWifiBridge(
             json.put("bssid", JSONObject.NULL)
             json.put("bssidVerified", false)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
+            json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
+            json.put("approvedCampusBssids", JSONArray(APPROVED_CAMPUS_BSSIDS))
             json.put("permissionGranted", false)
             json.put("locationEnabled", false)
             json.put("reason", "UNTRUSTED_ORIGIN")
@@ -572,6 +603,8 @@ class AndroidWifiBridge(
             json.put("permissionGranted", permissionGranted)
             json.put("locationEnabled", locationEnabled)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
+            json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
+            json.put("approvedCampusBssids", JSONArray(APPROVED_CAMPUS_BSSIDS))
 
             // Case 1: Cellular / Mobile Data
             if (isCellular && !isWifi) {
@@ -645,7 +678,7 @@ class AndroidWifiBridge(
             json.put("bssidSource", bSource)
 
             val isBssidAvailable = rawBssid.isNotBlank()
-            val isBssidMatched = isBssidAvailable && rawBssid == REGISTERED_CAMPUS_BSSID
+            val isBssidMatched = isBssidAvailable && isAuthorizedBssid(rawBssid)
 
             json.put("bssid", if (isBssidAvailable) rawBssid else JSONObject.NULL)
             json.put("bssidVerified", isBssidMatched)
@@ -680,6 +713,8 @@ class AndroidWifiBridge(
             json.put("bssid", JSONObject.NULL)
             json.put("bssidVerified", false)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
+            json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
+            json.put("approvedCampusBssids", JSONArray(APPROVED_CAMPUS_BSSIDS))
             json.put("permissionGranted", false)
             json.put("locationEnabled", false)
             json.put("ssidSource", "NONE")
@@ -872,7 +907,7 @@ class AndroidWifiBridge(
 
             val (rawSsid, source) = extractCurrentSsid(caps)
             val (rawBssid, bSource) = extractCurrentBssid(caps)
-            val isBssidMatched = rawBssid.isNotEmpty() && rawBssid == REGISTERED_CAMPUS_BSSID
+            val isBssidMatched = isAuthorizedBssid(rawBssid)
 
             @Suppress("DEPRECATION")
             val connectionInfo: WifiInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -925,6 +960,8 @@ class AndroidWifiBridge(
             json.put("bssidSource", bSource)
             json.put("bssidVerified", isBssidMatched)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
+            json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
+            json.put("approvedCampusBssids", JSONArray(APPROVED_CAMPUS_BSSIDS))
             json.put("state", if (isWifi) "connected" else "disconnected")
             json.put("isWifi", isWifi)
             json.put("ip", ipv4)

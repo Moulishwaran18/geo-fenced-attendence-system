@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { type WifiStatus } from "@/lib/wifi-config";
+import { type WifiStatus, APPROVED_CAMPUS_BSSIDS } from "@/lib/wifi-config";
 import { formatIndiaTime } from "@/lib/india-time";
 
 interface WifiStatusCardProps {
@@ -211,7 +211,7 @@ export function WifiStatusCard({
             Connected BSSID
           </div>
           <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.bssid || status?.ssid || "Unavailable"}>
-            {status?.bssid || (status?.ssid ? status.ssid : (wifiAuthorized ? "B0:1F:8C:29:6B:30" : "None"))}
+            {status?.bssid || (status?.ssid ? status.ssid : (wifiAuthorized ? APPROVED_CAMPUS_BSSIDS[0] : "None"))}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
             {status?.bssidVerified || wifiAuthorized
@@ -229,7 +229,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires native connection to official Campus Wi-Fi AP (BSSID: B0:1F:8C:29:6B:30), verified via CampusAttend Android APK.
+          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires native connection to official Campus Wi-Fi AP (BSSID: {APPROVED_CAMPUS_BSSIDS.join(" or ")}), verified via CampusAttend Android APK.
         </p>
       </div>
 
@@ -278,10 +278,10 @@ export function WifiStatusCard({
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Registered Campus BSSID:
+                  Approved Campus BSSIDs:
                 </span>
-                <span className="font-semibold text-foreground font-mono">
-                  B0:1F:8C:29:6B:30
+                <span className="font-semibold text-foreground font-mono text-[10px]">
+                  {APPROVED_CAMPUS_BSSIDS.join(" | ")}
                 </span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">

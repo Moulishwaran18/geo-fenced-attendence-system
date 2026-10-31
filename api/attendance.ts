@@ -438,6 +438,11 @@ function isAuthorizedCampusEgressIp(ip?: string | null): boolean {
 }
 
 const REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30";
+const SECONDARY_APPROVED_BSSID = "72:CD:0D:E8:D4:B0";
+const APPROVED_CAMPUS_BSSIDS = [
+  "B0:1F:8C:29:6B:30",
+  "72:CD:0D:E8:D4:B0",
+] as const;
 const CAMPUS_WIFI_FAILURE_MESSAGE =
   "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.";
 
@@ -461,7 +466,7 @@ function isAuthorizedCampusBssid(bssid?: string | null | undefined): boolean {
   if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(clean)) {
     return false;
   }
-  return clean === REGISTERED_CAMPUS_BSSID.toUpperCase();
+  return APPROVED_CAMPUS_BSSIDS.some((app) => app.toUpperCase() === clean);
 }
 
 function isAuthorizedSonaSsid(ssid?: string | null): boolean {
