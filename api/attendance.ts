@@ -1827,17 +1827,30 @@ export default async function handler(req: any, res?: any) {
         tamper_status: "VERIFIED",
       };
 
-      const { data: insData, error: insErr } = await supabase
-        .from("attendance_record")
+      let targetTable = "attendance_record";
+      let { data: insData, error: insErr } = await supabase
+        .from(targetTable)
         .insert(recordPayload)
         .select()
         .single();
+
+      if (insErr && (insErr.code === "42P01" || insErr.message?.includes("does not exist") || insErr.message?.includes("not found"))) {
+        // Fallback to table spelled 'attendence_record' as requested
+        targetTable = "attendence_record";
+        const retryRes = await supabase
+          .from(targetTable)
+          .insert(recordPayload)
+          .select()
+          .single();
+        insData = retryRes.data;
+        insErr = retryRes.error;
+      }
 
       if (insErr) {
         if (insErr.code === "23505" || insErr.message.includes("unique")) {
           // Idempotent duplicate handled cleanly
           const { data: existData } = await supabase
-            .from("attendance_record")
+            .from(targetTable)
             .select("*")
             .ilike("staff_code", canonicalStaffCode)
             .eq("date", istDateStr)

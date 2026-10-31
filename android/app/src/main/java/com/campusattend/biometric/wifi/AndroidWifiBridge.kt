@@ -55,6 +55,10 @@ class AndroidWifiBridge(
             REGISTERED_CAMPUS_BSSID,
             SECONDARY_APPROVED_BSSID
         )
+        val APPROVED_BSSIDS = setOf(
+            REGISTERED_CAMPUS_BSSID,
+            SECONDARY_APPROVED_BSSID
+        )
         const val REDACTED_MAC_ADDRESS = "02:00:00:00:00:00"
         const val DEFAULT_ZERO_MAC = "00:00:00:00:00:00"
         const val CAMPUS_WIFI_FAILURE_MESSAGE =
@@ -95,7 +99,7 @@ class AndroidWifiBridge(
             ) {
                 return false
             }
-            return APPROVED_CAMPUS_BSSIDS.any { it.equals(clean, ignoreCase = true) }
+            return APPROVED_BSSIDS.contains(clean)
         }
     }
 
@@ -193,11 +197,9 @@ class AndroidWifiBridge(
                         }
                     }
 
-                    // 2. Wi-Fi Specific Callback - DO NOT call clearCapabilities() as that strips NET_CAPABILITY_NOT_RESTRICTED & NET_CAPABILITY_TRUSTED!
+                    // 2. Wi-Fi Specific Callback
                     val wifiRequest = NetworkRequest.Builder()
                         .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
                         .build()
 
                     val wifiCallback = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
@@ -982,76 +984,49 @@ class AndroidWifiBridge(
             }
         } catch (_: Exception) {}
 
-        // Strategy 6: Over-the-air WifiManager.scanResults
-        // On Android 14/15 physical devices where TransportInfo is strictly redacted to 02:00:00:00:00:00,
-        // WifiManager.scanResults provides the genuine hardware BSSID when ACCESS_FINE_LOCATION is granted and GPS is ON.
-        if (hasWifiPermissions() && isLocationServiceEnabled() && wifiManager != null) {
-            try {
-                @Suppress("DEPRECATION")
-                val scanResults = wifiManager.scanResults
-                if (!scanResults.isNullOrEmpty()) {
-                    val (connectedSsid, _) = extractCurrentSsid(caps)
-                    @Suppress("DEPRECATION")
-                    val currentWifiInfo = (caps?.transportInfo as? WifiInfo) ?: wifiManager.connectionInfo
-                    val connectedFreq = currentWifiInfo?.frequency ?: 0
-
-                    val ssidMatches = if (connectedSsid.isNotBlank()) {
-                        scanResults.filter {
-                            val candidateSsid = sanitizeSsid(it.SSID ?: "")
-                            candidateSsid.equals(connectedSsid, ignoreCase = true)
-                        }
-                    } else {
-                        scanResults
-                    }
-
-                    if (ssidMatches.isNotEmpty()) {
-                        // 6A: Check if any candidate matching connected frequency is an approved campus BSSID
-                        val approvedMatch = ssidMatches.firstOrNull { scan ->
-                            val cleanCandidate = sanitizeBssid(scan.BSSID ?: "")
-                            cleanCandidate.isNotEmpty() &&
-                                    isAuthorizedBssid(cleanCandidate) &&
-                                    (connectedFreq <= 0 || scan.frequency == connectedFreq)
-                        } ?: ssidMatches.firstOrNull { scan ->
-                            val cleanCandidate = sanitizeBssid(scan.BSSID ?: "")
-                            cleanCandidate.isNotEmpty() && isAuthorizedBssid(cleanCandidate)
-                        }
-
-                        if (approvedMatch != null) {
-                            val clean = sanitizeBssid(approvedMatch.BSSID ?: "")
-                            if (clean.isNotEmpty()) {
-                                lastSeenRawBssid = approvedMatch.BSSID
-                                lastBssidDiagnostic = "RESOLVED_VIA_SCAN_RESULTS_APPROVED"
-                                return Pair(clean, "SCAN_RESULTS")
-                            }
-                        }
-
-                        // 6B: Otherwise select closest candidate by frequency and strongest RSSI
-                        val bestCandidate = ssidMatches
-                            .filter { connectedFreq <= 0 || it.frequency == connectedFreq }
-                            .maxByOrNull { it.level } ?: ssidMatches.maxByOrNull { it.level }
-
-                        if (bestCandidate != null) {
-                            val clean = sanitizeBssid(bestCandidate.BSSID ?: "")
-                            if (clean.isNotEmpty()) {
-                                lastSeenRawBssid = bestCandidate.BSSID
-                                lastBssidDiagnostic = "RESOLVED_VIA_SCAN_RESULTS_RSSI"
-                                return Pair(clean, "SCAN_RESULTS")
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("AndroidWifiBridge", "scanResults fallback exception: ${e.message}")
-            }
-        }
-
+        // If all direct retrieval strategies fail or return redacted values:
         if (lastSeenRawBssid == REDACTED_MAC_ADDRESS || lastSeenRawBssid == DEFAULT_ZERO_MAC) {
-            lastBssidDiagnostic = "OS_REDACTED_${lastSeenRawBssid}_SCAN_EMPTY"
+            lastBssidDiagnostic = "OS_REDACTED_${lastSeenRawBssid}"
         } else if (lastBssidDiagnostic == "INITIALIZING" || lastBssidDiagnostic == "CALLBACK_REGISTERED") {
-            lastBssidDiagnostic = "BSSID_UNAVAILABLE_ALL_STRATEGIES_EXHAUSTED"
+            lastBssidDiagnostic = "BSSID_UNAVAILABLE"
         }
 
         return Pair("", "NONE")
+    }
+
+    /**
+     * Diagnostic-only scan result summary.
+     * Absolutely NEVER used for authorization or BSSID substitution.
+     */
+    @JavascriptInterface
+    fun getScanDiagnostic(): String {
+        val json = JSONObject()
+        try {
+            if (!hasWifiPermissions() || !isLocationServiceEnabled() || wifiManager == null) {
+                json.put("available", false)
+                json.put("count", 0)
+                json.put("reason", "PERMISSIONS_OR_LOCATION_DISABLED")
+                return json.toString()
+            }
+            @Suppress("DEPRECATION")
+            val scans = wifiManager.scanResults ?: emptyList()
+            json.put("available", true)
+            json.put("count", scans.size)
+            val apList = JSONArray()
+            scans.take(5).forEach { scan ->
+                val item = JSONObject()
+                item.put("ssid", sanitizeSsid(scan.SSID ?: ""))
+                item.put("frequency", scan.frequency)
+                item.put("level", scan.level)
+                apList.put(item)
+            }
+            json.put("sample", apList)
+        } catch (e: Exception) {
+            json.put("available", false)
+            json.put("count", 0)
+            json.put("error", e.message ?: "SCAN_ERROR")
+        }
+        return json.toString()
     }
 
     fun sanitizeBssid(raw: String): String = sanitizeBssidStatic(raw)
