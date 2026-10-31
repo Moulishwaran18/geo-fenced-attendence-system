@@ -106,6 +106,9 @@ export interface NetworkFingerprintPayload {
   auth?: string | null | undefined;
   signal?: string | null | undefined;
   band?: string | null | undefined;
+  rawBssid?: string | null | undefined;
+  bssidDiagnostic?: string | null | undefined;
+  bssidSource?: string | null | undefined;
   reason?: string | null | undefined;
 }
 
@@ -121,6 +124,10 @@ export interface WifiVerificationResult {
   verifiedIp?: string;
   ssid?: string | undefined;
   bssid?: string | undefined;
+  rawBssid?: string | undefined;
+  bssidDiagnostic?: string | undefined;
+  bssidSource?: string | undefined;
+  isLocationEnabled?: boolean | undefined;
   bssidVerified?: boolean | undefined;
   errorCode?: string;
   ipv4?: string | undefined;
@@ -159,12 +166,15 @@ export interface WifiStatus {
   isNativeBridge?: boolean | undefined;
   ssid?: string | undefined;
   bssid?: string | undefined;
+  rawBssid?: string | undefined;
+  bssidDiagnostic?: string | undefined;
   bssidVerified?: boolean | undefined;
   auth?: string | undefined;
   signal?: string | undefined;
   band?: string | undefined;
   permissionDenied?: boolean | undefined;
   locationDisabled?: boolean | undefined;
+  isLocationEnabled?: boolean | undefined;
   apiLevel?: number | undefined;
   hasFineLocation?: boolean | undefined;
   hasNearbyWifi?: boolean | undefined;
@@ -273,13 +283,17 @@ export function verifyCampusWifi(payload: NetworkFingerprintPayload): WifiVerifi
       networkType: "UNAVAILABLE",
       networkSummary: "BSSID Unavailable",
       network: "BSSID Unavailable",
-      reason:
-        "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
+      reason: payload.bssidDiagnostic
+        ? `Campus Wi-Fi verification failed: BSSID unavailable (${payload.bssidDiagnostic}). Ensure location services and permissions are granted.`
+        : "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
       stage: "UNABLE_TO_VERIFY",
       errorCode: "BSSID_UNAVAILABLE",
       timestamp,
       ssid: rawSsid || undefined,
       bssid: undefined,
+      rawBssid: payload.rawBssid || undefined,
+      bssidDiagnostic: payload.bssidDiagnostic || undefined,
+      bssidSource: payload.bssidSource || undefined,
       bssidVerified: false,
     };
   }
@@ -297,6 +311,9 @@ export function verifyCampusWifi(payload: NetworkFingerprintPayload): WifiVerifi
       timestamp,
       ssid: rawSsid || undefined,
       bssid: rawBssid,
+      rawBssid: payload.rawBssid || rawBssid,
+      bssidDiagnostic: payload.bssidDiagnostic || undefined,
+      bssidSource: payload.bssidSource || undefined,
       bssidVerified: false,
     };
   }
@@ -313,6 +330,9 @@ export function verifyCampusWifi(payload: NetworkFingerprintPayload): WifiVerifi
     timestamp,
     ssid: rawSsid || undefined,
     bssid: rawBssid,
+    rawBssid: payload.rawBssid || rawBssid,
+    bssidDiagnostic: payload.bssidDiagnostic || undefined,
+    bssidSource: payload.bssidSource || undefined,
     bssidVerified: true,
   };
 }

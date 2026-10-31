@@ -154,7 +154,15 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                     <span>Device Diagnostics:</span>
                     <span className="font-mono">
-                      API {status.apiLevel} · Fine: {status.hasFineLocation ? "✓" : "✗"} · Nearby: {status.hasNearbyWifi ? "✓" : "✗"} · Source: {status.ssidSource || "NONE"}
+                      API {status.apiLevel} · Fine: {status.hasFineLocation ? "✓" : "✗"} · Nearby: {status.hasNearbyWifi ? "✓" : "✗"} · GPS: {status.isLocationEnabled !== false ? "ON" : "OFF"} · BSSID Source: {status.bssidSource || status.ssidSource || "NONE"}
+                    </span>
+                  </div>
+                )}
+                {status?.bssidDiagnostic && (
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>BSSID Diag:</span>
+                    <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
+                      {status.bssidDiagnostic}
                     </span>
                   </div>
                 )}

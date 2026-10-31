@@ -278,6 +278,14 @@ export function WifiStatusCard({
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  BSSID Retrieval Source:
+                </span>
+                <span className="font-semibold text-foreground font-mono text-[10px]">
+                  {status?.bssidSource || "NONE"}
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
                   Approved Campus BSSIDs:
                 </span>
                 <span className="font-semibold text-foreground font-mono text-[10px]">
@@ -286,10 +294,26 @@ export function WifiStatusCard({
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Raw Detected BSSID / OS Output:
+                </span>
+                <span className="font-semibold text-foreground font-mono text-[10px]">
+                  {status?.rawBssid || (status?.bssid ? status.bssid : "—")}
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
                   BSSID Verification:
                 </span>
                 <span className={`font-semibold ${status?.bssidVerified || wifiAuthorized ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
                   {status?.bssidVerified || wifiAuthorized ? "PASSED (Exact Match)" : "FAILED (Unauthorized)"}
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Hardware & Permission Diagnostics:
+                </span>
+                <span className="font-medium text-foreground text-[10px]">
+                  {status?.apiLevel ? `API ${status.apiLevel} · Fine Loc: ${status.hasFineLocation ? "✓" : "✗"} · Nearby: ${status.hasNearbyWifi ? "✓" : "✗"} · GPS: ${status.isLocationEnabled !== false ? "ON" : "OFF"}` : "Web Browser Context"}
                 </span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">

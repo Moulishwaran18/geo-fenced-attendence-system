@@ -187,15 +187,20 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             network: "BSSID Unavailable",
             networkType: "UNAVAILABLE",
             state: "connected",
-            reason: "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
+            reason: nativeWifi.bssidDiagnostic
+              ? `Campus Wi-Fi verification failed: BSSID unavailable (${nativeWifi.bssidDiagnostic}). Ensure location services and permissions are granted.`
+              : "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
             networkSummary: "BSSID Unavailable",
             stage: "UNABLE_TO_VERIFY",
             errorCode: "BSSID_UNAVAILABLE",
             bssid: undefined,
+            rawBssid: nativeWifi.rawBssid || undefined,
+            bssidDiagnostic: nativeWifi.bssidDiagnostic || undefined,
             bssidVerified: false,
             apiLevel: nativeWifi.apiLevel,
             hasFineLocation: nativeWifi.hasFineLocation,
             hasNearbyWifi: nativeWifi.hasNearbyWifi,
+            isLocationEnabled: nativeWifi.locationEnabled,
             ssidSource: nativeWifi.ssidSource,
             bssidSource: nativeWifi.bssidSource,
             timestamp: now,
@@ -220,10 +225,13 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             stage: "FINGERPRINT_CHECK_FAILED",
             errorCode: "UNAUTHORIZED_BSSID",
             bssid: cleanBssid,
+            rawBssid: nativeWifi.rawBssid || cleanBssid,
+            bssidDiagnostic: nativeWifi.bssidDiagnostic || undefined,
             bssidVerified: false,
             apiLevel: nativeWifi.apiLevel,
             hasFineLocation: nativeWifi.hasFineLocation,
             hasNearbyWifi: nativeWifi.hasNearbyWifi,
+            isLocationEnabled: nativeWifi.locationEnabled,
             ssidSource: nativeWifi.ssidSource,
             bssidSource: nativeWifi.bssidSource,
             timestamp: now,
@@ -246,6 +254,8 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
               isNativeBridge: true,
               ssid: nativeWifi.ssid,
               bssid: cleanBssid,
+              rawBssid: nativeWifi.rawBssid,
+              bssidDiagnostic: nativeWifi.bssidDiagnostic,
               transport: nativeWifi.transport,
               connected: nativeWifi.connected,
               permissionGranted: nativeWifi.permissionGranted,
@@ -264,6 +274,10 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             const data: WifiStatus = await res.json();
             data.isNativeBridge = true;
             data.bssid = cleanBssid;
+            data.rawBssid = nativeWifi.rawBssid || cleanBssid;
+            data.bssidDiagnostic = nativeWifi.bssidDiagnostic;
+            data.bssidSource = nativeWifi.bssidSource;
+            data.isLocationEnabled = nativeWifi.locationEnabled;
             data.bssidVerified = data.authorized;
             setStatus(data);
             setLastChecked(new Date());

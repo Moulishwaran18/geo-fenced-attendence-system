@@ -16,6 +16,8 @@ export interface NativeConnectedWifi {
   transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
   ssid: string | null;
   bssid: string | null;
+  rawBssid?: string | null | undefined;
+  bssidDiagnostic?: string | undefined;
   bssidVerified?: boolean | undefined;
   permissionGranted: boolean;
   locationEnabled?: boolean | undefined;
@@ -200,8 +202,10 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
           transport: parsed.transport || (parsed.connected ? "wifi" : "unknown"),
           ssid: validSsid,
           bssid: rawBssid,
+          rawBssid: parsed.rawBssid || (typeof bridge.getRawBssid === "function" ? bridge.getRawBssid() : null),
+          bssidDiagnostic: parsed.bssidDiagnostic || (typeof bridge.getBssidDiagnostic === "function" ? bridge.getBssidDiagnostic() : undefined),
           bssidVerified: parsed.bssidVerified ?? isBssidMatched,
-          bssidSource: parsed.bssidSource ?? undefined,
+          bssidSource: parsed.bssidSource || (typeof bridge.getBssidSource === "function" ? bridge.getBssidSource() : undefined),
           permissionGranted: parsed.permissionGranted ?? true,
           locationEnabled: parsed.locationEnabled ?? true,
           apiLevel: parsed.apiLevel ?? undefined,

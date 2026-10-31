@@ -162,6 +162,10 @@ export function ParallelVerificationPanel({
                 <p>Approved APs: {APPROVED_CAMPUS_BSSIDS.join(" | ")}</p>
                 <p>Connected: {wifi.data?.bssid || "Unavailable"}</p>
                 {wifi.data?.ssid && <p>SSID: {wifi.data.ssid}</p>}
+                {wifi.data?.bssidSource && <p>Source: {wifi.data.bssidSource}</p>}
+                {wifi.data?.bssidDiagnostic && (
+                  <p className="text-[9px] text-amber-600 dark:text-amber-400">Diag: {wifi.data.bssidDiagnostic}</p>
+                )}
               </div>
             </div>
           </div>

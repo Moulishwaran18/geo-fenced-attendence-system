@@ -229,6 +229,8 @@ export default async function handler(req: any, res?: any) {
     const hasNearbyWifi = typeof body.hasNearbyWifi === "boolean" ? body.hasNearbyWifi : undefined;
     const ssidSource = typeof body.ssidSource === "string" ? body.ssidSource : undefined;
     const bssidSource = typeof body.bssidSource === "string" ? body.bssidSource : undefined;
+    const rawBssid = typeof body.rawBssid === "string" ? body.rawBssid : undefined;
+    const bssidDiagnostic = typeof body.bssidDiagnostic === "string" ? body.bssidDiagnostic : undefined;
     const cleanBssid = normalizeBssid(body.bssid);
 
     // 1A. Permission Denied on Android
@@ -357,6 +359,8 @@ export default async function handler(req: any, res?: any) {
         hasNearbyWifi,
         ssidSource,
         bssidSource,
+        rawBssid,
+        bssidDiagnostic,
       });
     }
 
@@ -375,6 +379,8 @@ export default async function handler(req: any, res?: any) {
         stage: "FINGERPRINT_CHECK_FAILED",
         timestamp,
         bssid: cleanBssid,
+        rawBssid,
+        bssidDiagnostic,
         isNativeBridge: true,
         apiLevel,
         hasFineLocation,
@@ -400,6 +406,8 @@ export default async function handler(req: any, res?: any) {
       timestamp,
       ssid: cleanSsid,
       bssid: cleanBssid,
+      rawBssid,
+      bssidDiagnostic,
       bssidVerified: true,
       networkAuthToken,
       isNativeBridge: true,

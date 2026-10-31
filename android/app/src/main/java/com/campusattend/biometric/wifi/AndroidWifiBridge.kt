@@ -9,6 +9,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.ScanResult
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -111,6 +112,18 @@ class AndroidWifiBridge(
     private var bssidSource: String = "NONE"
 
     @Volatile
+    private var defaultCallbackInstance: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var wifiCallbackInstance: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var lastSeenRawBssid: String? = null
+
+    @Volatile
+    private var lastBssidDiagnostic: String = "INITIALIZING"
+
+    @Volatile
     private var isCallbackRegistered: Boolean = false
 
     private val callbackLock = Any()
@@ -120,16 +133,41 @@ class AndroidWifiBridge(
     }
 
     /**
+     * Unregisters active network callbacks cleanly to prevent leaks or stale permission bindings.
+     */
+    fun unregisterWifiNetworkCallback() {
+        synchronized(callbackLock) {
+            try {
+                defaultCallbackInstance?.let { connectivityManager?.unregisterNetworkCallback(it) }
+            } catch (e: Exception) {
+                Log.w("AndroidWifiBridge", "unregister defaultCallback: ${e.message}")
+            }
+            try {
+                wifiCallbackInstance?.let { connectivityManager?.unregisterNetworkCallback(it) }
+            } catch (e: Exception) {
+                Log.w("AndroidWifiBridge", "unregister wifiCallback: ${e.message}")
+            }
+            defaultCallbackInstance = null
+            wifiCallbackInstance = null
+            isCallbackRegistered = false
+        }
+    }
+
+    /**
      * Registers both default and Wi-Fi network callbacks with FLAG_INCLUDE_LOCATION_INFO (API 31+).
      * Automatically handles re-registration if permissions were granted after initial creation.
      */
-    fun registerWifiNetworkCallback() {
+    fun registerWifiNetworkCallback(force: Boolean = false) {
         synchronized(callbackLock) {
-            if (isCallbackRegistered) return
+            if (isCallbackRegistered && !force) return
+            if (force) {
+                unregisterWifiNetworkCallback()
+            }
 
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && connectivityManager != null) {
                     if (!hasWifiPermissions()) {
+                        lastBssidDiagnostic = "MISSING_PERMISSIONS"
                         Log.d("AndroidWifiBridge", "Skipping callback registration: permissions not yet granted")
                         return@synchronized
                     }
@@ -155,10 +193,11 @@ class AndroidWifiBridge(
                         }
                     }
 
-                    // 2. Wi-Fi Specific Callback with clearCapabilities() to match any Wi-Fi connection
+                    // 2. Wi-Fi Specific Callback - DO NOT call clearCapabilities() as that strips NET_CAPABILITY_NOT_RESTRICTED & NET_CAPABILITY_TRUSTED!
                     val wifiRequest = NetworkRequest.Builder()
-                        .clearCapabilities()
                         .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
                         .build()
 
                     val wifiCallback = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
@@ -183,21 +222,25 @@ class AndroidWifiBridge(
 
                     try {
                         connectivityManager.registerDefaultNetworkCallback(defaultCallback)
+                        defaultCallbackInstance = defaultCallback
                     } catch (e: Exception) {
                         Log.w("AndroidWifiBridge", "registerDefaultNetworkCallback fallback: ${e.message}")
                     }
 
                     try {
                         connectivityManager.registerNetworkCallback(wifiRequest, wifiCallback)
+                        wifiCallbackInstance = wifiCallback
                     } catch (e: Exception) {
                         Log.w("AndroidWifiBridge", "registerNetworkCallback fallback: ${e.message}")
                     }
 
                     isCallbackRegistered = true
+                    lastBssidDiagnostic = "CALLBACK_REGISTERED"
                     Log.i("AndroidWifiBridge", "NetworkCallbacks registered successfully with FLAG_INCLUDE_LOCATION_INFO")
                 }
                 Unit
             } catch (e: Exception) {
+                lastBssidDiagnostic = "REGISTRATION_EXCEPTION_${e.javaClass.simpleName}"
                 Log.w("AndroidWifiBridge", "NetworkCallback registration exception: ${e.message}")
             }
             return@synchronized
@@ -216,12 +259,21 @@ class AndroidWifiBridge(
             }
         }
         val rawBssid = wifiInfo?.bssid
+        if (rawBssid != null) {
+            lastSeenRawBssid = rawBssid
+        }
         if (!rawBssid.isNullOrBlank()) {
-            val cleanBssid = sanitizeBssid(rawBssid)
-            if (cleanBssid.isNotEmpty()) {
-                callbackBssid = cleanBssid
-                bssidSource = source
-                Log.d("AndroidWifiBridge", "Unredacted BSSID received via $source: $cleanBssid")
+            if (rawBssid == REDACTED_MAC_ADDRESS || rawBssid == DEFAULT_ZERO_MAC) {
+                lastBssidDiagnostic = "REDACTED_BY_OS_$rawBssid"
+                Log.w("AndroidWifiBridge", "BSSID was redacted by Android OS via $source: $rawBssid")
+            } else {
+                val cleanBssid = sanitizeBssid(rawBssid)
+                if (cleanBssid.isNotEmpty()) {
+                    callbackBssid = cleanBssid
+                    bssidSource = source
+                    lastBssidDiagnostic = "RESOLVED_VIA_$source"
+                    Log.d("AndroidWifiBridge", "Unredacted BSSID received via $source: $cleanBssid")
+                }
             }
         }
     }
@@ -229,9 +281,9 @@ class AndroidWifiBridge(
     /**
      * Re-attempts network callback registration when permissions or lifecycle state change.
      */
-    fun refreshNetworkCallback() {
-        if (!isCallbackRegistered && hasWifiPermissions()) {
-            registerWifiNetworkCallback()
+    fun refreshNetworkCallback(force: Boolean = true) {
+        if (hasWifiPermissions()) {
+            registerWifiNetworkCallback(force = force)
         }
     }
 
@@ -455,6 +507,8 @@ class AndroidWifiBridge(
             json.put("ssidSource", source)
             json.put("bssid", if (detectedBssid.isNotEmpty()) detectedBssid else JSONObject.NULL)
             json.put("bssidSource", bSource)
+            json.put("rawBssid", if (!lastSeenRawBssid.isNullOrBlank()) lastSeenRawBssid else JSONObject.NULL)
+            json.put("bssidDiagnostic", lastBssidDiagnostic)
             json.put("bssidVerified", isBssidMatched)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
             json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
@@ -553,6 +607,15 @@ class AndroidWifiBridge(
     @JavascriptInterface
     fun getApprovedCampusBssids(): String = JSONArray(APPROVED_CAMPUS_BSSIDS).toString()
 
+    @JavascriptInterface
+    fun getBssidDiagnostic(): String = lastBssidDiagnostic
+
+    @JavascriptInterface
+    fun getRawBssid(): String = lastSeenRawBssid ?: ""
+
+    @JavascriptInterface
+    fun getBssidSource(): String = bssidSource
+
     /**
      * Core method: Returns structured status of the connected network and safe diagnostics.
      */
@@ -565,6 +628,8 @@ class AndroidWifiBridge(
             json.put("transport", "unknown")
             json.put("ssid", JSONObject.NULL)
             json.put("bssid", JSONObject.NULL)
+            json.put("rawBssid", JSONObject.NULL)
+            json.put("bssidDiagnostic", "UNTRUSTED_ORIGIN")
             json.put("bssidVerified", false)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
             json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)
@@ -676,6 +741,8 @@ class AndroidWifiBridge(
             val (rawBssid, bSource) = extractCurrentBssid(caps)
             json.put("ssidSource", source)
             json.put("bssidSource", bSource)
+            json.put("rawBssid", if (!lastSeenRawBssid.isNullOrBlank()) lastSeenRawBssid else JSONObject.NULL)
+            json.put("bssidDiagnostic", lastBssidDiagnostic)
 
             val isBssidAvailable = rawBssid.isNotBlank()
             val isBssidMatched = isBssidAvailable && isAuthorizedBssid(rawBssid)
@@ -719,6 +786,8 @@ class AndroidWifiBridge(
             json.put("locationEnabled", false)
             json.put("ssidSource", "NONE")
             json.put("bssidSource", "NONE")
+            json.put("rawBssid", if (!lastSeenRawBssid.isNullOrBlank()) lastSeenRawBssid else JSONObject.NULL)
+            json.put("bssidDiagnostic", lastBssidDiagnostic)
             json.put("reason", e.message ?: "SSID_UNAVAILABLE")
         }
         return json.toString()
@@ -817,11 +886,13 @@ class AndroidWifiBridge(
     }
 
     /**
-     * Extracts and sanitizes connected Wi-Fi BSSID using multiple resilient Android API strategies:
+     * Extracts and sanitizes connected Wi-Fi BSSID using 6 resilient Android API strategies:
      * 1. Cached NetworkCallback with FLAG_INCLUDE_LOCATION_INFO (API 31+)
-     * 2. Brief wait (up to 1000ms) on bridge thread if callback is warming up
-     * 3. NetworkCapabilities transportInfo fallback (Android 10+ / API 29+)
-     * 4. Direct WifiManager connectionInfo
+     * 2. Active network capabilities transportInfo as? WifiInfo
+     * 3. Iterate connectivityManager.allNetworks for Wi-Fi transportInfo
+     * 4. Brief wait (up to 1000ms) on bridge thread if callback is warming up
+     * 5. Direct WifiManager connectionInfo
+     * 6. Over-the-air WifiManager.scanResults matching connected SSID & frequency (resolves Android 14/15 privacy redaction)
      * Always normalizes to uppercase.
      */
     fun extractCurrentBssid(caps: NetworkCapabilities?): Pair<String, String> {
@@ -830,16 +901,52 @@ class AndroidWifiBridge(
             registerWifiNetworkCallback()
         }
 
-        // Step 2: Check if callback already captured the BSSID
+        // Strategy 1: Check if callback already captured an unredacted BSSID
         val fromCallback = callbackBssid
         if (!fromCallback.isNullOrBlank()) {
             val clean = sanitizeBssid(fromCallback)
             if (clean.isNotEmpty()) {
+                lastBssidDiagnostic = "RESOLVED_VIA_$bssidSource"
                 return Pair(clean, bssidSource)
             }
         }
 
-        // Step 3: If on Android 12+ and callback is registered, wait up to 1000ms for callback dispatch
+        // Strategy 2: Active network caps.transportInfo as? WifiInfo
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
+            try {
+                val transportInfo = caps.transportInfo as? WifiInfo
+                val raw = transportInfo?.bssid
+                if (!raw.isNullOrBlank()) {
+                    lastSeenRawBssid = raw
+                    val clean = sanitizeBssid(raw)
+                    if (clean.isNotEmpty()) {
+                        lastBssidDiagnostic = "RESOLVED_VIA_TRANSPORT_INFO"
+                        return Pair(clean, "TRANSPORT_INFO")
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Strategy 3: Iterate connectivityManager.allNetworks for Wi-Fi transportInfo
+        try {
+            connectivityManager?.allNetworks?.forEach { net ->
+                val netCaps = connectivityManager.getNetworkCapabilities(net)
+                if (netCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                    val info = netCaps.transportInfo as? WifiInfo
+                    val raw = info?.bssid
+                    if (!raw.isNullOrBlank()) {
+                        lastSeenRawBssid = raw
+                        val clean = sanitizeBssid(raw)
+                        if (clean.isNotEmpty()) {
+                            lastBssidDiagnostic = "RESOLVED_VIA_ALL_NETWORKS"
+                            return Pair(clean, "ALL_NETWORKS")
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Strategy 4: If on Android 12+ and callback is registered, wait up to 1000ms for callback dispatch
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && isCallbackRegistered) {
             var waited = 0
             while (callbackBssid.isNullOrBlank() && waited < 1000) {
@@ -854,35 +961,95 @@ class AndroidWifiBridge(
             if (!lateCbBssid.isNullOrBlank()) {
                 val clean = sanitizeBssid(lateCbBssid)
                 if (clean.isNotEmpty()) {
+                    lastBssidDiagnostic = "RESOLVED_VIA_${bssidSource}_LATE"
                     return Pair(clean, bssidSource)
                 }
             }
         }
 
-        // Step 4: NetworkCapabilities transportInfo fallback (Android 10+ / API 29+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
-            try {
-                val transportInfo = caps.transportInfo as? WifiInfo
-                if (transportInfo != null && !transportInfo.bssid.isNullOrBlank()) {
-                    val clean = sanitizeBssid(transportInfo.bssid)
-                    if (clean.isNotEmpty()) {
-                        return Pair(clean, "TRANSPORT_INFO")
-                    }
-                }
-            } catch (_: Exception) {}
-        }
-
-        // Step 5: WifiManager connectionInfo fallback (deprecated on API 31+, but valid on older/some OEM builds)
+        // Strategy 5: WifiManager connectionInfo fallback (deprecated on API 31+, but valid on older/some OEM builds)
         try {
             @Suppress("DEPRECATION")
             val wifiInfo = wifiManager?.connectionInfo
-            if (wifiInfo != null && !wifiInfo.bssid.isNullOrBlank()) {
-                val clean = sanitizeBssid(wifiInfo.bssid)
+            val raw = wifiInfo?.bssid
+            if (!raw.isNullOrBlank()) {
+                lastSeenRawBssid = raw
+                val clean = sanitizeBssid(raw)
                 if (clean.isNotEmpty()) {
+                    lastBssidDiagnostic = "RESOLVED_VIA_WIFI_MANAGER"
                     return Pair(clean, "WIFI_MANAGER")
                 }
             }
         } catch (_: Exception) {}
+
+        // Strategy 6: Over-the-air WifiManager.scanResults
+        // On Android 14/15 physical devices where TransportInfo is strictly redacted to 02:00:00:00:00:00,
+        // WifiManager.scanResults provides the genuine hardware BSSID when ACCESS_FINE_LOCATION is granted and GPS is ON.
+        if (hasWifiPermissions() && isLocationServiceEnabled() && wifiManager != null) {
+            try {
+                @Suppress("DEPRECATION")
+                val scanResults = wifiManager.scanResults
+                if (!scanResults.isNullOrEmpty()) {
+                    val (connectedSsid, _) = extractCurrentSsid(caps)
+                    @Suppress("DEPRECATION")
+                    val currentWifiInfo = (caps?.transportInfo as? WifiInfo) ?: wifiManager.connectionInfo
+                    val connectedFreq = currentWifiInfo?.frequency ?: 0
+
+                    val ssidMatches = if (connectedSsid.isNotBlank()) {
+                        scanResults.filter {
+                            val candidateSsid = sanitizeSsid(it.SSID ?: "")
+                            candidateSsid.equals(connectedSsid, ignoreCase = true)
+                        }
+                    } else {
+                        scanResults
+                    }
+
+                    if (ssidMatches.isNotEmpty()) {
+                        // 6A: Check if any candidate matching connected frequency is an approved campus BSSID
+                        val approvedMatch = ssidMatches.firstOrNull { scan ->
+                            val cleanCandidate = sanitizeBssid(scan.BSSID ?: "")
+                            cleanCandidate.isNotEmpty() &&
+                                    isAuthorizedBssid(cleanCandidate) &&
+                                    (connectedFreq <= 0 || scan.frequency == connectedFreq)
+                        } ?: ssidMatches.firstOrNull { scan ->
+                            val cleanCandidate = sanitizeBssid(scan.BSSID ?: "")
+                            cleanCandidate.isNotEmpty() && isAuthorizedBssid(cleanCandidate)
+                        }
+
+                        if (approvedMatch != null) {
+                            val clean = sanitizeBssid(approvedMatch.BSSID ?: "")
+                            if (clean.isNotEmpty()) {
+                                lastSeenRawBssid = approvedMatch.BSSID
+                                lastBssidDiagnostic = "RESOLVED_VIA_SCAN_RESULTS_APPROVED"
+                                return Pair(clean, "SCAN_RESULTS")
+                            }
+                        }
+
+                        // 6B: Otherwise select closest candidate by frequency and strongest RSSI
+                        val bestCandidate = ssidMatches
+                            .filter { connectedFreq <= 0 || it.frequency == connectedFreq }
+                            .maxByOrNull { it.level } ?: ssidMatches.maxByOrNull { it.level }
+
+                        if (bestCandidate != null) {
+                            val clean = sanitizeBssid(bestCandidate.BSSID ?: "")
+                            if (clean.isNotEmpty()) {
+                                lastSeenRawBssid = bestCandidate.BSSID
+                                lastBssidDiagnostic = "RESOLVED_VIA_SCAN_RESULTS_RSSI"
+                                return Pair(clean, "SCAN_RESULTS")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("AndroidWifiBridge", "scanResults fallback exception: ${e.message}")
+            }
+        }
+
+        if (lastSeenRawBssid == REDACTED_MAC_ADDRESS || lastSeenRawBssid == DEFAULT_ZERO_MAC) {
+            lastBssidDiagnostic = "OS_REDACTED_${lastSeenRawBssid}_SCAN_EMPTY"
+        } else if (lastBssidDiagnostic == "INITIALIZING" || lastBssidDiagnostic == "CALLBACK_REGISTERED") {
+            lastBssidDiagnostic = "BSSID_UNAVAILABLE_ALL_STRATEGIES_EXHAUSTED"
+        }
 
         return Pair("", "NONE")
     }
@@ -958,6 +1125,8 @@ class AndroidWifiBridge(
             json.put("ssidSource", source)
             json.put("bssid", bssid)
             json.put("bssidSource", bSource)
+            json.put("rawBssid", if (!lastSeenRawBssid.isNullOrBlank()) lastSeenRawBssid else JSONObject.NULL)
+            json.put("bssidDiagnostic", lastBssidDiagnostic)
             json.put("bssidVerified", isBssidMatched)
             json.put("registeredCampusBssid", REGISTERED_CAMPUS_BSSID)
             json.put("secondaryApprovedBssid", SECONDARY_APPROVED_BSSID)

@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        wifiBridge?.refreshNetworkCallback()
+        wifiBridge?.refreshNetworkCallback(force = true)
         runOnUiThread {
             webView?.evaluateJavascript(
                 "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
@@ -392,7 +392,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        wifiBridge?.refreshNetworkCallback()
+        wifiBridge?.refreshNetworkCallback(force = false)
         runOnUiThread {
             webView?.evaluateJavascript(
                 "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
@@ -466,6 +466,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         fileChooserCallback?.onReceiveValue(null)
         fileChooserCallback = null
+        wifiBridge?.unregisterWifiNetworkCallback()
         super.onDestroy()
         locationService.stopLocationUpdates()
         webView?.destroy()

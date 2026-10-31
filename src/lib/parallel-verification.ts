@@ -38,6 +38,9 @@ export interface SingleFactorResult<T = any> {
 
 export interface WifiFactorData {
   bssid?: string | undefined;
+  rawBssid?: string | undefined;
+  bssidDiagnostic?: string | undefined;
+  bssidSource?: string | undefined;
   ssid?: string | undefined;
   authorized?: boolean | undefined;
   errorCode?: string | undefined;
@@ -195,9 +198,14 @@ export function evaluateWifiFactor(
     return {
       status: "UNAVAILABLE",
       label: "UNAVAILABLE",
-      detail: "Access point BSSID is unavailable or restricted by OS.",
+      detail: wifiStatus.bssidDiagnostic
+        ? `Access point BSSID unavailable (${wifiStatus.bssidDiagnostic}). Ensure location services and permissions are granted.`
+        : "Access point BSSID is unavailable or restricted by OS.",
       data: {
         bssid: rawBssid || undefined,
+        rawBssid: wifiStatus.rawBssid || undefined,
+        bssidDiagnostic: wifiStatus.bssidDiagnostic || undefined,
+        bssidSource: wifiStatus.bssidSource || undefined,
         errorCode: "BSSID_UNAVAILABLE",
         authorized: false,
       },
@@ -214,6 +222,9 @@ export function evaluateWifiFactor(
       detail: `Connected to official campus Wi-Fi (BSSID: ${rawBssid})`,
       data: {
         bssid: rawBssid,
+        rawBssid: wifiStatus.rawBssid || rawBssid,
+        bssidDiagnostic: wifiStatus.bssidDiagnostic || undefined,
+        bssidSource: wifiStatus.bssidSource || undefined,
         ssid: wifiStatus.ssid || undefined,
         authorized: true,
       },
@@ -229,6 +240,9 @@ export function evaluateWifiFactor(
     detail: `Connected BSSID (${rawBssid}) does not match approved campus access points (${APPROVED_CAMPUS_BSSIDS.join(" or ")})`,
     data: {
       bssid: rawBssid,
+      rawBssid: wifiStatus.rawBssid || rawBssid,
+      bssidDiagnostic: wifiStatus.bssidDiagnostic || undefined,
+      bssidSource: wifiStatus.bssidSource || undefined,
       ssid: wifiStatus.ssid || undefined,
       errorCode: "UNAUTHORIZED_BSSID",
       authorized: false,
