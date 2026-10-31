@@ -28,6 +28,16 @@ import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
+import { ParallelVerificationPanel } from "@/components/common/ParallelVerificationPanel";
+import {
+  evaluateWifiFactor,
+  evaluateGpsFactor,
+  evaluateFaceFactor,
+  computeParallelDecision,
+  runParallelVerification,
+  type ParallelVerificationReport,
+  type SingleFactorResult,
+} from "@/lib/parallel-verification";
 import { WifiStatusCard } from "@/components/common/WifiStatusCard";
 import { FaceScanDialog } from "@/components/common/FaceScanDialog";
 import type { FaceScanResult } from "@/components/common/FaceScanDialog";
@@ -113,6 +123,8 @@ function MarkAttendancePage() {
   const [face, setFace] = useState<string | null>(null);
   const [faceResult, setFaceResult] = useState<FaceScanResult | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
+  const [parallelReport, setParallelReport] = useState<ParallelVerificationReport | null>(null);
+  const [isVerifyingParallel, setIsVerifyingParallel] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const now = useIndiaTime();
 
@@ -422,6 +434,84 @@ function MarkAttendancePage() {
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
 
+
+  // ---------------------------------------------------------------------------
+  // INDEPENDENT PARALLEL VERIFICATION ENGINE
+  // Each factor evaluates independently without sequential gating.
+  // ---------------------------------------------------------------------------
+  const liveWifiFactor = useMemo((): SingleFactorResult => {
+    if (isUsingMockScenario) {
+      return wifiAuthorized
+        ? {
+            status: "PASS",
+            label: "PASS",
+            detail: "Connected to authorized campus Wi-Fi (Demo)",
+            data: { bssid: REGISTERED_CAMPUS_BSSID, ssid: "SONA-WIFI", authorized: true },
+            timestamp: Date.now(),
+          }
+        : {
+            status: "FAIL",
+            label: "FAIL – Unauthorized Network",
+            detail: "Demo unauthorized network",
+            data: { authorized: false },
+            timestamp: Date.now(),
+          };
+    }
+    return evaluateWifiFactor(wifiStatus);
+  }, [isUsingMockScenario, wifiAuthorized, wifiStatus]);
+
+  const liveGpsFactor = useMemo((): SingleFactorResult => {
+    if (isUsingMockScenario) {
+      return gpsInsideGeofence
+        ? {
+            status: "PASS",
+            label: "PASS",
+            detail: "Inside campus geofence polygon (Demo)",
+            data: { isInside: true, status: "inside", accuracy: 8 },
+            timestamp: Date.now(),
+          }
+        : {
+            status: "FAIL",
+            label: "FAIL – Outside Campus",
+            detail: "Outside campus polygon (Demo)",
+            data: { isInside: false, status: "outside", accuracy: 12 },
+            timestamp: Date.now(),
+          };
+    }
+    const coords = geofence.bestCoords ?? geofence.coords;
+    return evaluateGpsFactor({
+      isInside: geofence.isInside,
+      status: geofence.status,
+      accuracy: geofence.bestAccuracy ?? geofence.accuracy,
+      coords: coords ? { lat: coords.lat, lng: coords.lng } : null,
+    });
+  }, [isUsingMockScenario, gpsInsideGeofence, geofence]);
+
+  const liveFaceFactor = useMemo((): SingleFactorResult => {
+    return evaluateFaceFactor(faceResult, loggedInStaff?.staffId);
+  }, [faceResult, loggedInStaff?.staffId]);
+
+  // Consolidated parallel report: snapshot from active verification run, or computed live
+  const activeReport = useMemo((): ParallelVerificationReport => {
+    if (parallelReport) return parallelReport;
+    const decision = computeParallelDecision(liveWifiFactor, liveGpsFactor, liveFaceFactor);
+    return {
+      wifi: liveWifiFactor,
+      gps: liveGpsFactor,
+      face: liveFaceFactor,
+      overallDecision: decision.decision,
+      completedAt: Date.now(),
+      allCompleted: liveFaceFactor.status !== "UNAVAILABLE",
+      failedFactors: decision.failedFactors,
+      passedFactors: decision.passedFactors,
+      summary: decision.summary,
+    };
+  }, [parallelReport, liveWifiFactor, liveGpsFactor, liveFaceFactor]);
+
+  useEffect(() => {
+    setParallelReport(null);
+  }, [scenario]);
+
   // 4 Primary Verification Overview Cards
   const wifiCardStatus: "CHECKING" | "VERIFIED" | "FAILED" =
     isWifiChecking || (isWifiLoading && !wifiStatus && !isUsingMockScenario)
@@ -620,7 +710,7 @@ function MarkAttendancePage() {
     status,
   ]);
 
-  const run = async () => {
+  const executeParallelAttendance = async () => {
     if (!loggedInStaff) {
       toast.error("Authentication Required", {
         description: "You must be signed in with a registered staff account to mark attendance.",
@@ -628,87 +718,83 @@ function MarkAttendancePage() {
       return;
     }
 
-    // Strict Campus Wi-Fi BSSID verification on every attendance attempt
-    let freshWifi = wifiStatus;
-    if (!isUsingMockScenario) {
-      freshWifi = await checkWifiConnection();
-      const bssidPass = Boolean(freshWifi?.authorized ?? freshWifi?.isSonaWifi);
-      if (!bssidPass) {
-        toast.error("Wi-Fi Verification Failed", {
-          description: freshWifi?.reason || CAMPUS_WIFI_FAILURE_MESSAGE,
-        });
-        return;
-      }
-    } else if (!wifiAuthorized) {
-      toast.error("Wi-Fi Verification Failed", {
-        description: "You must be connected to an authorized campus Wi-Fi network to mark attendance.",
-      });
-      return;
-    }
-
-    if (!gpsInsideGeofence) {
-      toast.error("GPS Geofence Verification Failed", {
-        description:
-          geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-            ? `GPS ACCURACY INSUFFICIENT — Current accuracy: ±${geofence.accuracy ? geofence.accuracy.toFixed(1) : "—"}m. Acquiring a better GPS fix...`
-            : "Your device GPS position is outside the authoritative 19-point campus polygon.",
-      });
-      return;
-    }
-
-    if (isWrongPerson) {
-      toast.error("Identity Mismatch", {
-        description: `Recognized identity (${faceResult?.staffCode || faceResult?.staffId}) does not match authenticated staff (${loggedInStaff.staffId}). Attendance rejected.`,
-      });
-      return;
-    }
-
-    if (!faceAuthenticated) {
-      toast.error("Identity Verification Required", {
-        description: "Please complete face recognition first.",
-      });
+    // If face is not yet scanned, open FaceScanDialog immediately
+    // while simultaneously dispatching Wi-Fi and GPS checks in parallel!
+    if (!faceResult || activeReport.face.status !== "PASS") {
       setScanOpen(true);
+      void Promise.allSettled([
+        isUsingMockScenario ? Promise.resolve(wifiStatus) : checkWifiConnection(),
+        isUsingMockScenario ? Promise.resolve(null) : geofence.refreshLocation(),
+      ]);
       return;
     }
 
+    setIsVerifyingParallel(true);
     setStatus("verifying");
+
     try {
-      const result = await markAttendance({
-        staffCode: loggedInStaff.staffId,
-        staffName: loggedInStaff.name,
-        department: loggedInStaff.department,
-        token: loggedInStaff.token,
-        location: "Main Campus, Sona College",
-        latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
-        longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
-        accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
-        verification: "Verified",
-        networkAuthToken: freshWifi?.networkAuthToken || wifiStatus?.networkAuthToken,
-        bssid: freshWifi?.bssid || wifiStatus?.bssid,
-        bssidSource: freshWifi?.bssidSource || wifiStatus?.bssidSource,
-        faceVerified: true,
-        recognizedStaffCode: faceResult?.staffCode || faceResult?.staffId || loggedInStaff.staffId,
-        faceMatchDistance: faceResult?.distance,
-        livenessPassed: faceResult?.livenessCompleted === true,
-        antiSpoofScore: faceResult?.antiSpoofScore,
-        auditId: faceResult?.auditId || faceResult?.verification?.auditId,
-        biometricAttestation: faceResult?.biometricAttestation,
-        deviceId: faceResult?.deviceId,
-        sessionNonce: faceResult?.attemptNonce,
-        attemptNonce: faceResult?.attemptNonce,
-        livenessEvidence: faceResult?.livenessEvidence,
+      const freshReport = await runParallelVerification({
+        checkWifi: () => (isUsingMockScenario ? Promise.resolve(wifiStatus) : checkWifiConnection()),
+        checkGps: () => (isUsingMockScenario ? Promise.resolve(null) : geofence.refreshLocation()),
+        getFaceResult: async () => faceResult,
+        currentGeofenceState: {
+          isInside: geofence.isInside,
+          status: geofence.status,
+          accuracy: geofence.accuracy,
+          coords: geofence.bestCoords ?? geofence.coords,
+        },
+        expectedStaffCode: loggedInStaff.staffId,
+        timeoutMs: 6000,
       });
-      setReceipt(result);
-      setStatus("success");
-      toast.success("Attendance Recorded Successfully!", {
-        description: `${faceResult?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
-      });
+
+      setParallelReport(freshReport);
+
+      if (freshReport.overallDecision === "ALLOWED") {
+        const attendanceReceipt = await markAttendance({
+          staffCode: loggedInStaff.staffId,
+          staffName: faceResult.staffName || loggedInStaff.name,
+          department: loggedInStaff.department,
+          token: loggedInStaff.token,
+          location: "Main Campus, Sona College",
+          latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? undefined,
+          longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
+          accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
+          verification: "Verified",
+          networkAuthToken: wifiStatus?.networkAuthToken,
+          bssid: freshReport.wifi.data?.bssid || wifiStatus?.bssid,
+          bssidSource: wifiStatus?.bssidSource,
+          faceVerified: true,
+          recognizedStaffCode: faceResult.staffCode || faceResult.staffId || loggedInStaff.staffId,
+          faceMatchDistance: faceResult.distance,
+          livenessPassed: faceResult.livenessCompleted === true,
+          antiSpoofScore: faceResult.antiSpoofScore,
+          auditId: faceResult.auditId || faceResult.verification?.auditId,
+          biometricAttestation: faceResult.biometricAttestation,
+          deviceId: faceResult.deviceId,
+          sessionNonce: faceResult.attemptNonce,
+          attemptNonce: faceResult.attemptNonce,
+          livenessEvidence: faceResult.livenessEvidence,
+        });
+
+        setReceipt(attendanceReceipt);
+        setStatus("success");
+        toast.success("Attendance Recorded Successfully!", {
+          description: `${faceResult.staffName || loggedInStaff.name} · ${attendanceReceipt.time} · ${attendanceReceipt.date}`,
+        });
+      } else {
+        setStatus("idle");
+        toast.error("Attendance Rejected: Mandatory Factors Not Satisfied", {
+          description: `Results — Wi-Fi: ${freshReport.wifi.label} | GPS: ${freshReport.gps.label} | Face: ${freshReport.face.label}`,
+        });
+      }
     } catch (err: any) {
-      console.error("[markAttendance] Server response error:", err?.message || err);
+      console.error("[ParallelAttendance] Error:", err);
       setStatus("idle");
       toast.error("Attendance Rejected", {
-        description: err?.message || "Attendance rejected by server.",
+        description: err?.message || "Failed to complete attendance verification.",
       });
+    } finally {
+      setIsVerifyingParallel(false);
     }
   };
 
@@ -717,47 +803,71 @@ function MarkAttendancePage() {
       setFace(result.snapshot ?? null);
       setFaceResult(result);
 
-      if (!result.verified) {
-        toast.error("Face Unrecognized", {
-          description: "Biometric identity could not be verified against PostgreSQL staff database.",
-        });
-        return;
-      }
+      // Parallel async check: trigger Wi-Fi and GPS concurrently
+      const [wifiSettled, gpsSettled] = await Promise.allSettled([
+        isUsingMockScenario ? Promise.resolve(wifiStatus) : checkWifiConnection(),
+        isUsingMockScenario ? Promise.resolve(null) : geofence.refreshLocation(),
+      ]);
 
-      const matchedIdentity = Boolean(
-        loggedInStaff &&
-          isSameIndividual(loggedInStaff.staffId, result.staffCode || result.staffId),
-      );
-      if (!matchedIdentity) {
-        toast.error("Identity Mismatch", {
-          description: `Recognized identity (${result.staffCode || result.staffId || "Unknown"}) does not match logged-in staff (${loggedInStaff?.staffId || "None"}). Attendance rejected.`,
-        });
-        return;
-      }
+      const freshWifi = wifiSettled.status === "fulfilled" ? wifiSettled.value : wifiStatus;
+      const wifiFac = isUsingMockScenario
+        ? (wifiAuthorized
+            ? {
+                status: "PASS" as const,
+                label: "PASS",
+                detail: "Connected to authorized campus Wi-Fi (Demo)",
+                data: { bssid: REGISTERED_CAMPUS_BSSID, ssid: "SONA-WIFI", authorized: true },
+                timestamp: Date.now(),
+              }
+            : {
+                status: "FAIL" as const,
+                label: "FAIL – Unauthorized Network",
+                detail: "Demo unauthorized network",
+                data: { authorized: false },
+                timestamp: Date.now(),
+              })
+        : evaluateWifiFactor(freshWifi);
 
-      toast.success("Face Recognized", {
-        description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
-      });
-
-      // Strict Campus Wi-Fi BSSID verification on every attendance attempt
-      let freshWifi = wifiStatus;
-      if (!isUsingMockScenario) {
-        freshWifi = await checkWifiConnection();
-        const bssidPass = Boolean(freshWifi?.authorized ?? freshWifi?.isSonaWifi);
-        if (!bssidPass) {
-          toast.error("Wi-Fi Verification Failed", {
-            description: freshWifi?.reason || CAMPUS_WIFI_FAILURE_MESSAGE,
+      const gpsFac = isUsingMockScenario
+        ? (gpsInsideGeofence
+            ? {
+                status: "PASS" as const,
+                label: "PASS",
+                detail: "Inside campus geofence polygon (Demo)",
+                data: { isInside: true, status: "inside", accuracy: 8 },
+                timestamp: Date.now(),
+              }
+            : {
+                status: "FAIL" as const,
+                label: "FAIL – Outside Campus",
+                detail: "Outside campus polygon (Demo)",
+                data: { isInside: false, status: "outside", accuracy: 12 },
+                timestamp: Date.now(),
+              })
+        : evaluateGpsFactor({
+            isInside: geofence.isInside,
+            status: geofence.status,
+            accuracy: geofence.accuracy,
+            coords: geofence.bestCoords ?? geofence.coords,
           });
-          return;
-        }
-      }
 
-      const isWifiOk = isUsingMockScenario
-        ? wifiAuthorized
-        : Boolean(freshWifi?.authorized ?? freshWifi?.isSonaWifi);
+      const faceFac = evaluateFaceFactor(result, loggedInStaff?.staffId);
+      const decisionRes = computeParallelDecision(wifiFac, gpsFac, faceFac);
 
-      // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
-      if (loggedInStaff && isWifiOk && gpsInsideGeofence) {
+      const report: ParallelVerificationReport = {
+        wifi: wifiFac,
+        gps: gpsFac,
+        face: faceFac,
+        overallDecision: decisionRes.decision,
+        completedAt: Date.now(),
+        allCompleted: true,
+        failedFactors: decisionRes.failedFactors,
+        passedFactors: decisionRes.passedFactors,
+        summary: decisionRes.summary,
+      };
+      setParallelReport(report);
+
+      if (decisionRes.decision === "ALLOWED" && loggedInStaff) {
         setStatus("verifying");
         try {
           const attendanceReceipt = await markAttendance({
@@ -787,10 +897,9 @@ function MarkAttendancePage() {
           });
           setReceipt(attendanceReceipt);
           setStatus("success");
-          toast.success(`Attendance Marked Successfully!`, {
+          toast.success("Attendance Marked Successfully!", {
             description: `${result.staffName || loggedInStaff.name} · ${attendanceReceipt.time} (${attendanceReceipt.attendanceId})`,
           });
-          // Close scan dialog smoothly after confirmed database insertion
           setTimeout(() => {
             setScanOpen(false);
           }, 1200);
@@ -802,15 +911,12 @@ function MarkAttendancePage() {
           });
         }
       } else {
-        const reasons: string[] = [];
-        if (!isWifiOk) reasons.push("Authorized Campus Wi-Fi");
-        if (!gpsInsideGeofence) reasons.push("GPS Polygon Containment");
-        toast.warning("Attendance Blocked: Required Factors Not Satisfied", {
-          description: `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`,
+        toast.error("Attendance Blocked: Mandatory Factors Incomplete", {
+          description: `Results — Wi-Fi: ${wifiFac.label} | GPS: ${gpsFac.label} | Face: ${faceFac.label}`,
         });
       }
     },
-    [loggedInStaff, wifiAuthorized, gpsInsideGeofence, geofence, wifiStatus, isUsingMockScenario, checkWifiConnection],
+    [loggedInStaff, isUsingMockScenario, wifiStatus, checkWifiConnection, wifiAuthorized, gpsInsideGeofence, geofence],
   );
 
   return (
@@ -1081,6 +1187,17 @@ function MarkAttendancePage() {
               />
             ))}
           </div>
+
+          {/* Independent 3-Factor Parallel Verification Status Panel */}
+          <ParallelVerificationPanel
+            report={activeReport}
+            isVerifying={isVerifyingParallel || status === "verifying"}
+            onRecheckWifi={() => void checkWifiConnection()}
+            onRefreshGps={() => void geofence.refreshLocation()}
+            onScanFace={() => setScanOpen(true)}
+            isWifiChecking={isWifiChecking}
+            isGpsChecking={geofence.isChecking}
+          />
 
           {/* Dedicated Institutional Wi-Fi Status & Diagnostic Card */}
           <WifiStatusCard
@@ -1408,105 +1525,25 @@ function MarkAttendancePage() {
                 <Button
                   id="mark-attendance-btn"
                   size="lg"
-                  className="w-full"
-                  disabled={
-                    status === "verifying" ||
-                    isWrongPerson ||
-                    (!canMarkAttendance &&
-                      geofence.status !== "location_services_off" &&
-                      geofence.status !== "position_unavailable" &&
-                      geofence.status !== "permission_prompt" &&
-                      geofence.status !== "permission_denied" &&
-                      !(wifiAuthorized && gpsInsideGeofence && !faceAuthenticated))
-                  }
-                  onClick={() => {
-                    if (geofence.status === "location_services_off" || geofence.status === "position_unavailable") {
-                      toast.error("Location services are OFF", {
-                        description: "Turn on Android Location and try again.",
-                      });
-                      void geofence.refreshLocation();
-                      return;
-                    }
-                    if (geofence.status === "permission_prompt") {
-                      toast.info("Location permission required", {
-                        description: "Please allow location access to continue.",
-                      });
-                      void geofence.refreshLocation();
-                      return;
-                    }
-                    if (geofence.status === "permission_denied") {
-                      toast.error("Location permission denied", {
-                        description: "Enable location permission for Chrome and try again.",
-                      });
-                      void geofence.refreshLocation();
-                      return;
-                    }
-                    if (isWrongPerson) {
-                      toast.error("Identity Mismatch", {
-                        description: `Recognized face does not match authenticated user (${loggedInStaff?.staffId || "Staff"}). Attendance rejected.`,
-                      });
-                      return;
-                    }
-                    if (!wifiAuthorized) {
-                      toast.error("Wi-Fi Verification Blocked", {
-                        description: "You must be connected to an authorized campus Wi-Fi network.",
-                      });
-                      return;
-                    }
-                    if (!gpsInsideGeofence) {
-                      toast.error("Outside Geofence", {
-                        description:
-                          geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-                            ? `GPS accuracy is insufficient (±${Math.round(geofence.accuracy || 0)}m). Move to open sky to achieve ≤20m precision.`
-                            : "Your GPS coordinates must be inside the authoritative campus polygon.",
-                      });
-                      return;
-                    }
-                    if (!face || !faceAuthenticated) {
-                      setScanOpen(true);
-                    } else {
-                      void run();
-                    }
-                  }}
+                  className="w-full h-12 text-sm font-semibold rounded-xl"
+                  disabled={status === "verifying" || isVerifyingParallel}
+                  onClick={() => void executeParallelAttendance()}
                 >
-                  {status === "verifying" ? (
+                  {status === "verifying" || isVerifyingParallel ? (
                     <>
-                      <Loader2 className="mr-2 size-5 animate-spin" /> Verifying presence…
+                      <Loader2 className="mr-2 size-5 animate-spin" /> Verifying all 3 factors in parallel…
                     </>
-                  ) : isWrongPerson ? (
+                  ) : activeReport.overallDecision === "ALLOWED" ? (
                     <>
-                      <XCircle className="mr-2 size-5" /> Identity Mismatch — Attendance Blocked
+                      <CheckCircle2 className="mr-2 size-5" /> Mark Attendance
                     </>
-                  ) : geofence.status === "location_services_off" || geofence.status === "position_unavailable" ? (
+                  ) : activeReport.face.status !== "PASS" ? (
                     <>
-                      <AlertTriangle className="mr-2 size-5" /> Location Services OFF — Turn on Location
-                    </>
-                  ) : geofence.status === "permission_prompt" ? (
-                    <>
-                      <MapPin className="mr-2 size-5" /> Location Permission Required — Allow Access
-                    </>
-                  ) : geofence.status === "permission_denied" ? (
-                    <>
-                      <ShieldAlert className="mr-2 size-5" /> Location Permission Denied — Enable in Settings
-                    </>
-                  ) : !wifiAuthorized ? (
-                    <>
-                      <Wifi className="mr-2 size-5" /> Unauthorized Wi-Fi — Marking Blocked
-                    </>
-                  ) : !gpsInsideGeofence ? (
-                    <>
-                      <AlertTriangle className="mr-2 size-5" />
-                      {geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-                        ? "GPS Accuracy Insufficient — Blocked"
-                        : "Outside Campus Polygon — Blocked"}
-                    </>
-                  ) : !faceAuthenticated ? (
-                    <>
-                      <ScanFace className="mr-2 size-5" /> Scan Face to Continue
+                      <ScanFace className="mr-2 size-5" /> Scan Face to Complete Verification
                     </>
                   ) : (
                     <>
-                      <CheckCircle2 className="mr-2 size-5" /> Mark Attendance
+                      <RefreshCw className="mr-2 size-5" /> Re-verify All 3 Factors
                     </>
                   )}
                 </Button>
