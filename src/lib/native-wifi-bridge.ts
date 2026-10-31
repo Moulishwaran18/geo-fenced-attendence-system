@@ -13,12 +13,15 @@ export interface NativeConnectedWifi {
   connected: boolean;
   transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
   ssid: string | null;
+  bssid: string | null;
+  bssidVerified?: boolean | undefined;
   permissionGranted: boolean;
   locationEnabled?: boolean | undefined;
   apiLevel?: number | undefined;
   hasFineLocation?: boolean | undefined;
   hasNearbyWifi?: boolean | undefined;
   ssidSource?: string | undefined;
+  bssidSource?: string | undefined;
   reason:
     | "SUCCESS"
     | "CELLULAR_DATA"
@@ -27,6 +30,8 @@ export interface NativeConnectedWifi {
     | "PERMISSION_DENIED"
     | "LOCATION_SERVICES_DISABLED"
     | "SSID_UNAVAILABLE"
+    | "BSSID_UNAVAILABLE"
+    | "UNAUTHORIZED_BSSID"
     | "NO_NATIVE_BRIDGE"
     | string;
 }
@@ -35,6 +40,9 @@ export interface NativeNetworkFingerprint {
   transport: "wifi" | "cellular" | "ethernet" | "none" | "other" | "unknown";
   isWifi: boolean;
   ssid?: string | null;
+  bssid?: string | null;
+  bssidVerified?: boolean | undefined;
+  bssidSource?: string | undefined;
   ipv4?: string | null;
   ipv4Subnet?: string | null;
   prefixLength?: number;
@@ -138,6 +146,7 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
       connected: false,
       transport: "unknown",
       ssid: null,
+      bssid: null,
       permissionGranted: false,
       reason: "NO_NATIVE_BRIDGE",
     };
@@ -149,6 +158,7 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
       connected: false,
       transport: "unknown",
       ssid: null,
+      bssid: null,
       permissionGranted: false,
       reason: "NO_NATIVE_BRIDGE",
     };
@@ -162,17 +172,41 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
       if (parsed && typeof parsed === "object") {
         const rawSsid = parsed.ssid ? String(parsed.ssid).trim().replace(/^["']|["']$/g, "") : null;
         const validSsid = rawSsid && rawSsid !== "<unknown ssid>" && rawSsid !== "0x" && rawSsid !== "SSID_UNAVAILABLE" ? rawSsid : null;
+        
+        let rawBssid = parsed.bssid ? String(parsed.bssid).trim().replace(/^["']|["']$/g, "").toUpperCase() : null;
+        if (!rawBssid && typeof bridge.getWifiBssid === "function") {
+          try {
+            const b = String(bridge.getWifiBssid()).trim().replace(/^["']|["']$/g, "").toUpperCase();
+            if (b && b !== "BSSID_UNAVAILABLE") rawBssid = b;
+          } catch {}
+        }
+        if (
+          !rawBssid ||
+          rawBssid === "02:00:00:00:00:00" ||
+          rawBssid === "00:00:00:00:00:00" ||
+          rawBssid === "UNKNOWN" ||
+          rawBssid === "BSSID_UNAVAILABLE" ||
+          rawBssid === "NULL"
+        ) {
+          rawBssid = null;
+        }
+
+        const isBssidMatched = rawBssid === "B0:1F:8C:29:6B:30";
+
         return {
           connected: Boolean(parsed.connected),
           transport: parsed.transport || (parsed.connected ? "wifi" : "unknown"),
           ssid: validSsid,
+          bssid: rawBssid,
+          bssidVerified: parsed.bssidVerified ?? isBssidMatched,
+          bssidSource: parsed.bssidSource ?? undefined,
           permissionGranted: parsed.permissionGranted ?? true,
           locationEnabled: parsed.locationEnabled ?? true,
           apiLevel: parsed.apiLevel ?? undefined,
           hasFineLocation: parsed.hasFineLocation ?? undefined,
           hasNearbyWifi: parsed.hasNearbyWifi ?? undefined,
           ssidSource: parsed.ssidSource ?? undefined,
-          reason: parsed.reason || (validSsid ? "SUCCESS" : "SSID_UNAVAILABLE"),
+          reason: parsed.reason || (isBssidMatched ? "SUCCESS" : (rawBssid ? "UNAUTHORIZED_BSSID" : "BSSID_UNAVAILABLE")),
         };
       }
     } catch (e) {
@@ -180,23 +214,35 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
     }
   }
 
-  // 2. Direct string query getWifiSsid()
-  if (typeof bridge.getWifiSsid === "function") {
+  // 2. Direct string query getWifiSsid() & getWifiBssid()
+  if (typeof bridge.getWifiSsid === "function" || typeof bridge.getWifiBssid === "function") {
     try {
-      const raw = String(bridge.getWifiSsid()).trim().replace(/^["']|["']$/g, "");
-      const valid = raw && raw !== "SSID_UNAVAILABLE" && raw !== "<unknown ssid>" && raw !== "0x";
-      if (valid) {
+      const raw = typeof bridge.getWifiSsid === "function" ? String(bridge.getWifiSsid()).trim().replace(/^["']|["']$/g, "") : "";
+      const valid = raw && raw !== "SSID_UNAVAILABLE" && raw !== "<unknown ssid>" && raw !== "0x" ? raw : null;
+
+      let directBssid: string | null = null;
+      if (typeof bridge.getWifiBssid === "function") {
+        try {
+          const b = String(bridge.getWifiBssid()).trim().replace(/^["']|["']$/g, "").toUpperCase();
+          if (b && b !== "BSSID_UNAVAILABLE" && b !== "02:00:00:00:00:00") directBssid = b;
+        } catch {}
+      }
+
+      if (valid || directBssid) {
+        const isBssidMatched = directBssid === "B0:1F:8C:29:6B:30";
         return {
           connected: true,
           transport: "wifi",
-          ssid: raw,
+          ssid: valid,
+          bssid: directBssid,
+          bssidVerified: isBssidMatched,
           permissionGranted: true,
           locationEnabled: true,
-          reason: "SUCCESS",
+          reason: isBssidMatched ? "SUCCESS" : (directBssid ? "UNAUTHORIZED_BSSID" : "BSSID_UNAVAILABLE"),
         };
       }
     } catch (e) {
-      console.warn("[NativeWifiBridge] Failed to call getWifiSsid:", e);
+      console.warn("[NativeWifiBridge] Failed to call getWifiSsid/getWifiBssid:", e);
     }
   }
 
@@ -209,13 +255,19 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
         const isWifi = Boolean(parsed.isWifi ?? (parsed.state === "connected"));
         const rawSsid = parsed.ssid ? String(parsed.ssid).trim().replace(/^["']|["']$/g, "") : null;
         const validSsid = rawSsid && rawSsid !== "<unknown ssid>" && rawSsid !== "0x" ? rawSsid : null;
+        let rawBssid = parsed.bssid ? String(parsed.bssid).trim().replace(/^["']|["']$/g, "").toUpperCase() : null;
+        if (rawBssid === "02:00:00:00:00:00" || rawBssid === "00:00:00:00:00:00") rawBssid = null;
+        const isBssidMatched = rawBssid === "B0:1F:8C:29:6B:30";
+
         return {
           connected: isWifi,
           transport: isWifi ? "wifi" : "unknown",
           ssid: validSsid,
+          bssid: rawBssid,
+          bssidVerified: isBssidMatched,
           permissionGranted: true,
           locationEnabled: true,
-          reason: validSsid ? "SUCCESS" : "SSID_UNAVAILABLE",
+          reason: isBssidMatched ? "SUCCESS" : (rawBssid ? "UNAUTHORIZED_BSSID" : "BSSID_UNAVAILABLE"),
         };
       }
     } catch (e) {
@@ -227,8 +279,9 @@ export function getNativeConnectedWifi(): NativeConnectedWifi {
     connected: false,
     transport: "unknown",
     ssid: null,
+    bssid: null,
     permissionGranted: false,
-    reason: "SSID_UNAVAILABLE",
+    reason: "BSSID_UNAVAILABLE",
   };
 }
 
@@ -242,6 +295,18 @@ export async function getNativeWifiSsid(): Promise<string | null> {
   }
   const wifi = getNativeConnectedWifi();
   return wifi.connected && wifi.transport === "wifi" ? wifi.ssid : null;
+}
+
+/**
+ * Asynchronous/promise-safe helper to obtain the native BSSID.
+ */
+export async function getNativeWifiBssid(): Promise<string | null> {
+  await waitForNativeWifiBridge(1000);
+  if (!isNativeWifiBridgeAvailable()) {
+    return null;
+  }
+  const wifi = getNativeConnectedWifi();
+  return wifi.connected && wifi.transport === "wifi" ? wifi.bssid : null;
 }
 
 /**
@@ -272,10 +337,15 @@ export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
       const raw = bridge.getNetworkFingerprint();
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       if (parsed && typeof parsed === "object") {
+        let bssid = parsed.bssid ? String(parsed.bssid).trim().replace(/^["']|["']$/g, "").toUpperCase() : null;
+        if (bssid === "02:00:00:00:00:00" || bssid === "00:00:00:00:00:00") bssid = null;
         return {
           transport: parsed.transport || "unknown",
           isWifi: Boolean(parsed.isWifi),
           ssid: parsed.ssid || null,
+          bssid: bssid || null,
+          bssidVerified: Boolean(parsed.bssidVerified ?? (bssid === "B0:1F:8C:29:6B:30")),
+          bssidSource: parsed.bssidSource || undefined,
           ipv4: parsed.ipv4 || null,
           ipv4Subnet: parsed.ipv4Subnet || null,
           prefixLength: parsed.prefixLength || 0,
@@ -297,6 +367,9 @@ export function getNativeNetworkFingerprint(): NativeNetworkFingerprint {
     transport: conn.transport,
     isWifi: conn.transport === "wifi",
     ssid: conn.ssid,
+    bssid: conn.bssid,
+    bssidVerified: conn.bssidVerified,
+    bssidSource: conn.bssidSource,
     reason: conn.reason,
     isNativeBridge: true,
   };

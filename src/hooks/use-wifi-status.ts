@@ -42,14 +42,14 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
 
       // ==============================================================
       // 1. NATIVE ANDROID BRIDGE (App running in Android APK)
-      // Genuine source of real connected Wi-Fi SSID from Android OS
+      // Genuine source of real connected Wi-Fi SSID & BSSID from Android OS
       // ==============================================================
       if (nativeAvailable) {
         let nativeWifi = getNativeConnectedWifi();
 
-        // Warmup retry: if connected to Wi-Fi with permissions, wait briefly for Android NetworkCallback to deliver SSID
+        // Warmup retry: if connected to Wi-Fi with permissions, wait briefly for Android NetworkCallback to deliver BSSID & SSID
         if (
-          !nativeWifi.ssid &&
+          (!nativeWifi.bssid || !nativeWifi.ssid) &&
           nativeWifi.connected &&
           nativeWifi.transport === "wifi" &&
           nativeWifi.permissionGranted !== false &&
@@ -58,9 +58,9 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
           for (let attempt = 0; attempt < 3; attempt++) {
             await new Promise((resolve) => setTimeout(resolve, 350));
             const retry = getNativeConnectedWifi();
-            if (retry.ssid) {
+            if (retry.bssid || retry.ssid) {
               nativeWifi = retry;
-              break;
+              if (retry.bssid) break;
             }
           }
         }
@@ -75,7 +75,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             network: "Permission Denied",
             networkType: "UNAVAILABLE",
             state: "connected",
-            reason: "Location/Wi-Fi permission denied. Please grant permissions to allow reading the Wi-Fi network name.",
+            reason: "Location/Wi-Fi permission denied. Please grant permissions to allow reading the Wi-Fi network name and BSSID.",
             networkSummary: "Permission Denied",
             stage: "UNABLE_TO_VERIFY",
             errorCode: "PERMISSION_DENIED",
@@ -84,6 +84,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             hasFineLocation: nativeWifi.hasFineLocation,
             hasNearbyWifi: nativeWifi.hasNearbyWifi,
             ssidSource: nativeWifi.ssidSource,
+            bssidSource: nativeWifi.bssidSource,
             timestamp: now,
             isNativeBridge: true,
           };
@@ -100,7 +101,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             network: "Location Disabled",
             networkType: "UNAVAILABLE",
             state: "connected",
-            reason: "Device location is turned off. Android requires location to be enabled to read Wi-Fi network SSID.",
+            reason: "Device location is turned off. Android requires location to be enabled to read Wi-Fi network BSSID and SSID.",
             networkSummary: "Location Disabled",
             stage: "UNABLE_TO_VERIFY",
             errorCode: "LOCATION_SERVICES_DISABLED",
@@ -121,7 +122,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             network: "Mobile Data",
             networkType: "UNAUTHORIZED",
             state: "connected",
-            reason: "Device is connected to mobile data, not campus Wi-Fi. Connect to a Wi-Fi network containing 'sona'.",
+            reason: "Device is connected to mobile data, not campus Wi-Fi. Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.",
             networkSummary: "Mobile Data",
             stage: "FINGERPRINT_CHECK_FAILED",
             errorCode: "CELLULAR_DATA",
@@ -141,7 +142,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             network: "Disconnected",
             networkType: "UNAVAILABLE",
             state: "disconnected",
-            reason: "Device is disconnected from Wi-Fi. Please connect to a Wi-Fi network containing 'sona'.",
+            reason: "Device is disconnected from Wi-Fi. Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.",
             networkSummary: "Disconnected",
             stage: "DISCONNECTED",
             errorCode: "DISCONNECTED",
@@ -161,7 +162,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             network: nativeWifi.transport || "Non-Wi-Fi",
             networkType: "UNAUTHORIZED",
             state: "connected",
-            reason: "Network transport is not Wi-Fi. Please connect to a Wi-Fi network containing 'sona'.",
+            reason: "Network transport is not Wi-Fi. Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.",
             networkSummary: nativeWifi.transport || "Non-Wi-Fi",
             stage: "FINGERPRINT_CHECK_FAILED",
             errorCode: "NOT_WIFI",
@@ -173,7 +174,67 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
           return nonWifiStatus;
         }
 
-        // 1F. Wi-Fi connected: submit real native SSID to Vercel API for authoritative authorization & token minting
+        // 1F. BSSID Unavailable / Hidden / Restricted
+        if (
+          !nativeWifi.bssid ||
+          nativeWifi.bssid === "02:00:00:00:00:00" ||
+          nativeWifi.bssid === "BSSID_UNAVAILABLE" ||
+          nativeWifi.bssid === "00:00:00:00:00:00"
+        ) {
+          const bssidUnavailableStatus: WifiStatus = {
+            isSonaWifi: false,
+            authorized: false,
+            network: "BSSID Unavailable",
+            networkType: "UNAVAILABLE",
+            state: "connected",
+            reason: "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
+            networkSummary: "BSSID Unavailable",
+            stage: "UNABLE_TO_VERIFY",
+            errorCode: "BSSID_UNAVAILABLE",
+            bssid: undefined,
+            bssidVerified: false,
+            apiLevel: nativeWifi.apiLevel,
+            hasFineLocation: nativeWifi.hasFineLocation,
+            hasNearbyWifi: nativeWifi.hasNearbyWifi,
+            ssidSource: nativeWifi.ssidSource,
+            bssidSource: nativeWifi.bssidSource,
+            timestamp: now,
+            isNativeBridge: true,
+          };
+          setStatus(bssidUnavailableStatus);
+          setLastChecked(new Date());
+          return bssidUnavailableStatus;
+        }
+
+        // 1G. BSSID Mismatch check (Compare normalized uppercase BSSID against B0:1F:8C:29:6B:30)
+        const cleanBssid = nativeWifi.bssid.trim().replace(/^["']|["']$/g, "").toUpperCase();
+        if (cleanBssid !== "B0:1F:8C:29:6B:30") {
+          const bssidMismatchStatus: WifiStatus = {
+            isSonaWifi: false,
+            authorized: false,
+            network: cleanBssid,
+            networkType: "UNAUTHORIZED",
+            state: "connected",
+            reason: "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.",
+            networkSummary: cleanBssid,
+            stage: "FINGERPRINT_CHECK_FAILED",
+            errorCode: "UNAUTHORIZED_BSSID",
+            bssid: cleanBssid,
+            bssidVerified: false,
+            apiLevel: nativeWifi.apiLevel,
+            hasFineLocation: nativeWifi.hasFineLocation,
+            hasNearbyWifi: nativeWifi.hasNearbyWifi,
+            ssidSource: nativeWifi.ssidSource,
+            bssidSource: nativeWifi.bssidSource,
+            timestamp: now,
+            isNativeBridge: true,
+          };
+          setStatus(bssidMismatchStatus);
+          setLastChecked(new Date());
+          return bssidMismatchStatus;
+        }
+
+        // 1H. Wi-Fi connected with matching BSSID: submit to Vercel API for authoritative authorization & token minting
         try {
           const res = await fetch("/api/wifi-status", {
             method: "POST",
@@ -184,6 +245,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             body: JSON.stringify({
               isNativeBridge: true,
               ssid: nativeWifi.ssid,
+              bssid: cleanBssid,
               transport: nativeWifi.transport,
               connected: nativeWifi.connected,
               permissionGranted: nativeWifi.permissionGranted,
@@ -193,6 +255,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
               hasFineLocation: nativeWifi.hasFineLocation,
               hasNearbyWifi: nativeWifi.hasNearbyWifi,
               ssidSource: nativeWifi.ssidSource,
+              bssidSource: nativeWifi.bssidSource,
             }),
             cache: "no-store",
           });
@@ -200,6 +263,8 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
           if (res.ok) {
             const data: WifiStatus = await res.json();
             data.isNativeBridge = true;
+            data.bssid = cleanBssid;
+            data.bssidVerified = data.authorized;
             setStatus(data);
             setLastChecked(new Date());
             return data;
@@ -208,17 +273,20 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             const failStatus: WifiStatus = {
               isSonaWifi: false,
               authorized: false,
-              network: nativeWifi.ssid || "Unauthorized Network",
+              network: cleanBssid,
               networkType: "UNAUTHORIZED",
               state: "connected",
-              reason: errData?.reason || `Verification server returned HTTP ${res.status}`,
-              networkSummary: nativeWifi.ssid || "Unauthorized Network",
+              reason: errData?.reason || "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.",
+              networkSummary: cleanBssid,
               stage: "FINGERPRINT_CHECK_FAILED",
               errorCode: errData?.errorCode || `HTTP_${res.status}`,
+              bssid: cleanBssid,
+              bssidVerified: false,
               apiLevel: nativeWifi.apiLevel,
               hasFineLocation: nativeWifi.hasFineLocation,
               hasNearbyWifi: nativeWifi.hasNearbyWifi,
               ssidSource: nativeWifi.ssidSource,
+              bssidSource: nativeWifi.bssidSource,
               timestamp: now,
               isNativeBridge: true,
             };
@@ -230,6 +298,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
           // Fallback to local client verification if network glitch contacting /api/wifi-status
           const clientVerification = verifyCampusWifi({
             ssid: nativeWifi.ssid,
+            bssid: cleanBssid,
             transport: nativeWifi.transport,
             connected: nativeWifi.connected,
             permissionGranted: nativeWifi.permissionGranted,
@@ -240,7 +309,7 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
           const resolvedStatus: WifiStatus = {
             isSonaWifi: clientVerification.authorized,
             authorized: clientVerification.authorized,
-            network: clientVerification.network || nativeWifi.ssid || undefined,
+            network: clientVerification.network || cleanBssid,
             networkType: clientVerification.networkType,
             networkSummary: clientVerification.networkSummary,
             reason: clientVerification.reason,
@@ -248,11 +317,14 @@ export function useWifiStatus(pollIntervalMs = 6000): UseWifiStatusReturn {
             stage: clientVerification.stage,
             timestamp: clientVerification.timestamp,
             ssid: nativeWifi.ssid || undefined,
+            bssid: cleanBssid,
+            bssidVerified: clientVerification.authorized,
             errorCode: clientVerification.errorCode,
             apiLevel: nativeWifi.apiLevel,
             hasFineLocation: nativeWifi.hasFineLocation,
             hasNearbyWifi: nativeWifi.hasNearbyWifi,
             ssidSource: nativeWifi.ssidSource,
+            bssidSource: nativeWifi.bssidSource,
             isNativeBridge: true,
           };
           setStatus(resolvedStatus);

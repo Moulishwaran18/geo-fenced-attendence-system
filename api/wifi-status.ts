@@ -24,6 +24,33 @@ const TOKEN_SECRET =
   "sona-campus-wifi-egress-auth-secret-key-2026";
 const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+export const REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30" as const;
+export const CAMPUS_WIFI_FAILURE_MESSAGE =
+  "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi." as const;
+
+export function normalizeBssid(bssid?: string | null | undefined): string {
+  if (!bssid || typeof bssid !== "string") return "";
+  return bssid.trim().replace(/^["']|["']$/g, "").replace(/-/g, ":").toUpperCase();
+}
+
+export function isAuthorizedCampusBssid(bssid?: string | null | undefined): boolean {
+  const clean = normalizeBssid(bssid);
+  if (!clean) return false;
+  if (
+    clean === "02:00:00:00:00:00" ||
+    clean === "00:00:00:00:00:00" ||
+    clean === "UNKNOWN" ||
+    clean === "BSSID_UNAVAILABLE" ||
+    clean === "NULL"
+  ) {
+    return false;
+  }
+  if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(clean)) {
+    return false;
+  }
+  return clean === REGISTERED_CAMPUS_BSSID.toUpperCase();
+}
+
 /**
  * Validates Wi-Fi SSID according to authoritative campus policy:
  * Accepts if SSID contains 'sona' (case-insensitive).
@@ -46,10 +73,11 @@ export function isAuthorizedSonaSsid(ssid?: string | null | undefined): boolean 
 /**
  * Creates cryptographically signed HMAC-SHA256 network authorization token.
  */
-export function createNetworkAuthToken(ssid: string): string {
+export function createNetworkAuthToken(ssid: string, bssid: string = REGISTERED_CAMPUS_BSSID): string {
   const payload = {
     authorized: true,
     ssid,
+    bssid: normalizeBssid(bssid) || REGISTERED_CAMPUS_BSSID,
     issuedAt: Date.now(),
     expiresAt: Date.now() + TOKEN_TTL_MS,
     network: ssid,
@@ -108,8 +136,8 @@ export function verifyNetworkAuthToken(token?: string | null | undefined): {
       return { valid: false, error: "TOKEN_EXPIRED" };
     }
 
-    if (!payload.authorized || !isAuthorizedSonaSsid(payload.ssid)) {
-      return { valid: false, error: "UNAUTHORIZED_SSID_IN_TOKEN" };
+    if (!payload.authorized || !isAuthorizedCampusBssid(payload.bssid)) {
+      return { valid: false, error: "UNAUTHORIZED_BSSID_IN_TOKEN" };
     }
 
     return { valid: true, payload };
@@ -195,6 +223,8 @@ export default async function handler(req: any, res?: any) {
     const hasFineLocation = typeof body.hasFineLocation === "boolean" ? body.hasFineLocation : undefined;
     const hasNearbyWifi = typeof body.hasNearbyWifi === "boolean" ? body.hasNearbyWifi : undefined;
     const ssidSource = typeof body.ssidSource === "string" ? body.ssidSource : undefined;
+    const bssidSource = typeof body.bssidSource === "string" ? body.bssidSource : undefined;
+    const cleanBssid = normalizeBssid(body.bssid);
 
     // 1A. Permission Denied on Android
     if (body.permissionGranted === false || body.permissionDenied === true) {
@@ -294,49 +324,25 @@ export default async function handler(req: any, res?: any) {
       });
     }
 
-    // 1F. Authoritative SSID evaluation
-    const cleanSsid = body.ssid ? String(body.ssid).trim().replace(/^["']|["']$/g, "") : "";
-
-    if (isAuthorizedSonaSsid(cleanSsid)) {
-      const networkAuthToken = createNetworkAuthToken(cleanSsid);
-      const authorizedPayload = {
-        isSonaWifi: true,
-        authorized: true,
-        network: cleanSsid,
-        networkType: "SONA",
-        networkSummary: cleanSsid,
-        verificationMethod: "NATIVE_BRIDGE",
-        reason: `Authorized Wi-Fi network detected: ${cleanSsid}`,
-        state: "connected",
-        stage: "VERIFIED",
-        timestamp,
-        ssid: cleanSsid,
-        networkAuthToken,
-        isNativeBridge: true,
-        apiLevel,
-        hasFineLocation,
-        hasNearbyWifi,
-        ssidSource,
-      };
-      return sendJsonResponseWithCookie(res, 200, authorizedPayload, networkAuthToken);
-    }
-
-    // 1G. SSID unavailable / masked
+    // 1F. Authoritative Campus BSSID evaluation (Requirements 1-6)
     if (
-      !cleanSsid ||
-      cleanSsid === "SSID_UNAVAILABLE" ||
-      cleanSsid === "<unknown ssid>" ||
-      cleanSsid === "0x"
+      !cleanBssid ||
+      cleanBssid === "02:00:00:00:00:00" ||
+      cleanBssid === "00:00:00:00:00:00" ||
+      cleanBssid === "BSSID_UNAVAILABLE" ||
+      cleanBssid === "UNKNOWN" ||
+      cleanBssid === "NULL"
     ) {
       return sendJsonResponse(res, 200, {
         isSonaWifi: false,
         authorized: false,
-        network: "SSID Unavailable",
+        network: "BSSID Unavailable",
         networkType: "UNAVAILABLE",
-        networkSummary: "SSID Unavailable",
+        networkSummary: "BSSID Unavailable",
         verificationMethod: "NATIVE_BRIDGE",
-        errorCode: "SSID_UNAVAILABLE",
-        reason: "Unable to detect Wi-Fi network name. Ensure location permissions and device location are enabled.",
+        errorCode: "BSSID_UNAVAILABLE",
+        reason:
+          "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
         state: "connected",
         stage: "UNABLE_TO_VERIFY",
         timestamp,
@@ -345,29 +351,60 @@ export default async function handler(req: any, res?: any) {
         hasFineLocation,
         hasNearbyWifi,
         ssidSource,
+        bssidSource,
       });
     }
 
-    // 1H. Rejection: SSID does not contain "sona"
-    return sendJsonResponse(res, 200, {
-      isSonaWifi: false,
-      authorized: false,
-      network: cleanSsid,
-      networkType: "UNAUTHORIZED",
-      networkSummary: cleanSsid,
+    // 1G. BSSID Mismatch check (compare normalized uppercase against B0:1F:8C:29:6B:30)
+    if (!isAuthorizedCampusBssid(cleanBssid)) {
+      return sendJsonResponse(res, 200, {
+        isSonaWifi: false,
+        authorized: false,
+        network: cleanBssid,
+        networkType: "UNAUTHORIZED",
+        networkSummary: cleanBssid,
+        verificationMethod: "NATIVE_BRIDGE",
+        errorCode: "UNAUTHORIZED_BSSID",
+        reason: CAMPUS_WIFI_FAILURE_MESSAGE,
+        state: "connected",
+        stage: "FINGERPRINT_CHECK_FAILED",
+        timestamp,
+        bssid: cleanBssid,
+        isNativeBridge: true,
+        apiLevel,
+        hasFineLocation,
+        hasNearbyWifi,
+        ssidSource,
+        bssidSource,
+      });
+    }
+
+    // 1H. Exact BSSID Match: Mint signed authorization token and pass verification
+    const cleanSsid = body.ssid ? String(body.ssid).trim().replace(/^["']|["']$/g, "") : "";
+    const networkAuthToken = createNetworkAuthToken(cleanSsid || "Campus Wi-Fi", cleanBssid);
+    const authorizedPayload = {
+      isSonaWifi: true,
+      authorized: true,
+      network: cleanSsid ? `${cleanSsid} (${cleanBssid})` : cleanBssid,
+      networkType: "SONA",
+      networkSummary: cleanSsid ? `${cleanSsid} (${cleanBssid})` : cleanBssid,
       verificationMethod: "NATIVE_BRIDGE",
-      errorCode: "UNAUTHORIZED_SSID",
-      reason: `Unauthorized Wi-Fi network (${cleanSsid}). Connected Wi-Fi name must contain "sona" (case-insensitive).`,
+      reason: `Campus Wi-Fi access point verified: ${cleanBssid}`,
       state: "connected",
-      stage: "FINGERPRINT_CHECK_FAILED",
+      stage: "VERIFIED",
       timestamp,
       ssid: cleanSsid,
+      bssid: cleanBssid,
+      bssidVerified: true,
+      networkAuthToken,
       isNativeBridge: true,
       apiLevel,
       hasFineLocation,
       hasNearbyWifi,
       ssidSource,
-    });
+      bssidSource,
+    };
+    return sendJsonResponseWithCookie(res, 200, authorizedPayload, networkAuthToken);
   }
 
   // 2. Normal Web Browser Flow (Desktop / Mobile Chrome / Safari)

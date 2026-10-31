@@ -109,9 +109,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                 Authorized Wi-Fi Connection Required
               </p>
               <p className="mt-2.5 max-w-md text-sm text-muted-foreground leading-relaxed">
-                CampusAttend is protected by institutional network security. This system can only be
-                accessed when your device is connected to an authorized campus Wi-Fi network whose name
-                contains <strong className="text-foreground">sona</strong> (case-insensitive).
+                CampusAttend is protected by institutional network security. This system can only be accessed when your device is connected to the registered campus Wi-Fi access point (<strong className="text-foreground font-mono">B0:1F:8C:29:6B:30</strong>).
               </p>
             </div>
 
@@ -132,8 +130,12 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Wi-Fi Policy:</span>
-                  <span className="font-mono text-primary font-medium">SSID contains &quot;sona&quot;</span>
+                  <span className="text-muted-foreground">Campus AP BSSID:</span>
+                  <span className="font-mono text-primary font-medium">B0:1F:8C:29:6B:30</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Connected BSSID:</span>
+                  <span className="font-mono text-foreground font-semibold">{status?.bssid || "Unavailable / Restricted"}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Verification Method:</span>
@@ -174,7 +176,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside pl-1">
                 <li>Open your device Wi-Fi settings.</li>
                 <li>
-                  Connect to an authorized Wi-Fi network containing <strong className="text-foreground">sona</strong> (e.g. SONA-WIFI).
+                  Connect to the official campus Wi-Fi network (AP BSSID: <strong className="text-foreground font-mono">B0:1F:8C:29:6B:30</strong>).
                 </li>
                 <li>
                   Ensure you are using the <strong className="text-foreground">CampusAttend Android APK</strong> with Location permissions enabled.

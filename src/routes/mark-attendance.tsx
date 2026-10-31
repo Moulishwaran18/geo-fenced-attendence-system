@@ -58,6 +58,11 @@ import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
 import {
+  isAuthorizedCampusBssid,
+  REGISTERED_CAMPUS_BSSID,
+  CAMPUS_WIFI_FAILURE_MESSAGE,
+} from "@/lib/wifi-config";
+import {
   fetchDeviceRegistrationStatus,
   registerCurrentDevice,
   type DeviceStatusResponse,
@@ -623,7 +628,18 @@ function MarkAttendancePage() {
       return;
     }
 
-    if (!wifiAuthorized) {
+    // Strict Campus Wi-Fi BSSID verification on every attendance attempt
+    let freshWifi = wifiStatus;
+    if (!isUsingMockScenario) {
+      freshWifi = await checkWifiConnection();
+      const bssidPass = Boolean(freshWifi?.authorized ?? freshWifi?.isSonaWifi);
+      if (!bssidPass) {
+        toast.error("Wi-Fi Verification Failed", {
+          description: freshWifi?.reason || CAMPUS_WIFI_FAILURE_MESSAGE,
+        });
+        return;
+      }
+    } else if (!wifiAuthorized) {
       toast.error("Wi-Fi Verification Failed", {
         description: "You must be connected to an authorized campus Wi-Fi network to mark attendance.",
       });
@@ -667,7 +683,9 @@ function MarkAttendancePage() {
         longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
         accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
         verification: "Verified",
-        networkAuthToken: wifiStatus?.networkAuthToken,
+        networkAuthToken: freshWifi?.networkAuthToken || wifiStatus?.networkAuthToken,
+        bssid: freshWifi?.bssid || wifiStatus?.bssid,
+        bssidSource: freshWifi?.bssidSource || wifiStatus?.bssidSource,
         faceVerified: true,
         recognizedStaffCode: faceResult?.staffCode || faceResult?.staffId || loggedInStaff.staffId,
         faceMatchDistance: faceResult?.distance,
@@ -686,54 +704,10 @@ function MarkAttendancePage() {
         description: `${faceResult?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
       });
     } catch (err: any) {
-      console.warn("[markAttendance] Server response fallback:", err?.message || err);
-      // Ensure verified faculty sees attendance recorded even if network/server has config fault
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
-      const dateStr = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
-      const fallbackReceipt: AttendanceReceipt = {
-        attendanceId: crypto.randomUUID ? crypto.randomUUID() : `att_${Date.now()}`,
-        time: timeStr,
-        date: dateStr,
-        staffCode: loggedInStaff.staffId,
-        staffName: loggedInStaff.name,
-        department: loggedInStaff.department,
-      };
-
-      try {
-        const istDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-        const dayName = now.toLocaleDateString("en-US", { weekday: "long", timeZone: "Asia/Kolkata" });
-        const { data: directData, error: directErr } = await supabase.from("attendance_record").insert({
-          staff_code: loggedInStaff.staffId,
-          staff_name: loggedInStaff.name,
-          department: loggedInStaff.department || "General",
-          date: istDate,
-          day: dayName,
-          time: timeStr,
-          status: "Present",
-          location: "Main Campus, Sona College",
-          verification: "Verified",
-          verification_method: "Face + GPS + Network",
-          latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? null,
-          longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? null,
-          accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? null,
-          device_id: faceResult?.deviceId || "DEV_WEB",
-          tamper_status: "VERIFIED",
-        }).select().maybeSingle();
-
-        if (directData?.id) {
-          fallbackReceipt.attendanceId = directData.id;
-        } else if (directErr) {
-          console.warn("[markAttendance] Supabase persistence note:", directErr.message);
-        }
-      } catch (sbErr) {
-        console.warn("[markAttendance] Direct persistence note:", sbErr);
-      }
-
-      setReceipt(fallbackReceipt);
-      setStatus("success");
-      toast.success("Attendance Recorded Successfully!", {
-        description: `${loggedInStaff.name} · ${timeStr} · ${dateStr}`,
+      console.error("[markAttendance] Server response error:", err?.message || err);
+      setStatus("idle");
+      toast.error("Attendance Rejected", {
+        description: err?.message || "Attendance rejected by server.",
       });
     }
   };
@@ -765,8 +739,25 @@ function MarkAttendancePage() {
         description: `Identity confirmed: ${result.staffName || "Staff"} (${result.staffId || "Authorized"})`,
       });
 
+      // Strict Campus Wi-Fi BSSID verification on every attendance attempt
+      let freshWifi = wifiStatus;
+      if (!isUsingMockScenario) {
+        freshWifi = await checkWifiConnection();
+        const bssidPass = Boolean(freshWifi?.authorized ?? freshWifi?.isSonaWifi);
+        if (!bssidPass) {
+          toast.error("Wi-Fi Verification Failed", {
+            description: freshWifi?.reason || CAMPUS_WIFI_FAILURE_MESSAGE,
+          });
+          return;
+        }
+      }
+
+      const isWifiOk = isUsingMockScenario
+        ? wifiAuthorized
+        : Boolean(freshWifi?.authorized ?? freshWifi?.isSonaWifi);
+
       // Attendance is allowed ONLY when ALL THREE factors pass for the SAME individual
-      if (loggedInStaff && wifiAuthorized && gpsInsideGeofence) {
+      if (loggedInStaff && isWifiOk && gpsInsideGeofence) {
         setStatus("verifying");
         try {
           const attendanceReceipt = await markAttendance({
@@ -779,7 +770,9 @@ function MarkAttendancePage() {
             longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? undefined,
             accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
             verification: "Verified",
-            networkAuthToken: wifiStatus?.networkAuthToken,
+            networkAuthToken: freshWifi?.networkAuthToken || wifiStatus?.networkAuthToken,
+            bssid: freshWifi?.bssid || wifiStatus?.bssid,
+            bssidSource: freshWifi?.bssidSource || wifiStatus?.bssidSource,
             faceVerified: true,
             recognizedStaffCode: result.staffCode || result.staffId || loggedInStaff.staffId,
             faceMatchDistance: result.distance,
@@ -802,68 +795,22 @@ function MarkAttendancePage() {
             setScanOpen(false);
           }, 1200);
         } catch (err: any) {
-          console.warn("[markAttendance] Face verified server fallback:", err?.message || err);
-          const now = new Date();
-          const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
-          const dateStr = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
-          const fallbackReceipt: AttendanceReceipt = {
-            attendanceId: crypto.randomUUID ? crypto.randomUUID() : `att_${Date.now()}`,
-            time: timeStr,
-            date: dateStr,
-            staffCode: loggedInStaff.staffId,
-            staffName: result.staffName || loggedInStaff.name,
-            department: loggedInStaff.department,
-          };
-
-          try {
-            const istDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-            const dayName = now.toLocaleDateString("en-US", { weekday: "long", timeZone: "Asia/Kolkata" });
-            const { data: directData, error: directErr } = await supabase.from("attendance_record").insert({
-              staff_code: loggedInStaff.staffId,
-              staff_name: result.staffName || loggedInStaff.name,
-              department: loggedInStaff.department || "General",
-              date: istDate,
-              day: dayName,
-              time: timeStr,
-              status: "Present",
-              location: "Main Campus, Sona College",
-              verification: "Verified",
-              verification_method: "Face + GPS + Network",
-              latitude: (geofence.bestCoords ?? geofence.coords)?.lat ?? null,
-              longitude: (geofence.bestCoords ?? geofence.coords)?.lng ?? null,
-              accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? null,
-              device_id: result.deviceId || "DEV_WEB",
-              tamper_status: "VERIFIED",
-            }).select().maybeSingle();
-
-            if (directData?.id) {
-              fallbackReceipt.attendanceId = directData.id;
-            } else if (directErr) {
-              console.warn("[markAttendance] Supabase persistence note:", directErr.message);
-            }
-          } catch (sbErr) {
-            console.warn("[markAttendance] Direct persistence note:", sbErr);
-          }
-
-          setReceipt(fallbackReceipt);
-          setStatus("success");
-          toast.success("Attendance Recorded Successfully!", {
-            description: `${result.staffName || loggedInStaff.name} · ${timeStr} · ${dateStr}`,
+          console.error("[markAttendance] Server rejection:", err?.message || err);
+          setStatus("idle");
+          toast.error("Attendance Rejected", {
+            description: err?.message || "Attendance rejected by server.",
           });
-          setTimeout(() => {
-            setScanOpen(false);
-          }, 1200);
         }
       } else {
         const reasons: string[] = [];
-        if (!wifiAuthorized) reasons.push("Authorized Campus Wi-Fi");
+        if (!isWifiOk) reasons.push("Authorized Campus Wi-Fi");
         if (!gpsInsideGeofence) reasons.push("GPS Polygon Containment");
         toast.warning("Attendance Blocked: Required Factors Not Satisfied", {
           description: `Face verified, but missing: ${reasons.join(", ")}. Attendance requires Wi-Fi + GPS + Face verification.`,
         });
       }
     },
-    [loggedInStaff, wifiAuthorized, gpsInsideGeofence, geofence, wifiStatus?.networkAuthToken],
+    [loggedInStaff, wifiAuthorized, gpsInsideGeofence, geofence, wifiStatus, isUsingMockScenario, checkWifiConnection],
   );
 
   return (

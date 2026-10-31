@@ -437,6 +437,33 @@ function isAuthorizedCampusEgressIp(ip?: string | null): boolean {
   return authorizedIps.includes(cleanIp);
 }
 
+const REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30";
+const CAMPUS_WIFI_FAILURE_MESSAGE =
+  "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi.";
+
+function normalizeBssid(bssid?: string | null | undefined): string {
+  if (!bssid || typeof bssid !== "string") return "";
+  return bssid.trim().replace(/^[\"']|[\"']$/g, "").replace(/-/g, ":").toUpperCase();
+}
+
+function isAuthorizedCampusBssid(bssid?: string | null | undefined): boolean {
+  const clean = normalizeBssid(bssid);
+  if (!clean) return false;
+  if (
+    clean === "02:00:00:00:00:00" ||
+    clean === "00:00:00:00:00:00" ||
+    clean === "UNKNOWN" ||
+    clean === "BSSID_UNAVAILABLE" ||
+    clean === "NULL"
+  ) {
+    return false;
+  }
+  if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(clean)) {
+    return false;
+  }
+  return clean === REGISTERED_CAMPUS_BSSID.toUpperCase();
+}
+
 function isAuthorizedSonaSsid(ssid?: string | null): boolean {
   if (!ssid || typeof ssid !== "string") return false;
   const clean = ssid.trim().replace(/^["']|["']$/g, "").trim().toLowerCase();
@@ -465,8 +492,8 @@ function verifyNetworkAuthToken(token?: string | null): { valid: boolean; payloa
       return { valid: false, error: "TOKEN_EXPIRED" };
     }
     const tokenSsid = payload.ssid || payload.network || "";
-    if (!payload.authorized || !isAuthorizedSonaSsid(tokenSsid)) {
-      return { valid: false, error: "UNAUTHORIZED_SSID_IN_TOKEN" };
+    if (!payload.authorized || !isAuthorizedCampusBssid(payload.bssid)) {
+      return { valid: false, error: "UNAUTHORIZED_BSSID_IN_TOKEN" };
     }
     return { valid: true, payload };
   } catch (err: any) {
@@ -1492,20 +1519,56 @@ export default async function handler(req: any, res?: any) {
   }
 
   // =========================================================================
-  // FACTOR 1: MANDATORY CAMPUS WI-FI NETWORK VERIFICATION
+  // FACTOR 1: MANDATORY CAMPUS WI-FI ACCESS POINT BSSID VERIFICATION
+  // Strict matching against registered campus BSSID: B0:1F:8C:29:6B:30
+  // Normalized to uppercase. Blind trust of wifiVerified: true is disallowed.
   // =========================================================================
   const headerToken = req.headers?.["x-network-auth-token"] || req.headers?.["X-Network-Auth-Token"];
   const cookieMatch = (req.headers?.cookie || "").match(/(?:^|;\s*)sona_network_auth=([^;]+)/);
   const cookieToken = cookieMatch ? decodeURIComponent(cookieMatch[1]) : null;
   const networkToken = headerToken || cookieToken || body.networkAuthToken;
 
-  const clientIp = sanitizeIp(req.headers?.["x-real-ip"] || req.headers?.["x-forwarded-for"]?.split(",")[0] || req.socket?.remoteAddress);
-  const isEgressAuthorized = isAuthorizedCampusEgressIp(clientIp);
   const tokenCheck = verifyNetworkAuthToken(networkToken);
 
-  const isWifiAllowed = tokenCheck.valid || isEgressAuthorized || body.networkAuthToken || body.wifiVerified || body.verification === "Verified";
-  if (!isWifiAllowed && !tokenCheck.valid && !isEgressAuthorized) {
-    console.warn("[AttendanceGate] Network token soft pass for verified faculty:", canonicalStaffCode);
+  const rawReqBssid = body.bssid || req.headers?.["x-wifi-bssid"];
+  const normReqBssid = normalizeBssid(rawReqBssid);
+
+  // 1. If explicit BSSID was transmitted, validate format and availability
+  if (rawReqBssid !== undefined && rawReqBssid !== null) {
+    if (
+      !normReqBssid ||
+      normReqBssid === "02:00:00:00:00:00" ||
+      normReqBssid === "00:00:00:00:00:00" ||
+      normReqBssid === "BSSID_UNAVAILABLE" ||
+      normReqBssid === "UNKNOWN" ||
+      normReqBssid === "NULL"
+    ) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "WIFI_BSSID_UNAVAILABLE",
+        message: "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
+      });
+    }
+
+    if (!isAuthorizedCampusBssid(normReqBssid)) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "WIFI_BSSID_MISMATCH",
+        message: CAMPUS_WIFI_FAILURE_MESSAGE,
+      });
+    }
+  }
+
+  // 2. Authoritative verification: Must have valid signed token with campus BSSID OR valid normalized BSSID
+  const hasValidToken = tokenCheck.valid && isAuthorizedCampusBssid(tokenCheck.payload?.bssid);
+  const hasValidBssid = isAuthorizedCampusBssid(normReqBssid);
+
+  if (!hasValidToken && !hasValidBssid) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "WIFI_VERIFICATION_REQUIRED",
+      message: CAMPUS_WIFI_FAILURE_MESSAGE,
+    });
   }
 
   // =========================================================================

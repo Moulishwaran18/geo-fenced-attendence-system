@@ -13,6 +13,46 @@
 export const AUTHORIZED_SSID_KEYWORD = "sona" as const;
 export const AUTHORIZED_SSIDS = ["SONA-WIFI"] as const;
 
+export const REGISTERED_CAMPUS_BSSID = "B0:1F:8C:29:6B:30" as const;
+export const CAMPUS_WIFI_FAILURE_MESSAGE =
+  "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi." as const;
+
+/**
+ * Normalizes BSSID string:
+ * - Trims whitespace and removes outer quotes
+ * - Replaces hyphens with colons
+ * - Converts to UPPERCASE
+ */
+export function normalizeBssid(bssid?: string | null | undefined): string {
+  if (!bssid || typeof bssid !== "string") return "";
+  return bssid.trim().replace(/^["']|["']$/g, "").replace(/-/g, ":").toUpperCase();
+}
+
+/**
+ * Authoritative Campus BSSID validation function:
+ * 1. Normalizes connected BSSID and registered campus BSSID to UPPERCASE.
+ * 2. Rejects empty, null, undefined, unavailable, or dummy/redacted values (02:00:00:00:00:00, 00:00:00:00:00:00).
+ * 3. Compares strictly against registered campus BSSID: B0:1F:8C:29:6B:30.
+ */
+export function isAuthorizedCampusBssid(bssid?: string | null | undefined): boolean {
+  const clean = normalizeBssid(bssid);
+  if (!clean) return false;
+  if (
+    clean === "02:00:00:00:00:00" ||
+    clean === "00:00:00:00:00:00" ||
+    clean === "UNKNOWN" ||
+    clean === "BSSID_UNAVAILABLE" ||
+    clean === "NULL"
+  ) {
+    return false;
+  }
+  // Validate standard 6-octet MAC format
+  if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(clean)) {
+    return false;
+  }
+  return clean === REGISTERED_CAMPUS_BSSID.toUpperCase();
+}
+
 /**
  * Authoritative Wi-Fi SSID validation function:
  * - Accepts SSID if it contains 'sona' (case-insensitive)
@@ -41,6 +81,8 @@ export interface NetworkFingerprintPayload {
   connected?: boolean | null | undefined;
   state?: "connected" | "disconnected" | "unknown" | undefined;
   ssid?: string | null | undefined;
+  bssid?: string | null | undefined;
+  bssidVerified?: boolean | null | undefined;
   permissionGranted?: boolean | null | undefined;
   locationEnabled?: boolean | null | undefined;
   permissionDenied?: boolean | null | undefined;
@@ -71,6 +113,8 @@ export interface WifiVerificationResult {
   verificationMethod?: "NATIVE_BRIDGE" | "SERVER_EGRESS_IP" | "SIMULATION";
   verifiedIp?: string;
   ssid?: string | undefined;
+  bssid?: string | undefined;
+  bssidVerified?: boolean | undefined;
   errorCode?: string;
   ipv4?: string | undefined;
   gateway?: string | undefined;
@@ -107,6 +151,8 @@ export interface WifiStatus {
   ipv4Subnet?: string | undefined;
   isNativeBridge?: boolean | undefined;
   ssid?: string | undefined;
+  bssid?: string | undefined;
+  bssidVerified?: boolean | undefined;
   auth?: string | undefined;
   signal?: string | undefined;
   band?: string | undefined;
@@ -116,6 +162,7 @@ export interface WifiStatus {
   hasFineLocation?: boolean | undefined;
   hasNearbyWifi?: boolean | undefined;
   ssidSource?: string | undefined;
+  bssidSource?: string | undefined;
 }
 
 /**
@@ -201,55 +248,65 @@ export function verifyCampusWifi(payload: NetworkFingerprintPayload): WifiVerifi
     };
   }
 
-  // 6. Authoritative SSID evaluation
+  // 6. Authoritative Campus BSSID evaluation (Requirements 1-6)
+  const rawBssid = normalizeBssid(payload.bssid);
   const rawSsid = payload.ssid ? String(payload.ssid).trim().replace(/^["']|["']$/g, "") : "";
 
-  if (isAuthorizedSonaSsid(rawSsid)) {
-    return {
-      authorized: true,
-      networkType: "SONA",
-      networkSummary: rawSsid,
-      network: rawSsid,
-      reason: `Authorized Wi-Fi network detected: ${rawSsid}`,
-      stage: "VERIFIED",
-      verificationMethod: payload.isNativeBridge ? "NATIVE_BRIDGE" : "SIMULATION",
-      timestamp,
-      ssid: rawSsid,
-    };
-  }
-
-  // 7. Missing, masked, or unavailable SSID
+  // 6A. BSSID unavailable, hidden, restricted, or dummy/redacted MAC address
   if (
-    !rawSsid ||
-    rawSsid === "SSID_UNAVAILABLE" ||
-    rawSsid === "<unknown ssid>" ||
-    rawSsid === "0x" ||
-    rawSsid === "Unavailable"
+    !rawBssid ||
+    rawBssid === "02:00:00:00:00:00" ||
+    rawBssid === "00:00:00:00:00:00" ||
+    rawBssid === "BSSID_UNAVAILABLE" ||
+    rawBssid === "UNKNOWN" ||
+    rawBssid === "NULL"
   ) {
     return {
       authorized: false,
       networkType: "UNAVAILABLE",
-      networkSummary: "SSID Unavailable",
-      network: "SSID Unavailable",
-      reason: "Unable to detect Wi-Fi network name. Please ensure location services are enabled and permissions are granted.",
+      networkSummary: "BSSID Unavailable",
+      network: "BSSID Unavailable",
+      reason:
+        "Campus Wi-Fi verification failed: Access point BSSID is unavailable or restricted. Please ensure location services are enabled and permissions are granted.",
       stage: "UNABLE_TO_VERIFY",
-      errorCode: "SSID_UNAVAILABLE",
+      errorCode: "BSSID_UNAVAILABLE",
       timestamp,
-      ssid: undefined,
+      ssid: rawSsid || undefined,
+      bssid: undefined,
+      bssidVerified: false,
     };
   }
 
-  // 8. Rejection: SSID does not contain "sona"
+  // 6B. BSSID Mismatch: Compare normalized uppercase BSSID against B0:1F:8C:29:6B:30
+  if (!isAuthorizedCampusBssid(rawBssid)) {
+    return {
+      authorized: false,
+      networkType: "UNAUTHORIZED",
+      networkSummary: rawBssid,
+      network: rawBssid,
+      reason: CAMPUS_WIFI_FAILURE_MESSAGE,
+      stage: "FINGERPRINT_CHECK_FAILED",
+      errorCode: "UNAUTHORIZED_BSSID",
+      timestamp,
+      ssid: rawSsid || undefined,
+      bssid: rawBssid,
+      bssidVerified: false,
+    };
+  }
+
+  // 6C. Exact BSSID Match: Verification PASSED
   return {
-    authorized: false,
-    networkType: "UNAUTHORIZED",
-    networkSummary: rawSsid,
-    network: rawSsid,
-    reason: `Unauthorized Wi-Fi network (${rawSsid}). Network name must contain "sona" (case-insensitive).`,
-    stage: "FINGERPRINT_CHECK_FAILED",
-    errorCode: "UNAUTHORIZED_SSID",
+    authorized: true,
+    networkType: "SONA",
+    networkSummary: rawSsid ? `${rawSsid} (${rawBssid})` : rawBssid,
+    network: rawSsid || rawBssid,
+    reason: `Campus Wi-Fi access point verified: ${rawBssid}`,
+    stage: "VERIFIED",
+    verificationMethod: payload.isNativeBridge ? "NATIVE_BRIDGE" : "SIMULATION",
     timestamp,
-    ssid: rawSsid,
+    ssid: rawSsid || undefined,
+    bssid: rawBssid,
+    bssidVerified: true,
   };
 }
 

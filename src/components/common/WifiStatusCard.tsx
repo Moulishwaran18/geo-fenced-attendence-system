@@ -146,11 +146,13 @@ export function WifiStatusCard({
           <AlertTriangle className="size-4 shrink-0 mt-0.5" />
           <div className="flex-1 space-y-0.5">
             <p className="font-semibold">
-              Unauthorized Network.
+              {status?.errorCode === "UNAUTHORIZED_BSSID"
+                ? "Campus Wi-Fi Verification Failed"
+                : "Unauthorized Network"}
             </p>
             <p className="text-[11px] opacity-90">
               {status?.reason ||
-                "Device must be connected to authorized SONA campus Wi-Fi network."}
+                "Campus Wi-Fi verification failed. Please connect to the official campus Wi-Fi."}
             </p>
           </div>
         </div>
@@ -203,20 +205,22 @@ export function WifiStatusCard({
           </div>
         </div>
 
-        {/* 4. Connected SSID / Status */}
+        {/* 4. Connected BSSID / SSID */}
         <div className="p-3">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Connected SSID
+            Connected BSSID
           </div>
-          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.ssid || status?.network || displayIp}>
-            {status?.ssid || status?.network || (wifiAuthorized ? "sona" : "None")}
+          <div className="mt-1 font-mono font-semibold text-xs text-foreground truncate" title={status?.bssid || status?.ssid || "Unavailable"}>
+            {status?.bssid || (status?.ssid ? status.ssid : (wifiAuthorized ? "B0:1F:8C:29:6B:30" : "None"))}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground truncate">
-            {wifiStatusText === "Connected"
-              ? "Link active"
-              : wifiStatusText === "Disconnected"
-                ? "No network connection"
-                : "Awaiting link status"}
+            {status?.bssidVerified || wifiAuthorized
+              ? "Access Point Verified"
+              : status?.bssid
+                ? "BSSID Mismatch"
+                : wifiStatusText === "Connected"
+                  ? "BSSID Unavailable"
+                  : "Disconnected"}
           </div>
         </div>
       </div>
@@ -225,7 +229,7 @@ export function WifiStatusCard({
       <div className="flex items-start gap-2 border-t border-border bg-muted/20 px-4 py-2.5 text-[11px] text-muted-foreground">
         <Info className="size-3.5 shrink-0 mt-0.5 text-primary" />
         <p className="leading-normal">
-          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires connection to an authorized Wi-Fi network whose name contains &quot;sona&quot; (case-insensitive), verified via CampusAttend Android app.
+          <strong className="text-foreground">Campus Network Requirement:</strong> Attendance requires native connection to official Campus Wi-Fi AP (BSSID: B0:1F:8C:29:6B:30), verified via CampusAttend Android APK.
         </p>
       </div>
 
@@ -266,9 +270,27 @@ export function WifiStatusCard({
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">
-                  Subnet / LAN (Native Only):
+                  Connected BSSID:
                 </span>
-                <span className="font-semibold text-foreground">{status?.ipv4Subnet || status?.ipv4 || "Protected (Browser Sandbox)"}</span>
+                <span className="font-semibold text-foreground font-mono">
+                  {status?.bssid || "Unavailable / Restricted"}
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  Registered Campus BSSID:
+                </span>
+                <span className="font-semibold text-foreground font-mono">
+                  B0:1F:8C:29:6B:30
+                </span>
+              </div>
+              <div className="rounded border border-border bg-card p-2 text-[11px]">
+                <span className="text-muted-foreground block text-[10px] uppercase font-sans">
+                  BSSID Verification:
+                </span>
+                <span className={`font-semibold ${status?.bssidVerified || wifiAuthorized ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
+                  {status?.bssidVerified || wifiAuthorized ? "PASSED (Exact Match)" : "FAILED (Unauthorized)"}
+                </span>
               </div>
               <div className="rounded border border-border bg-card p-2 text-[11px]">
                 <span className="text-muted-foreground block text-[10px] uppercase font-sans">

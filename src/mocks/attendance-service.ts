@@ -205,6 +205,8 @@ export interface MarkAttendanceParams {
   accuracy?: number | null | undefined;
   verification?: "Verified" | "Failed" | "Manual" | undefined;
   networkAuthToken?: string | undefined;
+  bssid?: string | undefined;
+  bssidSource?: string | undefined;
   faceVerified?: boolean | undefined;
   recognizedStaffCode?: string | undefined;
   faceMatchDistance?: number | undefined;
@@ -234,6 +236,9 @@ export async function markAttendance(params?: MarkAttendanceParams): Promise<Att
   }
   if (params?.networkAuthToken) {
     reqHeaders["x-network-auth-token"] = params.networkAuthToken;
+  }
+  if (params?.bssid) {
+    reqHeaders["x-wifi-bssid"] = params.bssid;
   }
 
   const payload: any = { ...(params || {}) };

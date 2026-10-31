@@ -263,7 +263,7 @@ class BiometricKeystoreManager(private val context: Context) {
                 .setUserAuthenticationRequired(false)
                 .build()
 
-            kpg.init(strongBoxSpec)
+            kpg.initialize(strongBoxSpec)
             kpg.generateKeyPair()
             keyGenSuccess = true
             isStrongBox = true
@@ -288,7 +288,7 @@ class BiometricKeystoreManager(private val context: Context) {
                 .setUserAuthenticationRequired(false)
                 .build()
 
-            kpg.init(teeSpec)
+            kpg.initialize(teeSpec)
             kpg.generateKeyPair()
             securityLevel = "TEE"
         }
