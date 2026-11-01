@@ -6,6 +6,16 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import {
+  getReminderSettings,
+  saveReminderSettings,
+  getReminderDashboardStats,
+  getRecentReminderLogs,
+  getRecentExecutionRuns,
+  executeAttendanceReminders,
+  registerStaffDeviceToken,
+  type ReminderSettings,
+} from "../../../src/server/attendance-reminder-service";
 async function revokeDevice(params: {
   deviceId: string;
   reason: string;
@@ -546,6 +556,12 @@ export default async function handler(req: any, res?: any) {
   }
 
   let pathname = req.url || "/api/admin/staff";
+  let searchParams = new URL(pathname, "https://localhost").searchParams;
+  try {
+    const parsedUrl = new URL(pathname, "https://localhost");
+    pathname = parsedUrl.pathname;
+    searchParams = parsedUrl.searchParams;
+  } catch {}
   try {
     pathname = new URL(pathname, "https://localhost").pathname;
   } catch {}
@@ -663,6 +679,38 @@ export default async function handler(req: any, res?: any) {
       return sendJsonResponse(res, 200, { success: true, message: "Logged out successfully" });
     }
 
+    // 0C. /api/cron/attendance-reminders — Scheduled Cron Execution
+    if (
+      pathname.includes("/cron/attendance-reminders") ||
+      pathname.includes("/cron") ||
+      (pathname.includes("/attendance-reminders") &&
+        (req.headers?.["x-vercel-cron"] === "1" || searchParams.get("action") === "cron"))
+    ) {
+      const cronSecret = process.env["CRON_SECRET"] || process.env["CAMPUS_CRON_SECRET"];
+      const vercelCronHeader = req.headers?.["x-vercel-cron"];
+      const authHeader = req.headers?.["authorization"] || "";
+      let authorized = false;
+      if (cronSecret && authHeader === `Bearer ${cronSecret}`) authorized = true;
+      if (!cronSecret && vercelCronHeader === "1") authorized = true;
+      if (vercelCronHeader === "1") authorized = true;
+      if (process.env["NODE_ENV"] !== "production" && process.env["VERCEL"] !== "1") authorized = true;
+      if (!authorized) {
+        return sendJsonResponse(res, 401, { success: false, error: "UNAUTHORIZED_CRON" });
+      }
+      const slot: "first" | "second" =
+        searchParams.get("slot") === "2" || searchParams.get("slot") === "second" ? "second" : "first";
+      const isForce = !!searchParams.get("force");
+      const result = await executeAttendanceReminders(
+        isForce ? { forceSlot: slot, isManual: false } : { isManual: false },
+      );
+      return sendJsonResponse(res, 200, {
+        success: true,
+        action: "cron-execution",
+        timestamp: new Date().toISOString(),
+        result,
+      });
+    }
+
     // Protected Route Authorization Guard
     const isInternalTest = !req.headers || req.headers["x-internal-test"] === "true";
     if (!isInternalTest) {
@@ -680,6 +728,91 @@ export default async function handler(req: any, res?: any) {
                 ? `Unauthorized: ${authCheck.error}`
                 : "Unauthorized: Administrator authentication required to access this endpoint.",
         });
+      }
+    }
+
+    // --- Attendance Reminders Admin Settings & Control: /api/admin/attendance-reminders ---
+    if (pathname.includes("/attendance-reminders") || pathname.includes("/reminders")) {
+      if (method === "GET") {
+        const settings = await getReminderSettings();
+        const stats = await getReminderDashboardStats();
+        const recentLogs = await getRecentReminderLogs(50);
+        const recentRuns = await getRecentExecutionRuns(20);
+        return sendJsonResponse(res, 200, {
+          success: true,
+          settings,
+          stats,
+          recentLogs,
+          recentRuns,
+        });
+      }
+      if (method === "POST") {
+        const b = (body || {}) as any;
+        const action = (b.action || searchParams.get("action") || "").toLowerCase();
+        if (action === "save-settings" || action === "save" || !action) {
+          const { enabled, reminder_time_1, reminder_time_2_enabled, reminder_time_2, applicable_days, timezone, title, message } = b;
+          const updates: Partial<ReminderSettings> = {};
+          if (typeof enabled === "boolean") updates.enabled = enabled;
+          if (typeof reminder_time_1 === "string" && reminder_time_1.includes(":")) updates.reminder_time_1 = reminder_time_1.trim();
+          if (typeof reminder_time_2_enabled === "boolean") updates.reminder_time_2_enabled = reminder_time_2_enabled;
+          if (typeof reminder_time_2 === "string" && reminder_time_2.includes(":")) updates.reminder_time_2 = reminder_time_2.trim();
+          if (Array.isArray(applicable_days)) updates.applicable_days = applicable_days;
+          if (typeof timezone === "string") updates.timezone = timezone.trim();
+          if (typeof title === "string" && title.trim()) updates.title = title.trim();
+          if (typeof message === "string" && message.trim()) updates.message = message.trim();
+          const saved = await saveReminderSettings(updates, "admin");
+          const stats = await getReminderDashboardStats();
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: "Attendance reminder settings saved successfully.",
+            settings: saved,
+            stats,
+          });
+        }
+        if (action === "test-notification" || action === "test") {
+          const testStaffCode = (body?.staffCode || "SCT-001").trim().toUpperCase();
+          const testDeviceId = body?.deviceId || "DEV_ADMIN_TEST";
+          const testToken = body?.token || `TEST_DEVICE_TOKEN_${testStaffCode}`;
+          await registerStaffDeviceToken({
+            staffCode: testStaffCode,
+            deviceId: testDeviceId,
+            token: testToken,
+            platform: "android",
+          });
+          const testResult = await executeAttendanceReminders({
+            forceSlot: "test",
+            testStaffCode,
+            isManual: true,
+          });
+          const stats = await getReminderDashboardStats();
+          const recentLogs = await getRecentReminderLogs(50);
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: `Test notification sent to staff ${testStaffCode}.`,
+            result: testResult,
+            stats,
+            recentLogs,
+          });
+        }
+        if (action === "run-now" || action === "run") {
+          const slot = body?.slot === "second" ? "second" : "first";
+          const runResult = await executeAttendanceReminders({
+            forceSlot: slot,
+            isManual: true,
+          });
+          const stats = await getReminderDashboardStats();
+          const recentLogs = await getRecentReminderLogs(50);
+          const recentRuns = await getRecentExecutionRuns(20);
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: `Manual scheduler run completed for ${slot} reminder slot.`,
+            result: runResult,
+            stats,
+            recentLogs,
+            recentRuns,
+          });
+        }
+        return sendJsonResponse(res, 400, { success: false, error: "INVALID_ACTION" });
       }
     }
 

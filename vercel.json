@@ -47,6 +47,14 @@
     {
       "source": "/api/staff/face/:subpath+",
       "destination": "/api/staff/face"
+    },
+    {
+      "source": "/api/admin/attendance-reminders",
+      "destination": "/api/admin/staff"
+    },
+    {
+      "source": "/api/cron/attendance-reminders",
+      "destination": "/api/admin/staff"
     }
   ]
 }
