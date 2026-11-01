@@ -1615,6 +1615,15 @@ export default async function handler(req: any, res?: any) {
     });
   }
 
+  const rawMatchMargin = body.matchMargin !== undefined ? body.matchMargin : (body.margin !== undefined ? body.margin : body.faceMatchMargin);
+  if (rawMatchMargin !== undefined && (typeof rawMatchMargin !== "number" || rawMatchMargin < 0.08)) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "FACE_MARGIN_INSUFFICIENT",
+      message: `Attendance rejected: Biometric match margin (${Number(rawMatchMargin).toFixed(4)}) is below required threshold (0.08).`,
+    });
+  }
+
   if (body.antiSpoofScore !== undefined && (typeof body.antiSpoofScore !== "number" || body.antiSpoofScore < 0.50)) {
     return sendJsonResponse(res, 403, {
       success: false,
@@ -1827,24 +1836,12 @@ export default async function handler(req: any, res?: any) {
         tamper_status: "VERIFIED",
       };
 
-      let targetTable = "attendance_record";
-      let { data: insData, error: insErr } = await supabase
+      const targetTable = "attendance_record";
+      const { data: insData, error: insErr } = await supabase
         .from(targetTable)
         .insert(recordPayload)
         .select()
         .single();
-
-      if (insErr && (insErr.code === "42P01" || insErr.message?.includes("does not exist") || insErr.message?.includes("not found"))) {
-        // Fallback to table spelled 'attendence_record' as requested
-        targetTable = "attendence_record";
-        const retryRes = await supabase
-          .from(targetTable)
-          .insert(recordPayload)
-          .select()
-          .single();
-        insData = retryRes.data;
-        insErr = retryRes.error;
-      }
 
       if (insErr) {
         if (insErr.code === "23505" || insErr.message.includes("unique")) {
@@ -1886,8 +1883,12 @@ export default async function handler(req: any, res?: any) {
   }
 
   if (!insertedId) {
-    insertedId = crypto.randomUUID();
-    console.warn("[attendance] Issued synthetic attendance receipt ID:", insertedId);
+    console.error("[attendance] Database persistence failed: No record ID returned from public.attendance_record.");
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "DATABASE_PERSISTENCE_FAILED",
+      message: "Database insertion failed: Record could not be persisted to public.attendance_record.",
+    });
   }
 
   // 5. Append tamper-evident audit log to public.security_events

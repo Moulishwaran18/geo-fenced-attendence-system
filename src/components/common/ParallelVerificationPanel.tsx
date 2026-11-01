@@ -28,6 +28,8 @@ interface ParallelVerificationPanelProps {
   onRecheckWifi?: () => void;
   onRefreshGps?: () => void;
   onScanFace?: () => void;
+  onMarkAttendance?: () => void;
+  isMarkingAttendance?: boolean;
   isWifiChecking?: boolean;
   isGpsChecking?: boolean;
   className?: string;
@@ -79,6 +81,8 @@ export function ParallelVerificationPanel({
   onRecheckWifi,
   onRefreshGps,
   onScanFace,
+  onMarkAttendance,
+  isMarkingAttendance = false,
   isWifiChecking = false,
   isGpsChecking = false,
   className,
@@ -326,6 +330,28 @@ export function ParallelVerificationPanel({
             </p>
           </div>
         </div>
+
+        {overallDecision === "ALLOWED" && onMarkAttendance && (
+          <div className="mt-3 pt-2.5 border-t border-emerald-500/20">
+            <Button
+              id="parallel-panel-mark-attendance-btn"
+              size="sm"
+              className="w-full h-8 text-xs font-semibold gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
+              disabled={isMarkingAttendance || isVerifying}
+              onClick={onMarkAttendance}
+            >
+              {isMarkingAttendance ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" /> Recording Attendance…
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="size-3.5" /> Mark Attendance
+                </>
+              )}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

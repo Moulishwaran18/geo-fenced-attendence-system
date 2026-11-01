@@ -210,6 +210,7 @@ export interface MarkAttendanceParams {
   faceVerified?: boolean | undefined;
   recognizedStaffCode?: string | undefined;
   faceMatchDistance?: number | undefined;
+  matchMargin?: number | undefined;
   livenessPassed?: boolean | undefined;
   antiSpoofScore?: number | undefined;
   auditId?: string | undefined;
