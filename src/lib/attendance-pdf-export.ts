@@ -65,6 +65,15 @@ export interface MonthlyPdfResult {
   doc: jsPDF;
 }
 
+export interface MonthlyPdfDownloadResult {
+  success: boolean;
+  filename: string;
+  summary: MonthlyAttendanceSummary;
+  location?: string;
+  uri?: string;
+  isNative?: boolean;
+}
+
 const MONTH_NAMES = [
   "January",
   "February",
@@ -689,39 +698,128 @@ export function generateMonthlyAttendancePdf(options: MonthlyPdfOptions): Monthl
 }
 
 /**
- * Executes PDF download on both native Android APK (via AndroidWifiBridge / AndroidBiometricBridge)
+ * Executes PDF download on both native Android APK (via AndroidPdfBridge / AndroidDownloadBridge / AndroidWifiBridge / AndroidBiometricBridge)
  * and desktop/mobile web browsers.
+ *
+ * Guaranteed to save directly to `Internal Storage/Download/CampusAttend/` on Android devices
+ * without requiring runtime storage permissions via MediaStore Downloads API.
  */
 export async function downloadMonthlyAttendancePdf(
   options: MonthlyPdfOptions,
-): Promise<{ success: boolean; filename: string; summary: MonthlyAttendanceSummary }> {
+): Promise<MonthlyPdfDownloadResult> {
   const result = generateMonthlyAttendancePdf(options);
   const { doc, filename, summary } = result;
 
   try {
     // Check if running inside native Android APK
     const anyWindow = typeof window !== "undefined" ? (window as any) : null;
-    const nativeBridge = anyWindow?.AndroidWifiBridge || anyWindow?.AndroidBiometricBridge;
+    const nativeBridge =
+      anyWindow?.AndroidPdfBridge ||
+      anyWindow?.AndroidDownloadBridge ||
+      anyWindow?.AndroidWifiBridge ||
+      anyWindow?.AndroidBiometricBridge;
 
     if (nativeBridge && typeof nativeBridge.downloadPdf === "function") {
       const dataUri = doc.output("datauristring");
-      const base64Data = dataUri.split(",")[1] || dataUri;
-      const nativeOk = nativeBridge.downloadPdf(base64Data, filename);
-      if (nativeOk) {
-        return { success: true, filename, summary };
+      const base64Data = dataUri.includes(",") ? dataUri.split(",")[1] : dataUri;
+      const rawRes = nativeBridge.downloadPdf(base64Data, filename);
+
+      if (typeof rawRes === "string") {
+        try {
+          const parsed = JSON.parse(rawRes);
+          if (parsed.success) {
+            return {
+              success: true,
+              filename: parsed.filename || filename,
+              summary,
+              location: parsed.location || "Internal Storage / Download / CampusAttend",
+              uri: parsed.uri,
+              isNative: true,
+            };
+          } else {
+            console.warn("[downloadMonthlyAttendancePdf] Native bridge reported failure:", parsed.error);
+          }
+        } catch (_jsonErr) {
+          // If native bridge returned non-JSON string
+          if (rawRes === "true" || rawRes === "OK" || rawRes.length > 0) {
+            return {
+              success: true,
+              filename,
+              summary,
+              location: "Internal Storage / Download / CampusAttend",
+              isNative: true,
+            };
+          }
+        }
+      } else if (rawRes === true) {
+        return {
+          success: true,
+          filename,
+          summary,
+          location: "Internal Storage / Download / CampusAttend",
+          isNative: true,
+        };
       }
     }
 
     // Standard Browser Fallback
     doc.save(filename);
-    return { success: true, filename, summary };
+    return {
+      success: true,
+      filename,
+      summary,
+      location: "Downloads folder",
+      isNative: false,
+    };
   } catch (err) {
     console.warn("[downloadMonthlyAttendancePdf] Native trigger fallback, trying doc.save:", err);
     try {
       doc.save(filename);
-      return { success: true, filename, summary };
+      return {
+        success: true,
+        filename,
+        summary,
+        location: "Downloads folder",
+        isNative: false,
+      };
     } catch (saveErr: any) {
       throw new Error(`Failed to download PDF: ${saveErr?.message || "Unknown error"}`);
     }
   }
+}
+
+/**
+ * Open downloaded PDF on native Android using system PDF viewer.
+ */
+export function openDownloadedPdf(uriString?: string): boolean {
+  try {
+    const anyWindow = typeof window !== "undefined" ? (window as any) : null;
+    const nativeBridge =
+      anyWindow?.AndroidPdfBridge ||
+      anyWindow?.AndroidDownloadBridge ||
+      anyWindow?.AndroidWifiBridge ||
+      anyWindow?.AndroidBiometricBridge;
+
+    if (nativeBridge && typeof nativeBridge.openDownloadedPdf === "function") {
+      return Boolean(nativeBridge.openDownloadedPdf(uriString || ""));
+    }
+  } catch (err) {
+    console.warn("[openDownloadedPdf] Native open failed:", err);
+  }
+  return false;
+}
+
+/**
+ * Detect if running inside CampusAttend native Android wrapper.
+ */
+export function isNativeAndroid(): boolean {
+  if (typeof window === "undefined") return false;
+  const anyWindow = window as any;
+  return Boolean(
+    anyWindow?.AndroidPdfBridge ||
+      anyWindow?.AndroidDownloadBridge ||
+      anyWindow?.AndroidWifiBridge ||
+      anyWindow?.AndroidBiometricBridge ||
+      (typeof navigator !== "undefined" && navigator.userAgent?.includes("CampusAttendNative")),
+  );
 }

@@ -38,6 +38,9 @@ import {
   downloadMonthlyAttendancePdf,
   computeMonthlyAttendanceRows,
   formatIndiaDateTime,
+  openDownloadedPdf,
+  isNativeAndroid,
+  type MonthlyPdfDownloadResult,
 } from "@/lib/attendance-pdf-export";
 
 export const Route = createFileRoute("/export-monthly-pdf")({
@@ -91,6 +94,7 @@ function ExportMonthlyPdfPage() {
     activeStaff?.staffId || currentStaff.staffId || "SCT-2417",
   );
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [downloadResult, setDownloadResult] = useState<MonthlyPdfDownloadResult | null>(null);
 
   // If user is ordinary staff, enforce their own staff code strictly
   const effectiveStaffCode = isAdmin
@@ -151,9 +155,25 @@ function ExportMonthlyPdfPage() {
         currentDate: today,
       });
 
-      toast.success("Attendance Report Downloaded", {
-        description: `${res.filename} (${res.summary.formattedPercentage} attendance)`,
-      });
+      setDownloadResult(res);
+
+      if (res.isNative) {
+        toast.success("PDF Saved to Downloads", {
+          description: `${res.filename} saved to ${res.location || "Internal Storage/Download/CampusAttend"}`,
+          action: {
+            label: "Open PDF",
+            onClick: () => {
+              openDownloadedPdf(res.uri);
+            },
+          },
+          duration: 9000,
+        });
+      } else {
+        toast.success("Attendance Report Downloaded", {
+          description: `${res.filename} (${res.summary.formattedPercentage} attendance)`,
+          duration: 5000,
+        });
+      }
     } catch (err: any) {
       console.error("[ExportMonthlyPdfPage] Download error:", err);
       toast.error("Failed to generate PDF", {
@@ -182,6 +202,7 @@ function ExportMonthlyPdfPage() {
               Refresh
             </Button>
             <Button
+              id="top-download-pdf-btn"
               size="sm"
               onClick={handleDownloadPdf}
               disabled={isDownloading || isLoading}
@@ -288,6 +309,7 @@ function ExportMonthlyPdfPage() {
             {/* Quick Action Button */}
             <div className="shrink-0 pt-1">
               <Button
+                id="selection-card-download-pdf-btn"
                 onClick={handleDownloadPdf}
                 disabled={isDownloading || isLoading}
                 className="w-full sm:w-auto h-9 gap-2 font-medium"
@@ -328,6 +350,45 @@ function ExportMonthlyPdfPage() {
             </div>
           </div>
         </div>
+
+        {/* Download Success Banner */}
+        {downloadResult && (
+          <div className="flex flex-col gap-3 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 sm:flex-row sm:items-center sm:justify-between text-sm shadow-sm animate-in fade-in-50">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="size-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+              <div>
+                <p className="font-semibold text-emerald-950 dark:text-emerald-200">
+                  Monthly Attendance PDF Saved Successfully
+                </p>
+                <p className="text-xs text-emerald-800 dark:text-emerald-300 font-mono mt-0.5 break-all">
+                  {downloadResult.filename}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Location: <span className="font-semibold text-foreground">{downloadResult.location || "Internal Storage/Download/CampusAttend"}</span>
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => openDownloadedPdf(downloadResult.uri)}
+                className="gap-1.5 border-emerald-600/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-500/15"
+              >
+                <FileText className="size-3.5" />
+                Open PDF
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setDownloadResult(null)}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Monthly Summary Statistics Cards */}
         <Section title="Monthly Statistics Summary">
@@ -444,13 +505,23 @@ function ExportMonthlyPdfPage() {
               </div>
               <div className="flex items-center gap-2">
                 <Button
+                  id="table-footer-download-pdf-btn"
                   size="sm"
                   onClick={handleDownloadPdf}
                   disabled={isDownloading || isLoading}
                   className="gap-1.5"
                 >
-                  <FileDown className="size-3.5" />
-                  Save & Download PDF
+                  {isDownloading ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" />
+                      Saving PDF…
+                    </>
+                  ) : (
+                    <>
+                      <FileDown className="size-3.5" />
+                      Save & Download PDF
+                    </>
+                  )}
                 </Button>
               </div>
             </div>

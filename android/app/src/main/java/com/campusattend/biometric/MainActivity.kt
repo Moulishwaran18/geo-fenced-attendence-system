@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.campusattend.biometric.bridge.AndroidBiometricBridge
+import com.campusattend.biometric.bridge.AndroidPdfBridge
 import com.campusattend.biometric.location.AndroidLocationBridge
 import com.campusattend.biometric.location.NativeLocationService
 import com.campusattend.biometric.wifi.AndroidWifiBridge
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var wifiBridge: AndroidWifiBridge? = null
     private var biometricBridge: AndroidBiometricBridge? = null
+    private var pdfBridge: AndroidPdfBridge? = null
 
     private val defaultServerUrl = "https://geo-fenced-attendence-system.vercel.app/mark-attendance"
 
@@ -242,14 +244,27 @@ class MainActivity : ComponentActivity() {
 
                                         setDownloadListener { url, _, _, mimetype, _ ->
                                             try {
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                                                    if (!mimetype.isNullOrBlank()) {
-                                                        setDataAndType(Uri.parse(url), mimetype)
+                                                if (url.startsWith("data:application/pdf;base64,")) {
+                                                    val base64Data = url.substringAfter("base64,")
+                                                    AndroidPdfBridge.executeSavePdf(
+                                                        ctx,
+                                                        base64Data,
+                                                        "CampusAttend_Monthly_Attendance_Report.pdf",
+                                                        this@MainActivity,
+                                                        openAfterSave = true
+                                                    )
+                                                } else {
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                                        if (!mimetype.isNullOrBlank()) {
+                                                            setDataAndType(Uri.parse(url), mimetype)
+                                                        }
+                                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                                     }
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    ctx.startActivity(intent)
                                                 }
-                                                ctx.startActivity(intent)
-                                            } catch (_: Exception) {}
+                                            } catch (e: Exception) {
+                                                Log.e("MainActivity", "DownloadListener error: ${e.message}", e)
+                                            }
                                         }
 
                                         webChromeClient = object : WebChromeClient() {
@@ -386,6 +401,16 @@ class MainActivity : ComponentActivity() {
                                         addJavascriptInterface(
                                             bioBridge,
                                             "AndroidBiometricBridge"
+                                        )
+                                        val pBridge = AndroidPdfBridge(ctx, this@MainActivity, this)
+                                        pdfBridge = pBridge
+                                        addJavascriptInterface(
+                                            pBridge,
+                                            "AndroidPdfBridge"
+                                        )
+                                        addJavascriptInterface(
+                                            pBridge,
+                                            "AndroidDownloadBridge"
                                         )
 
                                         loadUrl(currentUrl)
