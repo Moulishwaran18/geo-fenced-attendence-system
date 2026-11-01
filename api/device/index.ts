@@ -514,7 +514,7 @@ export default async function handler(req: any, res?: any) {
   const determinedAction =
     actionParam ||
     (body?.action ? String(body.action).toLowerCase() : "") ||
-    (pathname.includes("challenge") ? "challenge" : pathname.includes("register") ? "register" : pathname.includes("status") ? "status" : "");
+    (pathname.includes("challenge") ? "challenge" : pathname.includes("register") ? "register" : pathname.includes("push-token") ? "push-token" : pathname.includes("status") ? "status" : "");
 
   let supabase: any = null;
   try {
@@ -739,6 +739,51 @@ export default async function handler(req: any, res?: any) {
         status: regResult.device.status,
       },
     });
+  }
+
+  // 4. ACTION: PUSH-TOKEN (POST /api/device/push-token or action=push-token)
+  if (determinedAction === "push-token" || (method === "POST" && pathname.endsWith("/push-token"))) {
+    const caller = await authenticateCaller();
+    if (!caller.authenticated || !caller.staffCode) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: "UNAUTHORIZED",
+        message: "Staff authentication required to register push token.",
+      });
+    }
+
+    const token = (body?.token || body?.pushToken || "").trim();
+    const deviceId = (body?.deviceId || caller.staffCode).trim();
+    if (!token) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "MISSING_PUSH_TOKEN",
+        message: "Device push token is required.",
+      });
+    }
+
+    try {
+      const { registerStaffDeviceToken } = await import("../../src/server/attendance-reminder-service");
+      const record = await registerStaffDeviceToken({
+        staffCode: caller.staffCode,
+        deviceId,
+        token,
+        platform: body?.platform || "android",
+      });
+
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message: "Push token registered successfully for staff reminders.",
+        deviceToken: record,
+      });
+    } catch (tokenErr: any) {
+      console.warn("[api/device] Push token registration warning:", tokenErr);
+      return sendJsonResponse(res, 500, {
+        success: false,
+        error: "REGISTRATION_FAILED",
+        message: tokenErr?.message || "Failed to register push token.",
+      });
+    }
   }
 
   // 3. ACTION: STATUS (GET /api/device/status)

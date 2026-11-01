@@ -3,6 +3,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Activity,
   AlertTriangle,
+  Bell,
+  BellOff,
   Bluetooth,
   Camera,
   Check,
@@ -67,6 +69,7 @@ import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time
 import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
+import { usePushNotifications } from "@/hooks/use-push-notifications";
 import {
   isAuthorizedCampusBssid,
   REGISTERED_CAMPUS_BSSID,
@@ -165,6 +168,7 @@ function MarkAttendancePage() {
     : geofence.isInside === true;
 
   const loggedInStaff = useActiveStaff();
+  const pushNotif = usePushNotifications();
 
   // One Faculty–One Registered Device state
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusResponse | null>(null);
@@ -1072,6 +1076,26 @@ function MarkAttendancePage() {
               action={
                 <Button variant="outline" size="sm" asChild className="mt-2 h-8 gap-1.5">
                   <Link to="/">Sign In with Staff ID</Link>
+                </Button>
+              }
+            />
+          )}
+
+          {/* Notification Permission Warning Banner (Android 13+) */}
+          {pushNotif.isNative && pushNotif.permissionStatus === "denied" && (
+            <AlertBanner
+              tone="warning"
+              icon={BellOff}
+              title="Notification Permission Disabled"
+              description="Attendance reminder notifications are blocked on this device. Enable notification permissions in Android Settings to receive scheduled daily attendance alerts."
+              action={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void pushNotif.requestPermission()}
+                  className="mt-2 h-8 gap-1.5"
+                >
+                  <Bell className="size-3.5" /> Enable Notifications
                 </Button>
               }
             />

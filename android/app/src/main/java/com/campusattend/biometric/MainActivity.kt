@@ -61,6 +61,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.campusattend.biometric.bridge.AndroidBiometricBridge
 import com.campusattend.biometric.bridge.AndroidPdfBridge
+import com.campusattend.biometric.notification.AndroidNotificationBridge
+import com.campusattend.biometric.notification.AndroidNotificationManager
 import com.campusattend.biometric.location.AndroidLocationBridge
 import com.campusattend.biometric.location.NativeLocationService
 import com.campusattend.biometric.wifi.AndroidWifiBridge
@@ -73,6 +75,7 @@ class MainActivity : ComponentActivity() {
     private var wifiBridge: AndroidWifiBridge? = null
     private var biometricBridge: AndroidBiometricBridge? = null
     private var pdfBridge: AndroidPdfBridge? = null
+    private var notificationBridge: AndroidNotificationBridge? = null
 
     private val defaultServerUrl = "https://geo-fenced-attendence-system.vercel.app/mark-attendance"
 
@@ -119,6 +122,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WebView.setWebContentsDebuggingEnabled(true)
         locationService = NativeLocationService(this)
+        AndroidNotificationManager.createNotificationChannel(this)
 
         checkAndRequestPermissions()
 
@@ -127,6 +131,13 @@ class MainActivity : ComponentActivity() {
         if (initialUrl.contains("localhost") || initialUrl.contains("10.186.230")) {
             initialUrl = defaultServerUrl
             prefs.edit().putString("server_url", defaultServerUrl).apply()
+        }
+
+        // Handle direct deep link / notification click navigation
+        val notifDest = intent?.getStringExtra("destination")
+        if (!notifDest.isNullOrBlank()) {
+            val base = defaultServerUrl.substringBefore("/mark-attendance")
+            initialUrl = if (notifDest.startsWith("http")) notifDest else "$base${if (notifDest.startsWith("/")) notifDest else "/$notifDest"}"
         }
 
         setContent {
@@ -412,6 +423,12 @@ class MainActivity : ComponentActivity() {
                                             pBridge,
                                             "AndroidDownloadBridge"
                                         )
+                                        val notifBridge = AndroidNotificationBridge(ctx, this@MainActivity, this)
+                                        notificationBridge = notifBridge
+                                        addJavascriptInterface(
+                                            notifBridge,
+                                            "AndroidNotificationBridge"
+                                        )
 
                                         loadUrl(currentUrl)
                                     }
@@ -489,6 +506,7 @@ class MainActivity : ComponentActivity() {
         )
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
         val needed = permissions.filter {
@@ -497,6 +515,19 @@ class MainActivity : ComponentActivity() {
 
         if (needed.isNotEmpty()) {
             requestPermissionLauncher.launch(needed.toTypedArray())
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val dest = intent?.getStringExtra("destination")
+        if (!dest.isNullOrBlank()) {
+            val base = defaultServerUrl.substringBefore("/mark-attendance")
+            val targetUrl = if (dest.startsWith("http")) dest else "$base${if (dest.startsWith("/")) dest else "/$dest"}"
+            runOnUiThread {
+                webView?.loadUrl(targetUrl)
+            }
         }
     }
 

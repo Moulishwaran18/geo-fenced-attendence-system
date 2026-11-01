@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/cron/attendance-reminders",
+      "schedule": "*/15 * * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/geofence",

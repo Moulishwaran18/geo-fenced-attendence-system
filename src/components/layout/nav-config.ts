@@ -1,5 +1,6 @@
 import {
   Activity,
+  BellRing,
   CalendarCheck,
   ClipboardList,
   FileBarChart,
@@ -38,6 +39,7 @@ export const adminNav: NavItem[] = [
   { label: "Dashboard", to: "/admin", icon: LayoutDashboard },
   { label: "Staff", to: "/admin/staff", icon: Users },
   { label: "Attendance", to: "/admin/attendance", icon: ClipboardList },
+  { label: "Attendance Reminder Settings", to: "/admin/attendance-reminders", icon: BellRing },
   { label: "Export Monthly Attendance PDF", to: "/export-monthly-pdf", icon: FileDown },
   { label: "Campus Map", to: "/admin/campus-map", icon: Map },
   { label: "Coordinate Points", to: "/admin/coordinate-points", icon: MapPin },

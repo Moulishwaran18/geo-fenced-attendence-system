@@ -20,6 +20,7 @@ import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
+import { Route as AdminAttendanceRemindersRouteImport } from './routes/admin.attendance-reminders'
 import { Route as AdminAuditLogsRouteImport } from './routes/admin.audit-logs'
 import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
 import { Route as AdminCoordinatePointsRouteImport } from './routes/admin.coordinate-points'
@@ -82,6 +83,12 @@ const AdminAttendanceRoute = AdminAttendanceRouteImport.update({
   path: '/admin/attendance',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminAttendanceRemindersRoute =
+  AdminAttendanceRemindersRouteImport.update({
+    id: '/admin/attendance-reminders',
+    path: '/admin/attendance-reminders',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AdminAuditLogsRoute = AdminAuditLogsRouteImport.update({
   id: '/admin/audit-logs',
   path: '/admin/audit-logs',
@@ -124,6 +131,7 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/attendance-reminders': typeof AdminAttendanceRemindersRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
@@ -143,6 +151,7 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/attendance-reminders': typeof AdminAttendanceRemindersRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
@@ -163,6 +172,7 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/attendance-reminders': typeof AdminAttendanceRemindersRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
   '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/attendance-reminders'
     | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/coordinate-points'
@@ -203,6 +214,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/attendance-reminders'
     | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/coordinate-points'
@@ -222,6 +234,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/attendance-reminders'
     | '/admin/audit-logs'
     | '/admin/campus-map'
     | '/admin/coordinate-points'
@@ -242,6 +255,7 @@ export interface RootRouteChildren {
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
   AdminAttendanceRoute: typeof AdminAttendanceRoute
+  AdminAttendanceRemindersRoute: typeof AdminAttendanceRemindersRoute
   AdminAuditLogsRoute: typeof AdminAuditLogsRoute
   AdminCampusMapRoute: typeof AdminCampusMapRoute
   AdminCoordinatePointsRoute: typeof AdminCoordinatePointsRoute
@@ -330,6 +344,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAttendanceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/attendance-reminders': {
+      id: '/admin/attendance-reminders'
+      path: '/admin/attendance-reminders'
+      fullPath: '/admin/attendance-reminders'
+      preLoaderRoute: typeof AdminAttendanceRemindersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/audit-logs': {
       id: '/admin/audit-logs'
       path: '/admin/audit-logs'
@@ -386,6 +407,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
   AdminAttendanceRoute: AdminAttendanceRoute,
+  AdminAttendanceRemindersRoute: AdminAttendanceRemindersRoute,
   AdminAuditLogsRoute: AdminAuditLogsRoute,
   AdminCampusMapRoute: AdminCampusMapRoute,
   AdminCoordinatePointsRoute: AdminCoordinatePointsRoute,
