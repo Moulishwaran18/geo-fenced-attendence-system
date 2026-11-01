@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as ExportMonthlyPdfRouteImport } from './routes/export-monthly-pdf'
 import { Route as FaceEnrollmentRouteImport } from './routes/face-enrollment'
 import { Route as GroundTruthRouteImport } from './routes/ground-truth'
 import { Route as HistoryRouteImport } from './routes/history'
@@ -34,6 +35,11 @@ const IndexRoute = IndexRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ExportMonthlyPdfRoute = ExportMonthlyPdfRouteImport.update({
+  id: '/export-monthly-pdf',
+  path: '/export-monthly-pdf',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FaceEnrollmentRoute = FaceEnrollmentRouteImport.update({
@@ -110,6 +116,7 @@ const AdminStaffRoute = AdminStaffRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/export-monthly-pdf': typeof ExportMonthlyPdfRoute
   '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
@@ -128,6 +135,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/export-monthly-pdf': typeof ExportMonthlyPdfRoute
   '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
@@ -147,6 +155,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/export-monthly-pdf': typeof ExportMonthlyPdfRoute
   '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
@@ -167,6 +176,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/dashboard'
+    | '/export-monthly-pdf'
     | '/face-enrollment'
     | '/ground-truth'
     | '/history'
@@ -185,6 +195,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/dashboard'
+    | '/export-monthly-pdf'
     | '/face-enrollment'
     | '/ground-truth'
     | '/history'
@@ -203,6 +214,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/dashboard'
+    | '/export-monthly-pdf'
     | '/face-enrollment'
     | '/ground-truth'
     | '/history'
@@ -222,6 +234,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
+  ExportMonthlyPdfRoute: typeof ExportMonthlyPdfRoute
   FaceEnrollmentRoute: typeof FaceEnrollmentRoute
   GroundTruthRoute: typeof GroundTruthRoute
   HistoryRoute: typeof HistoryRoute
@@ -252,6 +265,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/export-monthly-pdf': {
+      id: '/export-monthly-pdf'
+      path: '/export-monthly-pdf'
+      fullPath: '/export-monthly-pdf'
+      preLoaderRoute: typeof ExportMonthlyPdfRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/face-enrollment': {
@@ -358,6 +378,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
+  ExportMonthlyPdfRoute: ExportMonthlyPdfRoute,
   FaceEnrollmentRoute: FaceEnrollmentRoute,
   GroundTruthRoute: GroundTruthRoute,
   HistoryRoute: HistoryRoute,

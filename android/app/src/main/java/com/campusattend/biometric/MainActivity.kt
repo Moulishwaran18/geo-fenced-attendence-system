@@ -240,6 +240,18 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
 
+                                        setDownloadListener { url, _, _, mimetype, _ ->
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                                    if (!mimetype.isNullOrBlank()) {
+                                                        setDataAndType(Uri.parse(url), mimetype)
+                                                    }
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                ctx.startActivity(intent)
+                                            } catch (_: Exception) {}
+                                        }
+
                                         webChromeClient = object : WebChromeClient() {
                                             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                                                 val msg = consoleMessage?.message() ?: ""

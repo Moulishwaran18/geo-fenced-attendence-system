@@ -20,6 +20,12 @@ import android.webkit.WebView
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import com.campusattend.biometric.MainActivity
+import android.content.ContentValues
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Base64
+import android.widget.Toast
+import java.io.File
 import android.text.format.Formatter
 import org.json.JSONArray
 import org.json.JSONObject
@@ -1030,6 +1036,68 @@ class AndroidWifiBridge(
     }
 
     fun sanitizeBssid(raw: String): String = sanitizeBssidStatic(raw)
+
+    /**
+     * Authoritative PDF Downloader for Android WebView.
+     * Writes the generated PDF bytes to the device's public Downloads directory
+     * and prompts the system viewer to open the report.
+     */
+    @JavascriptInterface
+    fun downloadPdf(base64Data: String, filename: String): Boolean {
+        return try {
+            val cleanBase64 = if (base64Data.contains(",")) {
+                base64Data.substringAfter(",")
+            } else {
+                base64Data
+            }.trim()
+            val bytes = Base64.decode(cleanBase64, Base64.DEFAULT)
+            val cleanName = if (filename.isBlank()) "CampusAttend_Monthly_Attendance_Report.pdf" else filename.trim()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Modern Android 10+ (API 29-35): Use MediaStore.Downloads
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, cleanName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        out.write(bytes)
+                        out.flush()
+                    }
+                    (context as? MainActivity)?.runOnUiThread {
+                        Toast.makeText(context, "Downloaded to Downloads: $cleanName", Toast.LENGTH_LONG).show()
+                        try {
+                            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, "application/pdf")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(viewIntent)
+                        } catch (_: Exception) {}
+                    }
+                    return true
+                }
+            }
+
+            // Fallback for older Android or direct file system write
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!downloadsDir.exists()) {
+                downloadsDir.mkdirs()
+            }
+            val file = File(downloadsDir, cleanName)
+            file.writeBytes(bytes)
+            (context as? MainActivity)?.runOnUiThread {
+                Toast.makeText(context, "Saved: ${file.name}", Toast.LENGTH_LONG).show()
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("AndroidWifiBridge", "downloadPdf error: ${e.message}", e)
+            false
+        }
+    }
 
     /**
      * Legacy method for full telemetry inspection.
