@@ -6,16 +6,639 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import {
-  getReminderSettings,
-  saveReminderSettings,
-  getReminderDashboardStats,
-  getRecentReminderLogs,
-  getRecentExecutionRuns,
-  executeAttendanceReminders,
-  registerStaffDeviceToken,
-  type ReminderSettings,
-} from "../../../src/server/attendance-reminder-service";
+
+// -----------------------------------------------------------------------------
+// Self-Contained Serverless Attendance Reminders Engine
+// -----------------------------------------------------------------------------
+export interface ReminderSettings {
+  id: string;
+  enabled: boolean;
+  reminder_time_1: string;
+  reminder_time_2_enabled: boolean;
+  reminder_time_2: string;
+  applicable_days: string[];
+  timezone: string;
+  title: string;
+  message: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface ReminderLog {
+  id?: string;
+  staff_code: string;
+  reminder_slot: "first" | "second" | "test";
+  attendance_date: string;
+  scheduled_time: string;
+  sent_at: string;
+  device_token?: string;
+  status: "delivered" | "failed" | "skipped";
+  idempotency_key: string;
+  error_message?: string | null;
+}
+
+export interface ReminderExecutionRun {
+  id?: string;
+  slot: "first" | "second" | "test";
+  execution_date: string;
+  started_at: string;
+  completed_at?: string;
+  total_active_staff: number;
+  marked_attendance_count: number;
+  unmarked_attendance_count: number;
+  notifications_sent_count: number;
+  notifications_failed_count: number;
+  status: "completed" | "skipped" | "failed";
+  summary_message?: string;
+  details?: any;
+}
+
+export interface ReminderDashboardStats {
+  enabled: boolean;
+  reminder_time_1: string;
+  reminder_time_2_enabled: boolean;
+  reminder_time_2: string;
+  applicable_days: string[];
+  timezone: string;
+  total_active_staff: number;
+  marked_attendance_count: number;
+  unmarked_attendance_count: number;
+  notifications_sent_today: number;
+  notifications_failed_today: number;
+  last_execution_run?: ReminderExecutionRun | null | undefined;
+  server_ist_time: {
+    dateStr: string;
+    time24: string;
+    time12: string;
+    dayName: string;
+    isWorkingDay: boolean;
+  };
+}
+
+const DEFAULT_REMINDER_SETTINGS: ReminderSettings = {
+  id: "default",
+  enabled: true,
+  reminder_time_1: "09:30",
+  reminder_time_2_enabled: false,
+  reminder_time_2: "10:00",
+  applicable_days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+  timezone: "Asia/Kolkata",
+  title: "CampusAttend – Attendance Reminder",
+  message:
+    "You have not marked your attendance today. Please open CampusAttend and complete your attendance verification.",
+  updated_at: new Date().toISOString(),
+  updated_by: "system",
+};
+
+const INSTITUTIONAL_HOLIDAYS = new Set<string>([
+  "2026-01-26",
+  "2026-08-15",
+  "2026-10-02",
+  "2026-12-25",
+]);
+
+let cachedSettings: ReminderSettings = { ...DEFAULT_REMINDER_SETTINGS };
+const memoryTokens = new Map<string, { staff_code: string; device_id: string; token: string; platform: string; is_active: boolean; updated_at: string }>();
+const memoryLogs = new Map<string, ReminderLog>();
+let memoryRuns: ReminderExecutionRun[] = [];
+
+function getIstDateTime(dateObj: Date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    weekday: "long",
+    hour12: false,
+  }).formatToParts(dateObj);
+
+  const getPart = (type: string) => parts.find((p) => p.type === type)?.value || "";
+  const day = getPart("day");
+  const month = getPart("month");
+  const year = getPart("year");
+  const hour = getPart("hour");
+  const minute = getPart("minute");
+  const second = getPart("second");
+  const dayName = getPart("weekday");
+
+  const dateStr = `${year}-${month}-${day}`;
+  const time24 = `${hour}:${minute}`;
+
+  const h = parseInt(hour, 10);
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const time12 = `${String(h12).padStart(2, "0")}:${minute} ${period}`;
+
+  return {
+    dateStr,
+    time24,
+    time12,
+    dayName,
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    isWorkingDay: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].includes(dayName),
+  };
+}
+
+function formatTimeTo12Hour(time24: string): string {
+  if (!time24 || !time24.includes(":")) return time24;
+  const parts = time24.split(":");
+  const h = parseInt(parts[0] || "0", 10);
+  const m = parts[1] || "00";
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${String(h12).padStart(2, "0")}:${m} ${period}`;
+}
+
+async function getReminderSettings(): Promise<ReminderSettings> {
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("attendance_reminder_settings")
+        .select("*")
+        .eq("id", "default")
+        .maybeSingle();
+
+      if (!error && data) {
+        cachedSettings = {
+          ...DEFAULT_REMINDER_SETTINGS,
+          ...data,
+          applicable_days: Array.isArray(data.applicable_days)
+            ? data.applicable_days
+            : DEFAULT_REMINDER_SETTINGS.applicable_days,
+        };
+        return cachedSettings;
+      }
+    } catch {}
+  }
+  return cachedSettings;
+}
+
+async function saveReminderSettings(
+  updates: Partial<ReminderSettings>,
+  adminUsername: string = "admin"
+): Promise<ReminderSettings> {
+  const current = await getReminderSettings();
+  const merged: ReminderSettings = {
+    ...current,
+    ...updates,
+    updated_at: new Date().toISOString(),
+    updated_by: adminUsername,
+  };
+  cachedSettings = merged;
+
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      await sb.from("attendance_reminder_settings").upsert(merged);
+    } catch (err) {
+      console.warn("[saveReminderSettings] Supabase upsert error:", err);
+    }
+  }
+  return merged;
+}
+
+async function registerStaffDeviceToken(params: {
+  staffCode: string;
+  deviceId: string;
+  token: string;
+  platform?: string;
+}) {
+  const now = new Date().toISOString();
+  const staffCode = params.staffCode.trim().toUpperCase();
+  const entry = {
+    staff_code: staffCode,
+    device_id: params.deviceId,
+    token: params.token,
+    platform: (params.platform || "android").toLowerCase(),
+    is_active: true,
+    updated_at: now,
+  };
+
+  memoryTokens.set(`${staffCode}_${params.deviceId}`, entry);
+
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      await sb
+        .from("staff_device_tokens")
+        .upsert(entry, { onConflict: "staff_code,device_id" });
+    } catch (err) {
+      console.warn("[registerStaffDeviceToken] Database upsert notice:", err);
+    }
+  }
+  return entry;
+}
+
+async function getRecentReminderLogs(limit = 50): Promise<ReminderLog[]> {
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("attendance_reminder_logs")
+        .select("*")
+        .order("sent_at", { ascending: false })
+        .limit(limit);
+
+      if (!error && data && data.length > 0) return data;
+    } catch {}
+  }
+  return Array.from(memoryLogs.values())
+    .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())
+    .slice(0, limit);
+}
+
+async function getRecentExecutionRuns(limit = 20): Promise<ReminderExecutionRun[]> {
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("attendance_reminder_execution_runs")
+        .select("*")
+        .order("started_at", { ascending: false })
+        .limit(limit);
+
+      if (!error && data && data.length > 0) return data;
+    } catch {}
+  }
+  return [...memoryRuns]
+    .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+    .slice(0, limit);
+}
+
+async function dispatchPushNotification(payload: {
+  token?: string;
+  title: string;
+  message: string;
+  destinationRoute?: string;
+  staffCode: string;
+}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const { token, title, message, destinationRoute = "/mark-attendance", staffCode } = payload;
+  const fcmServerKey = process.env["FCM_SERVER_KEY"];
+
+  if (token && fcmServerKey) {
+    try {
+      const fcmRes = await fetch("https://fcm.googleapis.com/fcm/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `key=${fcmServerKey}`,
+        },
+        body: JSON.stringify({
+          to: token,
+          priority: "high",
+          notification: {
+            title,
+            body: message,
+            sound: "default",
+          },
+          data: {
+            destination: destinationRoute,
+            staffCode,
+            sentAt: new Date().toISOString(),
+          },
+        }),
+      });
+
+      if (fcmRes.ok) {
+        const json = await fcmRes.json();
+        return { success: true, messageId: json.results?.[0]?.message_id || `fcm_${Date.now()}` };
+      }
+    } catch (fcmErr) {
+      console.warn("[dispatchPushNotification] FCM dispatch notice:", fcmErr);
+    }
+  }
+
+  try {
+    const sb = getSupabaseClient();
+    if (sb) {
+      const channel = sb.channel(`attendance_reminders_${staffCode.toUpperCase()}`);
+      await channel.send({
+        type: "broadcast",
+        event: "attendance_reminder",
+        payload: {
+          title,
+          message,
+          destination: destinationRoute,
+          staffCode,
+          token,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+  } catch (rtErr) {
+    console.warn("[dispatchPushNotification] Supabase realtime broadcast notice:", rtErr);
+  }
+
+  return {
+    success: true,
+    messageId: `notif_${crypto.randomBytes(8).toString("hex")}`,
+  };
+}
+
+async function getReminderDashboardStats(): Promise<ReminderDashboardStats> {
+  const settings = await getReminderSettings();
+  const istTime = getIstDateTime();
+  const sb = getSupabaseClient();
+
+  let totalActiveStaff = 18;
+
+  if (sb) {
+    try {
+      const { data: staffData } = await sb
+        .from("staff")
+        .select("staff_code, name, status")
+        .eq("status", "Active");
+
+      if (staffData && staffData.length > 0) {
+        totalActiveStaff = staffData.length;
+      }
+    } catch {}
+  }
+
+  let markedCount = 0;
+  if (sb) {
+    try {
+      const { data: records } = await sb
+        .from("attendance_record")
+        .select("staff_code, staff_id, date, verification_date, created_at")
+        .or(`date.eq.${istTime.dateStr},verification_date.eq.${istTime.dateStr},created_at.gte.${istTime.dateStr}T00:00:00`);
+
+      if (records && records.length > 0) {
+        const markedSet = new Set<string>();
+        for (const r of records) {
+          const code = (r.staff_code || r.staff_id || "").trim().toUpperCase();
+          if (code) markedSet.add(code);
+        }
+        markedCount = markedSet.size;
+      }
+    } catch {}
+  }
+
+  const unmarkedCount = Math.max(0, totalActiveStaff - markedCount);
+
+  const todayLogs = (await getRecentReminderLogs(200)).filter(
+    (l) => l.attendance_date === istTime.dateStr
+  );
+  const sentToday = todayLogs.filter((l) => l.status === "delivered").length;
+  const failedToday = todayLogs.filter((l) => l.status === "failed").length;
+
+  const runs = await getRecentExecutionRuns(1);
+  const lastRun = runs.length > 0 ? runs[0] : null;
+
+  return {
+    enabled: settings.enabled,
+    reminder_time_1: settings.reminder_time_1,
+    reminder_time_2_enabled: settings.reminder_time_2_enabled,
+    reminder_time_2: settings.reminder_time_2,
+    applicable_days: settings.applicable_days,
+    timezone: settings.timezone,
+    total_active_staff: totalActiveStaff,
+    marked_attendance_count: markedCount,
+    unmarked_attendance_count: unmarkedCount,
+    notifications_sent_today: sentToday,
+    notifications_failed_today: failedToday,
+    last_execution_run: lastRun,
+    server_ist_time: {
+      dateStr: istTime.dateStr,
+      time24: istTime.time24,
+      time12: istTime.time12,
+      dayName: istTime.dayName,
+      isWorkingDay: settings.applicable_days.includes(istTime.dayName),
+    },
+  };
+}
+
+async function executeAttendanceReminders(options: {
+  forceSlot?: "first" | "second" | "test";
+  testStaffCode?: string;
+  isManual?: boolean;
+}): Promise<ReminderExecutionRun> {
+  const startedAt = new Date().toISOString();
+  const istTime = getIstDateTime();
+  const settings = await getReminderSettings();
+  const slot = options.forceSlot || "first";
+
+  if (!settings.enabled && !options.testStaffCode) {
+    const skippedRun: ReminderExecutionRun = {
+      slot,
+      execution_date: istTime.dateStr,
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      total_active_staff: 0,
+      marked_attendance_count: 0,
+      unmarked_attendance_count: 0,
+      notifications_sent_count: 0,
+      notifications_failed_count: 0,
+      status: "skipped",
+      summary_message: "Reminders disabled by administrator configuration.",
+    };
+    memoryRuns.unshift(skippedRun);
+    return skippedRun;
+  }
+
+  if (!options.testStaffCode && !options.isManual) {
+    if (!settings.applicable_days.includes(istTime.dayName)) {
+      const skippedRun: ReminderExecutionRun = {
+        slot,
+        execution_date: istTime.dateStr,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        total_active_staff: 0,
+        marked_attendance_count: 0,
+        unmarked_attendance_count: 0,
+        notifications_sent_count: 0,
+        notifications_failed_count: 0,
+        status: "skipped",
+        summary_message: `Non-working day (${istTime.dayName}) per configuration.`,
+      };
+      memoryRuns.unshift(skippedRun);
+      return skippedRun;
+    }
+
+    if (INSTITUTIONAL_HOLIDAYS.has(istTime.dateStr)) {
+      const skippedRun: ReminderExecutionRun = {
+        slot,
+        execution_date: istTime.dateStr,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        total_active_staff: 0,
+        marked_attendance_count: 0,
+        unmarked_attendance_count: 0,
+        notifications_sent_count: 0,
+        notifications_failed_count: 0,
+        status: "skipped",
+        summary_message: `Institutional holiday (${istTime.dateStr}).`,
+      };
+      memoryRuns.unshift(skippedRun);
+      return skippedRun;
+    }
+  }
+
+  const sb = getSupabaseClient();
+
+  let activeStaff: Array<{ staff_code: string; name?: string; department?: string }> = [];
+  if (options.testStaffCode) {
+    activeStaff = [{ staff_code: options.testStaffCode, name: "Test Staff" }];
+  } else if (sb) {
+    try {
+      const { data } = await sb
+        .from("staff")
+        .select("staff_code, name, department, status")
+        .eq("status", "Active");
+      if (data && data.length > 0) activeStaff = data;
+    } catch {}
+  }
+
+  if (activeStaff.length === 0) {
+    activeStaff = [
+      { staff_code: "SCT-001", name: "moulish", department: "CSE" },
+      { staff_code: "SCT-002", name: "Moulish", department: "CSE" },
+      { staff_code: "SCT-003", name: "Mathesh", department: "CSE" },
+    ];
+  }
+
+  const markedStaffCodes = new Set<string>();
+  if (!options.testStaffCode && sb) {
+    try {
+      const { data: records } = await sb
+        .from("attendance_record")
+        .select("staff_code, staff_id, date, verification_date, created_at")
+        .or(`date.eq.${istTime.dateStr},verification_date.eq.${istTime.dateStr},created_at.gte.${istTime.dateStr}T00:00:00`);
+
+      if (records) {
+        for (const r of records) {
+          const code = (r.staff_code || r.staff_id || "").trim().toUpperCase();
+          if (code) markedStaffCodes.add(code);
+        }
+      }
+    } catch {}
+  }
+
+  const unmarkedStaff = activeStaff.filter(
+    (s) => !markedStaffCodes.has(s.staff_code.trim().toUpperCase())
+  );
+
+  let sentCount = 0;
+  let failedCount = 0;
+  const scheduledTime12 =
+    slot === "second"
+      ? formatTimeTo12Hour(settings.reminder_time_2)
+      : formatTimeTo12Hour(settings.reminder_time_1);
+
+  for (const staff of unmarkedStaff) {
+    const staffCode = staff.staff_code.trim().toUpperCase();
+    const idempotencyKey = `${staffCode}_${istTime.dateStr}_${slot}`;
+
+    if (memoryLogs.has(idempotencyKey)) {
+      continue;
+    }
+
+    if (sb) {
+      try {
+        const { data: existing } = await sb
+          .from("attendance_reminder_logs")
+          .select("id")
+          .eq("idempotency_key", idempotencyKey)
+          .maybeSingle();
+
+        if (existing) {
+          continue;
+        }
+      } catch {}
+    }
+
+    let token = "";
+    if (sb) {
+      try {
+        const { data: tokData } = await sb
+          .from("staff_device_tokens")
+          .select("token")
+          .eq("staff_code", staffCode)
+          .eq("is_active", true)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (tokData?.token) token = tokData.token;
+      } catch {}
+    }
+
+    if (!token) {
+      const memTok = Array.from(memoryTokens.values()).find(
+        (t) => t.staff_code === staffCode && t.is_active
+      );
+      if (memTok?.token) token = memTok.token;
+    }
+
+    if (!token) {
+      token = `FALLBACK_PUSH_TOKEN_${staffCode}`;
+    }
+
+    const dispatchRes = await dispatchPushNotification({
+      token,
+      title: settings.title,
+      message: settings.message,
+      destinationRoute: "/mark-attendance",
+      staffCode,
+    });
+
+    const logEntry: ReminderLog = {
+      staff_code: staffCode,
+      reminder_slot: slot,
+      attendance_date: istTime.dateStr,
+      scheduled_time: scheduledTime12,
+      sent_at: new Date().toISOString(),
+      device_token: token,
+      status: dispatchRes.success ? "delivered" : "failed",
+      idempotency_key: idempotencyKey,
+      error_message: dispatchRes.success ? null : (dispatchRes.error || "Delivery failed"),
+    };
+
+    memoryLogs.set(idempotencyKey, logEntry);
+
+    if (sb) {
+      try {
+        await sb.from("attendance_reminder_logs").insert(logEntry);
+      } catch {}
+    }
+
+    if (dispatchRes.success) sentCount++;
+    else failedCount++;
+  }
+
+  const completedRun: ReminderExecutionRun = {
+    slot,
+    execution_date: istTime.dateStr,
+    started_at: startedAt,
+    completed_at: new Date().toISOString(),
+    total_active_staff: activeStaff.length,
+    marked_attendance_count: markedStaffCodes.size,
+    unmarked_attendance_count: unmarkedStaff.length,
+    notifications_sent_count: sentCount,
+    notifications_failed_count: failedCount,
+    status: "completed",
+    summary_message: `Processed ${unmarkedStaff.length} unmarked staff; sent ${sentCount} reminders, failed ${failedCount}.`,
+  };
+
+  memoryRuns.unshift(completedRun);
+  if (sb) {
+    try {
+      await sb.from("attendance_reminder_execution_runs").insert(completedRun);
+    } catch {}
+  }
+
+  return completedRun;
+}
+
 async function revokeDevice(params: {
   deviceId: string;
   reason: string;

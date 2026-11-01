@@ -763,13 +763,42 @@ export default async function handler(req: any, res?: any) {
     }
 
     try {
-      const { registerStaffDeviceToken } = await import("../../src/server/attendance-reminder-service");
-      const record = await registerStaffDeviceToken({
-        staffCode: caller.staffCode,
-        deviceId,
+      const now = new Date().toISOString();
+      const platform = (body?.platform || "android").toLowerCase();
+      let record: any = {
+        staff_code: caller.staffCode,
+        device_id: deviceId,
         token,
-        platform: body?.platform || "android",
-      });
+        platform,
+        is_active: true,
+        updated_at: now,
+      };
+
+      if (supabase) {
+        try {
+          const { data: inserted, error: insertErr } = await supabase
+            .from("staff_device_tokens")
+            .upsert(
+              {
+                staff_code: caller.staffCode,
+                device_id: deviceId,
+                token,
+                platform,
+                is_active: true,
+                updated_at: now,
+              },
+              { onConflict: "staff_code,device_id" },
+            )
+            .select("*")
+            .maybeSingle();
+
+          if (!insertErr && inserted) {
+            record = inserted;
+          }
+        } catch (dbErr) {
+          console.warn("[api/device] Push token database fallback:", dbErr);
+        }
+      }
 
       return sendJsonResponse(res, 200, {
         success: true,
