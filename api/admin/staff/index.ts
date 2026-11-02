@@ -178,6 +178,33 @@ async function getReminderSettings(): Promise<ReminderSettings> {
         return cachedSettings;
       }
     } catch {}
+
+    try {
+      const { data: secSet } = await sb
+        .from("security_events")
+        .select("device")
+        .eq("event", "REMINDER_SETTINGS")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (secSet?.device) {
+        const p = JSON.parse(secSet.device);
+        if (p) {
+          cachedSettings = {
+            ...DEFAULT_REMINDER_SETTINGS,
+            enabled: p.en !== undefined ? !!p.en : DEFAULT_REMINDER_SETTINGS.enabled,
+            reminder_time_1: p.t1 || DEFAULT_REMINDER_SETTINGS.reminder_time_1,
+            reminder_time_2_enabled: p.t2en !== undefined ? !!p.t2en : DEFAULT_REMINDER_SETTINGS.reminder_time_2_enabled,
+            reminder_time_2: p.t2 || DEFAULT_REMINDER_SETTINGS.reminder_time_2,
+            applicable_days: Array.isArray(p.days) ? p.days : DEFAULT_REMINDER_SETTINGS.applicable_days,
+            timezone: p.tz || DEFAULT_REMINDER_SETTINGS.timezone,
+            updated_by: p.by || "admin",
+          };
+          return cachedSettings;
+        }
+      }
+    } catch {}
   }
   return cachedSettings;
 }
@@ -201,6 +228,29 @@ async function saveReminderSettings(
       await sb.from("attendance_reminder_settings").upsert(merged);
     } catch (err) {
       console.warn("[saveReminderSettings] Supabase upsert error:", err);
+    }
+
+    try {
+      const compact = JSON.stringify({
+        en: !!merged.enabled,
+        t1: merged.reminder_time_1,
+        t2en: !!merged.reminder_time_2_enabled,
+        t2: merged.reminder_time_2,
+        days: merged.applicable_days,
+        tz: merged.timezone,
+        by: merged.updated_by,
+      });
+      await sb.from("security_events").insert({
+        time: new Date().toISOString(),
+        staff: "ADMIN",
+        event: "REMINDER_SETTINGS",
+        device: compact,
+        location: "Settings",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch (secErr) {
+      console.warn("[saveReminderSettings] security_events insert error:", secErr);
     }
   }
   return merged;
@@ -234,6 +284,25 @@ async function registerStaffDeviceToken(params: {
     } catch (err) {
       console.warn("[registerStaffDeviceToken] Database upsert notice:", err);
     }
+
+    try {
+      const tokenPayload = JSON.stringify({
+        tok: params.token.slice(0, 180),
+        dev: params.deviceId.slice(0, 40),
+        plt: (params.platform || "android").slice(0, 15),
+      });
+      await sb.from("security_events").insert({
+        time: now,
+        staff: staffCode,
+        event: "PUSH_TOKEN",
+        device: tokenPayload,
+        location: "Device",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch (secErr) {
+      console.warn("[registerStaffDeviceToken] security_events notice:", secErr);
+    }
   }
   return entry;
 }
@@ -249,6 +318,32 @@ async function getRecentReminderLogs(limit = 50): Promise<ReminderLog[]> {
         .limit(limit);
 
       if (!error && data && data.length > 0) return data;
+    } catch {}
+
+    try {
+      const { data: secLogs } = await sb
+        .from("security_events")
+        .select("staff, device, created_at, time")
+        .eq("event", "REMINDER_LOG")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (secLogs && secLogs.length > 0) {
+        return secLogs.map((sl: any) => {
+          let p: any = {};
+          try { p = JSON.parse(sl.device); } catch {}
+          return {
+            staff_code: sl.staff,
+            reminder_slot: p.slot || "test",
+            attendance_date: p.date || (sl.time ? sl.time.split("T")[0] : ""),
+            scheduled_time: p.time || "",
+            sent_at: sl.time || sl.created_at,
+            status: p.stat || "delivered",
+            idempotency_key: p.key || `sec_${sl.staff}_${sl.created_at}`,
+            error_message: p.err || null,
+          };
+        });
+      }
     } catch {}
   }
   return Array.from(memoryLogs.values())
@@ -619,6 +714,25 @@ async function executeAttendanceReminders(options: {
       if (memTok?.token) token = memTok.token;
     }
 
+    if (!token && sb) {
+      try {
+        const { data: secRow } = await sb
+          .from("security_events")
+          .select("device")
+          .ilike("staff", staffCode)
+          .eq("event", "PUSH_TOKEN")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (secRow?.device) {
+          try {
+            const p = JSON.parse(secRow.device);
+            if (p?.tok) token = p.tok;
+          } catch {}
+        }
+      } catch {}
+    }
+
     if (!token) {
       const skippedLog: ReminderLog = {
         staff_code: staffCode,
@@ -633,6 +747,25 @@ async function executeAttendanceReminders(options: {
       memoryLogs.set(idempotencyKey, skippedLog);
       if (sb) {
         try { await sb.from("attendance_reminder_logs").insert(skippedLog); } catch {}
+        try {
+          const compactLog = JSON.stringify({
+            slot,
+            date: istTime.dateStr,
+            time: scheduledTime12,
+            stat: "skipped",
+            key: idempotencyKey,
+            err: "NO_DEVICE_TOKEN",
+          });
+          await sb.from("security_events").insert({
+            time: skippedLog.sent_at,
+            staff: staffCode,
+            event: "REMINDER_LOG",
+            device: compactLog,
+            location: "Scheduler",
+            result: "Allowed",
+            severity: "Low",
+          });
+        } catch {}
       }
       skippedCount++;
       continue;
@@ -663,6 +796,25 @@ async function executeAttendanceReminders(options: {
     if (sb) {
       try {
         await sb.from("attendance_reminder_logs").insert(logEntry);
+      } catch {}
+      try {
+        const compactLog = JSON.stringify({
+          slot,
+          date: istTime.dateStr,
+          time: scheduledTime12,
+          stat: logEntry.status,
+          key: idempotencyKey,
+          err: (logEntry.error_message || "").slice(0, 50),
+        });
+        await sb.from("security_events").insert({
+          time: logEntry.sent_at,
+          staff: staffCode,
+          event: "REMINDER_LOG",
+          device: compactLog,
+          location: "Scheduler",
+          result: "Allowed",
+          severity: logEntry.status === "failed" ? "High" : "Low",
+        });
       } catch {}
     }
 
@@ -1473,6 +1625,33 @@ export default async function handler(req: any, res?: any) {
               }
             }
 
+            try {
+              const { data: secToks } = await sb
+                .from("security_events")
+                .select("staff, device, created_at")
+                .eq("event", "PUSH_TOKEN")
+                .order("created_at", { ascending: false });
+              if (secToks) {
+                for (const st of secToks) {
+                  const sc = (st.staff || "").trim().toUpperCase();
+                  if (sc && !tokenMap.has(sc)) {
+                    try {
+                      const p = JSON.parse(st.device);
+                      if (p?.tok) {
+                        tokenMap.set(sc, {
+                          staff_code: sc,
+                          device_id: p.dev || `DEV_${sc}`,
+                          token: p.tok,
+                          is_active: true,
+                          updated_at: st.created_at,
+                        });
+                      }
+                    } catch {}
+                  }
+                }
+              }
+            } catch {}
+
             if (staffData && staffData.length > 0) {
               staffList = staffData.map((s: any) => {
                 const sc = s.staff_code.trim().toUpperCase();
@@ -1532,7 +1711,7 @@ export default async function handler(req: any, res?: any) {
           });
         }
         if (action === "test-notification" || action === "test") {
-          const testStaffCode = String(body?.staffCode || "").trim().toUpperCase();
+          const testStaffCode = String(body?.staffCode || body?.staffId || "").trim().toUpperCase();
           if (!testStaffCode) {
             return sendJsonResponse(res, 400, {
               success: false,
@@ -1604,6 +1783,28 @@ export default async function handler(req: any, res?: any) {
               activeToken = memTok.token;
               deviceId = memTok.device_id;
             }
+          }
+
+          if (!activeToken && sb) {
+            try {
+              const { data: secRow } = await sb
+                .from("security_events")
+                .select("device")
+                .ilike("staff", testStaffCode)
+                .eq("event", "PUSH_TOKEN")
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (secRow?.device) {
+                try {
+                  const p = JSON.parse(secRow.device);
+                  if (p?.tok) {
+                    activeToken = p.tok;
+                    if (p.dev) deviceId = p.dev;
+                  }
+                } catch {}
+              }
+            } catch {}
           }
 
           const istTime = getIstDateTime();
@@ -1697,6 +1898,25 @@ export default async function handler(req: any, res?: any) {
           memoryLogs.set(logEntry.idempotency_key, logEntry);
           if (sb) {
             try { await sb.from("attendance_reminder_logs").insert(logEntry); } catch {}
+            try {
+              const compactLog = JSON.stringify({
+                slot: "test",
+                date: istTime.dateStr,
+                time: scheduledTime12,
+                stat: logEntry.status,
+                key: logEntry.idempotency_key,
+                err: (logEntry.error_message || "").slice(0, 50),
+              });
+              await sb.from("security_events").insert({
+                time: logEntry.sent_at,
+                staff: testStaffCode,
+                event: "REMINDER_LOG",
+                device: compactLog,
+                location: "Test Notification",
+                result: "Allowed",
+                severity: logEntry.status === "failed" ? "High" : "Low",
+              });
+            } catch {}
           }
 
           const stats = await getReminderDashboardStats();

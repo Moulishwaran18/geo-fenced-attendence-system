@@ -817,6 +817,25 @@ export default async function handler(req: any, res?: any) {
         } catch (dbErr) {
           console.warn("[api/device] Push token database fallback:", dbErr);
         }
+
+        try {
+          const tokenPayload = JSON.stringify({
+            tok: token.slice(0, 180),
+            dev: deviceId.slice(0, 40),
+            plt: platform.slice(0, 15),
+          });
+          await supabase.from("security_events").insert({
+            time: now,
+            staff: targetStaffCode,
+            event: "PUSH_TOKEN",
+            device: tokenPayload,
+            location: "Device",
+            result: "Allowed",
+            severity: "Low",
+          });
+        } catch (secErr) {
+          console.warn("[api/device] Push token security_event fallback:", secErr);
+        }
       }
 
       return sendJsonResponse(res, 200, {
