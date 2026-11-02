@@ -743,17 +743,36 @@ export default async function handler(req: any, res?: any) {
 
   // 4. ACTION: PUSH-TOKEN (POST /api/device/push-token or action=push-token)
   if (determinedAction === "push-token" || (method === "POST" && pathname.endsWith("/push-token"))) {
-    const caller = await authenticateCaller();
-    if (!caller.authenticated || !caller.staffCode) {
+    let caller = await authenticateCaller();
+    let targetStaffCode = caller.staffCode;
+
+    if (!caller.authenticated || !targetStaffCode) {
+      const candidateCode = String(body?.staffCode || body?.staff_code || "").trim().toUpperCase();
+      if (candidateCode && supabase) {
+        try {
+          const { data: sRow } = await supabase
+            .from("staff")
+            .select("id, staff_code, name, active")
+            .ilike("staff_code", candidateCode)
+            .maybeSingle();
+          if (sRow && sRow.active !== false) {
+            targetStaffCode = sRow.staff_code;
+            caller = { authenticated: true, staffCode: sRow.staff_code, staffRow: sRow };
+          }
+        } catch {}
+      }
+    }
+
+    if (!caller.authenticated || !targetStaffCode) {
       return sendJsonResponse(res, 401, {
         success: false,
         error: "UNAUTHORIZED",
-        message: "Staff authentication required to register push token.",
+        message: "Staff authentication or registered staff ID required to register push token.",
       });
     }
 
     const token = (body?.token || body?.pushToken || "").trim();
-    const deviceId = (body?.deviceId || caller.staffCode).trim();
+    const deviceId = (body?.deviceId || targetStaffCode).trim();
     if (!token) {
       return sendJsonResponse(res, 400, {
         success: false,
@@ -766,7 +785,7 @@ export default async function handler(req: any, res?: any) {
       const now = new Date().toISOString();
       const platform = (body?.platform || "android").toLowerCase();
       let record: any = {
-        staff_code: caller.staffCode,
+        staff_code: targetStaffCode,
         device_id: deviceId,
         token,
         platform,
@@ -780,7 +799,7 @@ export default async function handler(req: any, res?: any) {
             .from("staff_device_tokens")
             .upsert(
               {
-                staff_code: caller.staffCode,
+                staff_code: targetStaffCode,
                 device_id: deviceId,
                 token,
                 platform,
