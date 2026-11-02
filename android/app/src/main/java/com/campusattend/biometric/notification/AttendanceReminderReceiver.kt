@@ -47,3 +47,4 @@ class AttendanceReminderReceiver : BroadcastReceiver() {
         private const val TAG = "AttendanceReminderRcvr"
     }
 }
+

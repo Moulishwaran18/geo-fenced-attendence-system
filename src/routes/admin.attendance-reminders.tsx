@@ -15,6 +15,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
+  Activity,
   AlertTriangle,
   Bell,
   BellOff,
@@ -525,6 +526,12 @@ function AdminAttendanceRemindersPage() {
         description="Configure automated server-side attendance reminders, applicable working schedules, and monitor institutional delivery telemetry."
         actions={
           <div className="flex items-center gap-2">
+            <Button asChild variant="outline" size="sm" className="gap-1.5">
+              <Link to="/notification-diagnostic">
+                <Activity className="size-3.5 text-primary" />
+                Push Diagnostics
+              </Link>
+            </Button>
             <Button
               variant="outline"
               size="sm"

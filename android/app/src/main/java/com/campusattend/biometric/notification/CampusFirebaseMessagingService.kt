@@ -13,7 +13,8 @@ class CampusFirebaseMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         Log.i(TAG, "FCM registration token refreshed: $token")
-        AndroidNotificationManager.saveDeviceToken(applicationContext, token)
+        AndroidNotificationManager.saveDeviceToken(applicationContext, token, isRealFcm = true)
+        com.campusattend.biometric.CampusAttendApp.initFirebase(applicationContext)
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
@@ -45,3 +46,4 @@ class CampusFirebaseMessagingService : FirebaseMessagingService() {
         private const val TAG = "CampusFCMService"
     }
 }
+

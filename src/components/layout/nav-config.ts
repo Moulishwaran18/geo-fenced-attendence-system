@@ -32,6 +32,7 @@ export const staffNav: NavItem[] = [
   { label: "Export Monthly Attendance PDF", to: "/export-monthly-pdf", icon: FileDown },
   { label: "Profile", to: "/profile", icon: User },
   { label: "Face Enrollment", to: "/face-enrollment", icon: ScanFace },
+  { label: "Notification Diagnostics", to: "/notification-diagnostic", icon: Activity },
   { label: "Settings", to: "/settings", icon: Settings },
 ];
 
@@ -40,6 +41,7 @@ export const adminNav: NavItem[] = [
   { label: "Staff", to: "/admin/staff", icon: Users },
   { label: "Attendance", to: "/admin/attendance", icon: ClipboardList },
   { label: "Attendance Reminder Settings", to: "/admin/attendance-reminders", icon: BellRing },
+  { label: "Notification Diagnostics", to: "/notification-diagnostic", icon: Activity },
   { label: "Export Monthly Attendance PDF", to: "/export-monthly-pdf", icon: FileDown },
   { label: "Campus Map", to: "/admin/campus-map", icon: Map },
   { label: "Coordinate Points", to: "/admin/coordinate-points", icon: MapPin },

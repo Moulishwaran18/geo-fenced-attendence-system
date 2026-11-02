@@ -16,6 +16,7 @@ import { Route as FaceEnrollmentRouteImport } from './routes/face-enrollment'
 import { Route as GroundTruthRouteImport } from './routes/ground-truth'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as MarkAttendanceRouteImport } from './routes/mark-attendance'
+import { Route as NotificationDiagnosticRouteImport } from './routes/notification-diagnostic'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
@@ -61,6 +62,11 @@ const HistoryRoute = HistoryRouteImport.update({
 const MarkAttendanceRoute = MarkAttendanceRouteImport.update({
   id: '/mark-attendance',
   path: '/mark-attendance',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NotificationDiagnosticRoute = NotificationDiagnosticRouteImport.update({
+  id: '/notification-diagnostic',
+  path: '/notification-diagnostic',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProfileRoute = ProfileRouteImport.update({
@@ -128,6 +134,7 @@ export interface FileRoutesByFullPath {
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/notification-diagnostic': typeof NotificationDiagnosticRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
@@ -148,6 +155,7 @@ export interface FileRoutesByTo {
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/notification-diagnostic': typeof NotificationDiagnosticRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
@@ -169,6 +177,7 @@ export interface FileRoutesById {
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/notification-diagnostic': typeof NotificationDiagnosticRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
@@ -191,6 +200,7 @@ export interface FileRouteTypes {
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
+    | '/notification-diagnostic'
     | '/profile'
     | '/settings'
     | '/admin/attendance'
@@ -211,6 +221,7 @@ export interface FileRouteTypes {
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
+    | '/notification-diagnostic'
     | '/profile'
     | '/settings'
     | '/admin/attendance'
@@ -231,6 +242,7 @@ export interface FileRouteTypes {
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
+    | '/notification-diagnostic'
     | '/profile'
     | '/settings'
     | '/admin/attendance'
@@ -252,6 +264,7 @@ export interface RootRouteChildren {
   GroundTruthRoute: typeof GroundTruthRoute
   HistoryRoute: typeof HistoryRoute
   MarkAttendanceRoute: typeof MarkAttendanceRoute
+  NotificationDiagnosticRoute: typeof NotificationDiagnosticRoute
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
   AdminAttendanceRoute: typeof AdminAttendanceRoute
@@ -314,6 +327,13 @@ declare module '@tanstack/react-router' {
       path: '/mark-attendance'
       fullPath: '/mark-attendance'
       preLoaderRoute: typeof MarkAttendanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notification-diagnostic': {
+      id: '/notification-diagnostic'
+      path: '/notification-diagnostic'
+      fullPath: '/notification-diagnostic'
+      preLoaderRoute: typeof NotificationDiagnosticRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/profile': {
@@ -404,6 +424,7 @@ const rootRouteChildren: RootRouteChildren = {
   GroundTruthRoute: GroundTruthRoute,
   HistoryRoute: HistoryRoute,
   MarkAttendanceRoute: MarkAttendanceRoute,
+  NotificationDiagnosticRoute: NotificationDiagnosticRoute,
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
   AdminAttendanceRoute: AdminAttendanceRoute,

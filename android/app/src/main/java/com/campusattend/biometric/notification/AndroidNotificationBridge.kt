@@ -119,8 +119,81 @@ class AndroidNotificationBridge(
     }
 
     @JavascriptInterface
+    fun testNativeNotificationNow(title: String?, message: String?): Boolean {
+        val cleanTitle = if (title.isNullOrBlank()) "CampusAttend • Real-Time Alert" else title
+        val cleanMsg = if (message.isNullOrBlank()) "Native notification presented directly via AndroidNotificationManager on your device." else message
+        return AndroidNotificationManager.showAttendanceReminder(
+            context,
+            cleanTitle,
+            cleanMsg,
+            "/mark-attendance"
+        )
+    }
+
+    @JavascriptInterface
     fun scheduleTestReminder(delaySeconds: Int): Boolean {
         return AttendanceAlarmScheduler.scheduleTestReminder(context, delaySeconds)
+    }
+
+    @JavascriptInterface
+    fun openBatteryOptimizationSettings(): Boolean {
+        val mainActivity = activity as? MainActivity
+        if (mainActivity != null) {
+            mainActivity.openBatteryOptimizationSettings()
+            return true
+        }
+        return try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            } else {
+                Intent(Settings.ACTION_SETTINGS)
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("NotificationBridge", "Failed to open battery optimization settings: ${e.message}", e)
+            false
+        }
+    }
+
+    @JavascriptInterface
+    fun openChannelSettings(channelId: String?): Boolean {
+        val targetChannel = if (channelId.isNullOrBlank()) AndroidNotificationManager.CHANNEL_ID else channelId
+        val mainActivity = activity as? MainActivity
+        if (mainActivity != null) {
+            mainActivity.openChannelSettings(targetChannel)
+            return true
+        }
+        return try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    putExtra(Settings.EXTRA_CHANNEL_ID, targetChannel)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("NotificationBridge", "Failed to open channel settings: ${e.message}", e)
+            false
+        }
+    }
+
+    @JavascriptInterface
+    fun getDiagnosticInfo(): String {
+        return AndroidNotificationManager.getDiagnosticInfo(context).toString()
+    }
+
+    @JavascriptInterface
+    fun retryFcmTokenFetch(): String {
+        com.campusattend.biometric.CampusAttendApp.fetchFcmToken(context)
+        return AndroidNotificationManager.getDiagnosticInfo(context).toString()
     }
 
     @JavascriptInterface
@@ -147,12 +220,7 @@ class AndroidNotificationBridge(
 
     @JavascriptInterface
     fun getNotificationChannelInfo(): String {
-        val json = JSONObject()
-        json.put("channelId", AndroidNotificationManager.CHANNEL_ID)
-        json.put("sdkVersion", Build.VERSION.SDK_INT)
-        json.put("permissionStatus", getPermissionStatus())
-        json.put("deviceToken", getDeviceToken())
-        return json.toString()
+        return AndroidNotificationManager.getDiagnosticInfo(context).toString()
     }
 }
 

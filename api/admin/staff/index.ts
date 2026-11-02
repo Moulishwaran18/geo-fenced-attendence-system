@@ -369,15 +369,92 @@ async function getRecentExecutionRuns(limit = 20): Promise<ReminderExecutionRun[
     .slice(0, limit);
 }
 
+interface FirebaseServiceAccount {
+  project_id: string;
+  private_key: string;
+  client_email: string;
+}
+
+let cachedGoogleAccessToken: { token: string; expiresAt: number } | null = null;
+
+function getFirebaseServiceAccount(): FirebaseServiceAccount | null {
+  const raw = process.env["FIREBASE_SERVICE_ACCOUNT"] || process.env["GOOGLE_APPLICATION_CREDENTIALS_JSON"];
+  if (!raw) return null;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (parsed.project_id && parsed.private_key && parsed.client_email) {
+      return {
+        project_id: parsed.project_id,
+        private_key: parsed.private_key.replace(/\\n/g, "\n"),
+        client_email: parsed.client_email,
+      };
+    }
+  } catch (err) {
+    console.error("[FirebaseServiceAccount] Failed to parse credentials JSON:", err);
+  }
+  return null;
+}
+
+async function getGoogleFcmV1AccessToken(sa: FirebaseServiceAccount): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedGoogleAccessToken && cachedGoogleAccessToken.expiresAt > now + 60) {
+    return cachedGoogleAccessToken.token;
+  }
+
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload = {
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now,
+  };
+
+  const b64Header = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const b64Payload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signInput = `${b64Header}.${b64Payload}`;
+
+  const signer = crypto.createSign("RSA-SHA256");
+  signer.update(signInput);
+  signer.end();
+  const signature = signer.sign(sa.private_key, "base64url");
+  const assertion = `${signInput}.${signature}`;
+
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text();
+    throw new Error(`Google OAuth2 token exchange failed: HTTP ${tokenRes.status} ${errText}`);
+  }
+
+  const tokenData = await tokenRes.json();
+  const token = tokenData.access_token;
+  const expiresIn = tokenData.expires_in || 3600;
+  cachedGoogleAccessToken = { token, expiresAt: now + expiresIn };
+  return token;
+}
+
 async function dispatchPushNotification(payload: {
   token?: string;
   title: string;
   message: string;
   destinationRoute?: string;
   staffCode: string;
-}): Promise<{ success: boolean; messageId?: string; error?: string; stage?: string }> {
+}): Promise<{
+  success: boolean;
+  messageId?: string;
+  error?: string;
+  stage: string;
+  firebaseResponse?: any;
+}> {
   const { token, title, message, destinationRoute = "/mark-attendance", staffCode } = payload;
-  const fcmServerKey = process.env["FCM_SERVER_KEY"];
 
   if (!token) {
     return {
@@ -387,64 +464,79 @@ async function dispatchPushNotification(payload: {
     };
   }
 
-  // 1. Attempt FCM delivery if FCM_SERVER_KEY is configured
-  if (fcmServerKey) {
+  const sa = getFirebaseServiceAccount();
+
+  // 1. If Firebase Service Account is configured, execute real Google FCM HTTP v1 dispatch
+  if (sa) {
     try {
-      const fcmRes = await fetch("https://fcm.googleapis.com/fcm/send", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `key=${fcmServerKey}`,
-        },
-        body: JSON.stringify({
-          to: token,
-          priority: "high",
+      const accessToken = await getGoogleFcmV1AccessToken(sa);
+      const fcmUrl = `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`;
+
+      const fcmPayload = {
+        message: {
+          token,
           notification: {
             title,
             body: message,
-            sound: "default",
           },
           data: {
             destination: destinationRoute,
             staffCode,
             sentAt: new Date().toISOString(),
           },
-        }),
+          android: {
+            priority: "HIGH",
+            notification: {
+              channel_id: "campusattend_reminders_channel",
+              sound: "default",
+              notification_priority: "PRIORITY_HIGH",
+              visibility: "PUBLIC",
+            },
+          },
+        },
+      };
+
+      const fcmRes = await fetch(fcmUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(fcmPayload),
       });
 
-      if (fcmRes.ok) {
-        const json = await fcmRes.json();
-        const fcmMsgId = json.results?.[0]?.message_id;
-        if (fcmMsgId) {
-          return { success: true, messageId: fcmMsgId, stage: "fcm_delivered" };
-        }
-        if (json.failure && json.results?.[0]?.error) {
-          return {
-            success: false,
-            error: `FCM_ERROR: ${json.results[0].error}`,
-            stage: "fcm_failed",
-          };
-        }
-        return { success: true, messageId: `fcm_${Date.now()}`, stage: "fcm_delivered" };
+      const json = await fcmRes.json();
+
+      if (fcmRes.ok && json.name) {
+        return {
+          success: true,
+          messageId: json.name,
+          stage: "fcm_v1_delivered",
+          firebaseResponse: json,
+        };
       } else {
-        const errText = await fcmRes.text();
+        const errorDetail = json.error?.message || json.error?.status || JSON.stringify(json);
         return {
           success: false,
-          error: `FCM_HTTP_${fcmRes.status}: ${errText.slice(0, 100)}`,
-          stage: "fcm_failed",
+          error: `GOOGLE_FCM_ERROR: ${errorDetail}`,
+          stage: "fcm_v1_error",
+          firebaseResponse: json,
         };
       }
     } catch (fcmErr: any) {
-      console.warn("[dispatchPushNotification] FCM dispatch notice:", fcmErr);
       return {
         success: false,
-        error: `FCM_NETWORK_ERROR: ${fcmErr?.message || "Unknown error"}`,
-        stage: "fcm_failed",
+        error: `FCM_DISPATCH_EXCEPTION: ${fcmErr?.message || "OAuth2 or network error"}`,
+        stage: "fcm_v1_exception",
       };
     }
   }
 
-  // 2. Realtime delivery to connected Android WebView native notification bridge
+  // 2. If Firebase Service Account is missing:
+  // EXPLICIT REPORTING as requested: "If Firebase service-account credentials are missing, report that explicitly. Do not simulate a successful send."
+  const errDesc = "FIREBASE_SERVICE_ACCOUNT_MISSING: Firebase service account credentials are not configured on server (FIREBASE_SERVICE_ACCOUNT). Real FCM push delivery requires a Google Firebase service account JSON key.";
+
+  // Optional in-app Realtime broadcast for active foreground web sessions
   try {
     const sb = getSupabaseClient();
     if (sb) {
@@ -461,20 +553,13 @@ async function dispatchPushNotification(payload: {
           timestamp: new Date().toISOString(),
         },
       });
-      return {
-        success: true,
-        messageId: `rt_${Date.now()}_${staffCode}`,
-        stage: "realtime_delivered",
-      };
     }
-  } catch (rtErr) {
-    console.warn("[dispatchPushNotification] Supabase realtime broadcast notice:", rtErr);
-  }
+  } catch {}
 
   return {
-    success: true,
-    messageId: `notif_${crypto.randomBytes(8).toString("hex")}`,
-    stage: "local_delivered",
+    success: false,
+    error: errDesc,
+    stage: "fcm_unconfigured",
   };
 }
 
@@ -1710,6 +1795,46 @@ export default async function handler(req: any, res?: any) {
             stats,
           });
         }
+        if (action === "diagnostic" || action === "notification-diagnostic") {
+          const sa = getFirebaseServiceAccount();
+          const targetStaffCode = String(body?.staffCode || "").trim().toUpperCase();
+
+          let tokenRecord: any = null;
+          if (targetStaffCode && sb) {
+            try {
+              const { data: secRow } = await sb
+                .from("security_events")
+                .select("time, device")
+                .ilike("staff", targetStaffCode)
+                .eq("event", "PUSH_TOKEN")
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (secRow?.device) {
+                const p = JSON.parse(secRow.device);
+                tokenRecord = {
+                  time: secRow.time,
+                  tokenMasked: p.tok ? `${p.tok.slice(0, 6)}...${p.tok.slice(-6)}` : null,
+                  deviceId: p.dev,
+                  platform: p.plt,
+                };
+              }
+            } catch {}
+          }
+
+          return sendJsonResponse(res, 200, {
+            success: true,
+            server_ist_time: getIstDateTime(),
+            firebase: {
+              configured: !!sa,
+              projectId: sa?.project_id || null,
+              clientEmailMasked: sa?.client_email ? `${sa.client_email.slice(0, 5)}...${sa.client_email.slice(-12)}` : null,
+              mode: sa ? "fcm_http_v1" : "unconfigured",
+              credentialsMissingReason: sa ? null : "FIREBASE_SERVICE_ACCOUNT environment variable is not defined on server.",
+            },
+            tokenLookup: tokenRecord,
+          });
+        }
         if (action === "test-notification" || action === "test") {
           const testStaffCode = String(body?.staffCode || body?.staffId || "").trim().toUpperCase();
           if (!testStaffCode) {
@@ -1928,6 +2053,7 @@ export default async function handler(req: any, res?: any) {
               error: "PUSH_DELIVERY_FAILED",
               message: `Failed to deliver test notification to ${targetStaff.name} (${testStaffCode}): ${dispatchRes.error || "Push dispatch error"}.`,
               deliveryStage: dispatchRes.stage || "failed",
+              firebaseResponse: dispatchRes.firebaseResponse || null,
               stats,
               recentLogs,
             });
@@ -1938,6 +2064,7 @@ export default async function handler(req: any, res?: any) {
             message: `Test notification successfully dispatched to ${targetStaff.name} (${testStaffCode}).`,
             deliveryStage: dispatchRes.stage || "delivered",
             messageId: dispatchRes.messageId,
+            firebaseResponse: dispatchRes.firebaseResponse || null,
             staff: {
               staff_code: targetStaff.staff_code,
               name: targetStaff.name,

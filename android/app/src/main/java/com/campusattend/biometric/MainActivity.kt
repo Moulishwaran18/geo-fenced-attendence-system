@@ -507,6 +507,43 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun openBatteryOptimizationSettings() {
+        runOnUiThread {
+            try {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                } else {
+                    Intent(android.provider.Settings.ACTION_SETTINGS)
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to open battery optimization settings: ${e.message}", e)
+            }
+        }
+    }
+
+    fun openChannelSettings(channelId: String) {
+        runOnUiThread {
+            try {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                        putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                        putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, channelId)
+                    }
+                } else {
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", packageName, null)
+                    }
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to open channel settings: ${e.message}", e)
+            }
+        }
+    }
+
     fun requestWifiPermissionsFromBridge() {
         runOnUiThread {
             val permissions = mutableListOf(

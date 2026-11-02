@@ -1,17 +1,17 @@
 # Graph Report - geo-fenced-attendence-system  (2026-11-02)
 
 ## Corpus Check
-- 504 files · ~441,137 words
+- 505 files · ~445,208 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 34 file(s) not represented in the graph (top: .xml 10, (none) 8, .onnx 4)
 
 ## Summary
-- 3787 nodes · 8515 edges · 244 communities (169 shown, 75 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 101 edges (avg confidence: 0.86)
+- 3811 nodes · 8597 edges · 239 communities (166 shown, 73 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 102 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `c5cb0eae`
+- Built from commit: `8f6140db`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -32,15 +32,15 @@
 - face-recognition/index.ts
 - server/admin-auth.ts
 - scripts
-- arcface-engine.ts
+- FaceScanDialog.tsx
 - devDependencies
 - lucide-react
 - onnxruntime-web
 - handler
-- face-api.js
+- ref_tensorflow_tfjs_core
 - liveness-engine.ts
 - staff/index.ts
-- ref_fs
+- download-models.cjs
 - Query
 - test-kalman-filter.js
 - ref_node_crypto
@@ -51,8 +51,9 @@
 - AndroidBiometricBridge
 - AndroidNotificationBridge
 - AppDatabase
+- AndroidWifiBridge.kt
 - device/index.ts
-- FACE_CONFIG
+- face-api.js
 - LocationVerificationScreen.kt
 - routeTree.gen.ts
 - wifi-config.ts
@@ -85,8 +86,8 @@
 - attendance-pdf-export.ts
 - use-geofence.ts
 - server.ts
-- test-one-faculty-one-device-policy.js
-- AndroidPdfBridge
+- test-one-faculty-one-phone-login-policy.js
+- pg
 - .sanitizeBssidStatic
 - verify_deepface_complete.py
 - blink-detection.ts
@@ -120,7 +121,7 @@
 - recognize_face
 - attendance-reminders.yml
 - diagnose-person1-active.js
-- re-enroll-authoritative-p1.js
+- staff-handler.ts
 - re-enroll-p1-corrected.js
 - test-attendance-flow-persistence.ts
 - trace-fingerprint-56C2A043.js
@@ -136,21 +137,21 @@
 - test-attendance-dev-mode-matrix.js
 - test-attendance-success-and-supabase.js
 - test-pure-face-recognition.js
-- handler
+- lib/admin-auth.ts
 - verify-arcface-model-parity.js
 - chart.tsx
 - LivenessSession
 - CampusAttend — System Architecture and Operational Workflows
 - deep-diagnostic-recognition.js
 - diagnose-frame-rotation-mirror.js
-- diagnose-live-difference.js
-- diagnose-specific-failed-attempt.js
+- find-failed-attempt-and-diagnose.js
+- pagination.tsx
 - CampusAttendApp.kt
 - CampusAttend — Comprehensive Technical Viva Voce Preparation Guide
-- utils.ts
+- .findBestMatch
 - Scalable Staff Face Database & Biometric Enrollment System
 - BiometricKeystoreManager
-- supabase.ts
+- use-attendance.ts
 - device-info.ts
 - menubar.tsx
 - test-vercel-face-pipeline.js
@@ -158,8 +159,8 @@
 - multi-test-live-matching.js
 - test-arcface-parity-fixed.js
 - AttendanceAlarmScheduler
-- test-critical-security-hardening.ts
-- MockAndroidBiometricBridge
+- test-umeyama-fix.js
+- jsdelivr-download.cjs
 - verify-self-consistency.js
 - test-live-stability-multi.js
 - compare-with-references.js
@@ -170,17 +171,17 @@
 - diagnose-live-matching.js
 - __root.tsx
 - enroll-new-p1.js
-- sqrt
+- network-info.ts
 - trace-session-56c2a043-direct.js
 - router.tsx
 - AntiSpoofService
 - test-attendance-persistence-history.js
 - MockKeystoreDatabase
 - test-flip-landmarks.js
-- error-capture.ts
+- test-arcface-mirror-eval.js
 - TemporalLivenessTracker
-- test-two-stage-face-approval-workflow.js
-- ref_node_assert
+- MockResponse
+- Category 3: Active Liveness & Presentation Attack Detection
 - generate-tech-inventory-excel.py
 - calc-transform.js
 - Category 2: AI, Computer Vision & Biometrics
@@ -188,56 +189,51 @@
 - test-face-recognition-parity.js
 - test-live-two-phone-production.js
 - verify-transform-math.js
-- Category 1: System Architecture & Overall Rationale
+- Category 8: Testing, Limitations & Academic Evaluation
 - lovable-error-reporting.ts
 - test-wifi-attendance-flow.js
 - Category 5: Geofencing, Location & Kalman Filtering
 - @radix-ui/react-aspect-ratio
 - @radix-ui/react-collapsible
-- Category 6: Database & Serverless Architecture
+- cmdk
 - Geo-fenced attendence system
 - sonner.tsx
 - Routes
-- test-reenroll-modal-responsive-layout.js
+- date-fns@^4.1.0
 - verify-live-pipeline-full.js
 - command.tsx
-- sheet.tsx
+- input-otp
 - test-db-reproducibility.js
 - test-mobile-vs-stored.js
-- breadcrumb.tsx
+- @radix-ui/react-avatar
 - drawer.tsx
 - navigation-menu.tsx
 - forensic-mobile-audit.js
-- toggle-group.tsx
-- alert.tsx
-- input-otp.tsx
+- class-variance-authority
+- @radix-ui/react-checkbox
+- utils.ts
 - DeepfakeDetectionService
-- scroll-area.tsx
+- @radix-ui/react-navigation-menu
 - clsx
-- @tailwindcss/vite@^4.2.1
-- embla-carousel-react
+- @radix-ui/react-popover
+- @radix-ui/react-slot
 - vercel.json
-- @hookform/resolvers@^5.2.2
-- @radix-ui/react-label
+- @radix-ui/react-tabs
+- @radix-ui/react-toggle
 - @radix-ui/react-radio-group
-- @radix-ui/react-separator
-- @radix-ui/react-slider
-- @radix-ui/react-switch
-- @radix-ui/react-tooltip
-- react-dom@^19.2.0
+- @radix-ui/react-toggle-group
+- tailwindcss@^4.2.1
 - react-hook-form
-- react-resizable-panels
-- vaul
 
 ## God Nodes (most connected - your core abstractions)
 1. `cn()` - 242 edges
-2. `react` - 83 edges
-3. `Button` - 65 edges
-4. `@supabase/supabase-js` - 50 edges
-5. `lucide-react` - 50 edges
+2. `react` - 84 edges
+3. `Button` - 67 edges
+4. `lucide-react` - 51 edges
+5. `@supabase/supabase-js` - 50 edges
 6. `onnxruntime-web` - 50 edges
-7. `jpeg-js` - 46 edges
-8. `AppShell()` - 45 edges
+7. `AppShell()` - 47 edges
+8. `jpeg-js` - 46 edges
 9. `face-api.js` - 43 edges
 10. `AndroidWifiBridge` - 42 edges
 
@@ -246,64 +242,64 @@
   docs/CampusAttend_Viva_Preparation.md → android/app/src/main/java/com/campusattend/biometric/bridge/AndroidBiometricBridge.kt
 - `Q12: How does `BiometricKeystoreManager.kt` protect biometric embeddings using the Android Keystore?` --references--> `BiometricKeystoreManager`  [INFERRED]
   docs/CampusAttend_Viva_Preparation.md → android/app/src/main/java/com/campusattend/biometric/security/BiometricKeystoreManager.kt
-- `3. Discrepancy & Reality Gap Register` --references--> `FaceScanDialog()`  [INFERRED]
-  docs/CampusAttend_Source_Evidence_Index.md → src/components/common/FaceScanDialog.tsx
 - `5.3 Dual-Pose Mirror Evaluation` --references--> `alignMirroredFaceDetailed()`  [INFERRED]
   docs/CampusAttend_Complete_Technical_Documentation.md → src/lib/face-recognition/arcface-engine.ts
 - `2.1 Native Android Shell (`com.campusattend.biometric`)` --references--> `AndroidBiometricBridge`  [INFERRED]
   docs/CampusAttend_Architecture_and_Workflows.md → android/app/src/main/java/com/campusattend/biometric/bridge/AndroidBiometricBridge.kt
+- `2.1 Native Android Shell (`com.campusattend.biometric`)` --references--> `BiometricKeystoreManager`  [INFERRED]
+  docs/CampusAttend_Architecture_and_Workflows.md → android/app/src/main/java/com/campusattend/biometric/security/BiometricKeystoreManager.kt
 
 ## Import Cycles
 - None detected.
 
-## Communities (244 total, 75 thin omitted)
+## Communities (239 total, 73 thin omitted)
 
 ### Community 0 - "ref_fs"
-Cohesion: 0.04
-Nodes (43): pg@^8.23.0, pg, jsonDb, pool, APPROVED_STAFF_IDS, executeSafeReset(), supabase, withRetry() (+35 more)
+Cohesion: 0.05
+Nodes (34): destDir, downloadFile(), main(), models, extract(), tryDownload(), urls, DEST_DIR (+26 more)
 
 ### Community 1 - "cn"
-Cohesion: 0.05
-Nodes (57): LoadingState(), AccordionContent, AccordionItem, AccordionTrigger, Avatar, AvatarFallback, AvatarImage, ButtonProps (+49 more)
+Cohesion: 0.06
+Nodes (52): LoadingState(), AccordionContent, AccordionItem, AccordionTrigger, Avatar, AvatarFallback, AvatarImage, Breadcrumb (+44 more)
 
 ### Community 2 - "MainActivity.kt"
 Cohesion: 0.04
-Nodes (4): MainActivity, WebChromeClient, WebViewClient, CampusAttendBiometricTheme()
+Nodes (3): MainActivity, WebChromeClient, WebViewClient
 
 ### Community 3 - "mark-attendance.tsx"
-Cohesion: 0.08
-Nodes (50): class-variance-authority, react, recharts, GeofenceMap(), GpsDiagnosticPanel(), LiveGpsPanel(), getBadgeVariant(), ParallelVerificationPanel() (+42 more)
+Cohesion: 0.12
+Nodes (47): recharts, GeofenceMap(), GpsDiagnosticPanel(), LiveGpsPanel(), ParallelVerificationPanel(), StatCard(), AlertBanner(), VerificationCard() (+39 more)
 
 ### Community 4 - "NativeLocationService.kt"
 Cohesion: 0.06
-Nodes (9): DeviceCapabilityReport, GnssLiveTelemetry, NativeLocationReading, NativeLocationService, Callback, Callback, LocationCallback, LocationListener (+1 more)
+Nodes (11): FilteredResult, GpsKalmanFilter, DeviceCapabilityReport, GnssLiveTelemetry, NativeLocationReading, NativeLocationService, Callback, Callback (+3 more)
 
 ### Community 5 - "face-enrollment.tsx"
-Cohesion: 0.10
-Nodes (55): FaceScanDialog(), StageRecord, VerificationPhase, Progress, evaluateFaceCropQuality(), generateCroppedFacePreview(), initArcFaceSession(), isArcFaceLoaded() (+47 more)
+Cohesion: 0.11
+Nodes (49): Progress, isArcFaceLoaded(), areModelsLoaded(), clearStaffEmbeddings(), deleteStaffEmbedding(), enrollStaffFace(), StaffProfile, activateNativePendingEnrollment() (+41 more)
 
 ### Community 6 - "react"
 Cohesion: 0.09
-Nodes (35): Legend(), MapButton(), MapPanel(), markerColors, Checkbox, AuthenticatedAdmin, clearAdminToken(), getAdminToken() (+27 more)
+Nodes (25): Legend(), MapButton(), MapPanel(), markerColors, defaultProfile, EditableProfile, read(), useProfile() (+17 more)
 
 ### Community 7 - "device-binding.ts"
-Cohesion: 0.10
-Nodes (26): createMockReqRes(), generateDeviceKeyPair(), mintNetworkToken(), runTestSuite(), signWithDeviceKey(), supabase, AttestationSecurityLevel, AttestationVerificationResult (+18 more)
+Cohesion: 0.12
+Nodes (21): runServiceRoleFailClosedTests(), AttestationSecurityLevel, AttestationVerificationResult, cleanExpiredNonces(), consumedChallenges, convertP1363ToDer(), DeviceChallengeTokenPayload, DevicePlatform (+13 more)
 
 ### Community 8 - "CampusAttend — Complete Technical Documentation & System Specification"
 Cohesion: 0.05
 Nodes (43): 10.1 Multi-Angle Capture, 10.2 Administrative Approval Lifecycle, 10. Face Enrollment, Multi-Angle Capture & Re-Enrollment Governance, 11.1 Full-Screen Dialog Structure (`FaceScanDialog.tsx`), 11. Frontend Interface, Viewport Architecture & Diagnostics, 12. Backend Serverless Architecture & Nitro Endpoints, 13.1 Schema Inventory, 13.2 Atomic Token RPC (`atomic_consume_face_approval_token`) (+35 more)
 
 ### Community 9 - "staff-auth.ts"
-Cohesion: 0.23
-Nodes (19): AttendanceDeviceSignatureResult, detectPlatform(), DeviceRegistrationResult, DeviceStatusResponse, getAndroidBridge(), getDeviceLoginPayload(), getOrCreateWebCryptoKeyPair(), isAndroidKeystoreAvailable() (+11 more)
+Cohesion: 0.24
+Nodes (18): AttendanceDeviceSignatureResult, detectPlatform(), DeviceRegistrationResult, DeviceStatusResponse, getAndroidBridge(), getDeviceLoginPayload(), getOrCreateWebCryptoKeyPair(), isAndroidKeystoreAvailable() (+10 more)
 
 ### Community 10 - "test-gps-accuracy-suite.js"
 Cohesion: 0.04
 Nodes (45): allSub20Accepted, allSub20NotTarget, androidGeofenceFile, apiAttendanceFile, bestAcceptedSample, centroid, eval10_0, eval15_1 (+37 more)
 
 ### Community 11 - "AndroidWifiBridge"
-Cohesion: 0.11
+Cohesion: 0.10
 Nodes (3): AndroidWifiBridge, NetworkCallback, NetworkCallback
 
 ### Community 12 - "2. Complete Table-by-Table Schema Specifications"
@@ -311,52 +307,52 @@ Cohesion: 0.05
 Nodes (41): 1. Database Schema Inventory & ERD, 1. `isAvailable(): boolean`, 2.1 Table: `public.staff`, 2.2 Table: `public.attendance_records`, 2.3 Table: `public.security_events`, 2.4 Table: `public.geofence_zones`, 2.5 Table: `public.admin_users`, 2.6 Table: `public.devices` (+33 more)
 
 ### Community 13 - "face-recognition/index.ts"
-Cohesion: 0.09
-Nodes (44): areModelsLoaded(), AuthoritativeFaceDetection, BoxConfidenceTarget, computeBoxIoU(), createAuthoritativeDetection(), deduplicateFaces(), DetectedFace, detectFaces() (+36 more)
+Cohesion: 0.10
+Nodes (32): FaceScanResult, ARCFACE_CONFIG, FrameQualityMetrics, compareFaces(), evaluateAllIdentities(), findBestMatch(), IdentityMatchEvaluation, MatchResult (+24 more)
 
 ### Community 14 - "server/admin-auth.ts"
-Cohesion: 0.11
-Nodes (30): ../api/staff/session.ts, main(), createMockRequest(), runTestSuite(), supabase, verify(), AdminSessionPayload, AdminSessionVerificationResult (+22 more)
+Cohesion: 0.12
+Nodes (22): runSafeReset(), supabase, runMigration(), main(), createMockRequest(), runTestSuite(), AdminSessionPayload, AdminSessionVerificationResult (+14 more)
 
 ### Community 15 - "scripts"
 Cohesion: 0.05
 Nodes (42): scripts, build, build:dev, db:migrate, db:migrate-json, db:provision-admin, db:seed, db:verify (+34 more)
 
-### Community 16 - "arcface-engine.ts"
-Cohesion: 0.17
-Nodes (19): 1. Implementation Status Classification Framework, 2. Comprehensive Implementation Verification Matrix, 3. Discrepancy & Reality Gap Register, 4. Cross-Reference Index to Associated Deliverables, CampusAttend — Source Evidence Index and Implementation Matrix, alignFaceDetailed(), alignFaceToTensor(), alignMirroredFaceDetailed() (+11 more)
+### Community 16 - "FaceScanDialog.tsx"
+Cohesion: 0.10
+Nodes (42): 1. Implementation Status Classification Framework, 2. Comprehensive Implementation Verification Matrix, 3. Discrepancy & Reality Gap Register, 4. Cross-Reference Index to Associated Deliverables, CampusAttend — Source Evidence Index and Implementation Matrix, FaceScanDialog(), StageRecord, VerificationPhase (+34 more)
 
 ### Community 17 - "devDependencies"
 Cohesion: 0.06
 Nodes (39): devDependencies, eslint@^9.32.0, eslint-config-prettier@^10.1.1, @eslint/js@^9.32.0, eslint-plugin-prettier@^5.2.6, eslint-plugin-react-hooks@^5.2.0, eslint-plugin-react-refresh@^0.4.20, globals@^15.15.0 (+31 more)
 
 ### Community 18 - "lucide-react"
-Cohesion: 0.12
-Nodes (44): lucide-react, sonner, @tanstack/react-router, AttendanceDetailDialogProps, AttendanceTable(), iconTones, StatCard(), Tone (+36 more)
+Cohesion: 0.11
+Nodes (40): lucide-react, react, sonner, @tanstack/react-router, SettingsSections(), ToggleRow(), iconTones, Tone (+32 more)
 
 ### Community 19 - "onnxruntime-web"
-Cohesion: 0.06
-Nodes (31): jpeg-js@^0.4.4, onnxruntime-web@^1.27.0, jpeg-js, onnxruntime-web, ARCFACE_REF, cosineDistance(), getEmbeddingFrom112Jpeg(), run() (+23 more)
+Cohesion: 0.07
+Nodes (34): jpeg-js@^0.4.4, onnxruntime-web@^1.27.0, jpeg-js, onnxruntime-web, ARCFACE_REF, cosineDistance(), getEmbeddingFrom112Jpeg(), run() (+26 more)
 
 ### Community 20 - "handler"
-Cohesion: 0.13
-Nodes (15): extractAdminToken(), getSupabaseClient(), handler(), isTableMissingError(), sendJsonResponse(), verifyAdminSession(), assert(), mockReqRes() (+7 more)
-
-### Community 21 - "face-api.js"
 Cohesion: 0.09
-Nodes (24): face-api.js@^0.22.2, face-api.js, align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks() (+16 more)
+Nodes (30): extractAdminToken(), getSupabaseClient(), handler(), isTableMissingError(), sendJsonResponse(), verifyAdminSession(), extractStaffToken(), getActiveDeviceForStaff() (+22 more)
+
+### Community 21 - "ref_tensorflow_tfjs_core"
+Cohesion: 0.11
+Nodes (18): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, OUTPUT_DIR (+10 more)
 
 ### Community 22 - "liveness-engine.ts"
-Cohesion: 0.12
-Nodes (25): createMockLandmarks(), softmax(), BlinkTrackerState, checkDirection(), classifyDirection(), estimateHeadPose(), estimatePitchAngle(), estimateYawAngle() (+17 more)
+Cohesion: 0.13
+Nodes (18): BlinkTrackerState, HeadDirection, HeadPoseValidationState, ChallengeCategory, ChallengeStep, GeneratedChallenge, generateNonce(), generateRandomDirectionSequence() (+10 more)
 
 ### Community 23 - "staff/index.ts"
 Cohesion: 0.11
-Nodes (36): ADMIN_CREDENTIALS, authenticateAdmin(), cachedSettings, cleanExpiredRevocations(), DEFAULT_REMINDER_SETTINGS, dispatchPushNotification(), executeAttendanceReminders(), extractAdminToken() (+28 more)
+Nodes (38): ADMIN_CREDENTIALS, authenticateAdmin(), cachedSettings, cleanExpiredRevocations(), DEFAULT_REMINDER_SETTINGS, dispatchPushNotification(), executeAttendanceReminders(), extractAdminToken() (+30 more)
 
-### Community 24 - "ref_fs"
-Cohesion: 0.05
-Nodes (31): dest, downloadFile(), fs, https, main(), models, path, dest (+23 more)
+### Community 24 - "download-models.cjs"
+Cohesion: 0.29
+Nodes (7): dest, downloadFile(), fs, https, main(), models, path
 
 ### Community 25 - "Query"
 Cohesion: 0.11
@@ -368,47 +364,47 @@ Nodes (32): distFromTrue, evalInside, evalOutside, filter10, filter2, filter3, f
 
 ### Community 28 - "ref_node_crypto"
 Cohesion: 0.12
-Nodes (24): ADMIN_CREDENTIALS, createSessionToken(), handler(), sendJsonResponse(), verifyPassword(), createMockReqRes(), runTests(), assert() (+16 more)
+Nodes (25): ADMIN_CREDENTIALS, createSessionToken(), handler(), sendJsonResponse(), verifyPassword(), createMockReqRes(), runTests(), assert() (+17 more)
 
 ### Community 29 - "dependencies"
 Cohesion: 0.05
-Nodes (40): dependencies, class-variance-authority@^0.7.1, input-otp@^1.4.2, lucide-react@^0.575.0, @radix-ui/react-accordion@^1.2.12, @radix-ui/react-alert-dialog@^1.1.15, @radix-ui/react-context-menu@^2.2.16, @radix-ui/react-dialog@^1.1.15 (+32 more)
+Nodes (41): dependencies, embla-carousel-react@^8.6.0, face-api.js@^0.22.2, lucide-react@^0.575.0, pg@^8.23.0, @radix-ui/react-alert-dialog@^1.1.15, @radix-ui/react-context-menu@^2.2.16, @radix-ui/react-dialog@^1.1.15 (+33 more)
 
 ### Community 30 - "test-unified-wifi-policy.js"
 Cohesion: 0.07
 Nodes (30): cleanSsid(), createNetworkAuthToken(), [dataPart], expiredData, expiredPayload, expiredSig, fakeSsidToken, invalidSsids (+22 more)
 
 ### Community 31 - "test-parallel-verification.ts"
-Cohesion: 0.13
-Nodes (30): assert(), makeFaceFailMismatch(), makeFaceFailSpoof(), makeFaceFailUnrecognized(), makeFacePass(), makeGpsFailOutside(), makeGpsPass(), makeWifiFailMismatch() (+22 more)
+Cohesion: 0.12
+Nodes (32): assert(), makeFaceFailMismatch(), makeFaceFailSpoof(), makeFaceFailUnrecognized(), makeFacePass(), makeGpsFailOutside(), makeGpsPass(), makeWifiFailMismatch() (+24 more)
 
 ### Community 32 - "test-staff-face-local-enrollment.js"
-Cohesion: 0.06
-Nodes (28): clientRoutePath, clientSource, decOnPhone2, __dirname, enrollRes, __filename, initialStatus, phone1 (+20 more)
+Cohesion: 0.05
+Nodes (30): clientRoutePath, clientSource, decOnPhone2, __dirname, enrollRes, __filename, initialStatus, MockAndroidBiometricBridge (+22 more)
 
 ### Community 37 - "device/index.ts"
-Cohesion: 0.20
-Nodes (17): consumedChallenges, convertP1363ToDer(), createDeviceChallenge(), extractBearerOrCookieToken(), getActiveDeviceForStaff(), getAllDevicesForStaff(), getSupabaseClient(), handler() (+9 more)
+Cohesion: 0.14
+Nodes (25): consumedChallenges, convertP1363ToDer(), createDeviceChallenge(), extractBearerOrCookieToken(), getActiveDeviceForStaff(), getAllDevicesForStaff(), getSupabaseClient(), handler() (+17 more)
 
-### Community 38 - "FACE_CONFIG"
-Cohesion: 0.09
-Nodes (17): createMock68Landmarks(), createMock68Landmarks(), softmax(), AntiSpoofAggregatedResult, PresentationAttackAnalysis, softmax(), DeepfakeAnalysisResult, DeepfakeClassification (+9 more)
+### Community 38 - "face-api.js"
+Cohesion: 0.14
+Nodes (17): face-api.js, createMockLandmarks(), softmax(), DeepfakeAnalysisResult, DeepfakeClassification, FACE_CONFIG, FaceConfig, checkDirection() (+9 more)
 
 ### Community 40 - "routeTree.gen.ts"
-Cohesion: 0.08
-Nodes (25): AdminAttendanceRemindersRoute, AdminAttendanceRoute, AdminAuditLogsRoute, AdminCampusMapRoute, AdminCoordinatePointsRoute, AdminFaceEnrollmentRoute, AdminFaceRequestsRoute, AdminIndexRoute (+17 more)
+Cohesion: 0.07
+Nodes (26): AdminAttendanceRemindersRoute, AdminAttendanceRoute, AdminAuditLogsRoute, AdminCampusMapRoute, AdminCoordinatePointsRoute, AdminFaceEnrollmentRoute, AdminFaceRequestsRoute, AdminIndexRoute (+18 more)
 
 ### Community 41 - "wifi-config.ts"
-Cohesion: 0.13
-Nodes (14): verifyNetworkAuthToken(), createTestStaffToken(), MockResponse, runTests(), AUTHORIZED_SSID_KEYWORD, AUTHORIZED_SSIDS, CAMPUS_WIFI_FAILURE_MESSAGE, NetworkFingerprintPayload (+6 more)
+Cohesion: 0.19
+Nodes (12): APPROVED_CAMPUS_BSSIDS, AUTHORIZED_SSID_KEYWORD, AUTHORIZED_SSIDS, CAMPUS_WIFI_FAILURE_MESSAGE, NetworkFingerprintPayload, normalizeBssid(), REGISTERED_CAMPUS_BSSID, SECONDARY_APPROVED_BSSID (+4 more)
 
 ### Community 42 - "package.json"
 Cohesion: 0.06
-Nodes (30): allowScripts, protobufjs, cmdk@^1.1.1, date-fns@^4.1.0, @radix-ui/react-avatar@^1.1.11, @radix-ui/react-checkbox@^1.3.3, @radix-ui/react-dropdown-menu@^2.1.16, @radix-ui/react-menubar@^1.1.16 (+22 more)
+Nodes (30): allowScripts, protobufjs, @hookform/resolvers@^5.2.2, @radix-ui/react-accordion@^1.2.12, @radix-ui/react-label@^2.1.8, @radix-ui/react-scroll-area@^1.2.10, @radix-ui/react-separator@^1.1.8, @radix-ui/react-switch@^1.2.6 (+22 more)
 
 ### Community 43 - "@supabase/supabase-js"
-Cohesion: 0.09
-Nodes (13): @supabase/supabase-js, supabase, supabase, supabase, mintAdminToken(), mintStaffToken(), supabase, verifyLiveStatus() (+5 more)
+Cohesion: 0.08
+Nodes (18): @supabase/supabase-js, supabase, supabase, supabase, mintAdminToken(), mintStaffToken(), supabase, verifyLiveStatus() (+10 more)
 
 ### Community 45 - "handler"
 Cohesion: 0.18
@@ -435,8 +431,8 @@ Cohesion: 0.17
 Nodes (3): AntiSpoofAggregatedResult, AntiSpoofResult, AntiSpoofService
 
 ### Community 52 - "db/client.ts"
-Cohesion: 0.15
-Nodes (26): run(), extractAdminToken(), verifyAdminSessionToken(), errorResponse(), handler(), handleStaffApi(), jsonResponse(), sendJsonResponse() (+18 more)
+Cohesion: 0.18
+Nodes (20): run(), createStaff(), DatabaseDiagnostics, ensureDataDir(), ensureEnvLoaded(), FaceEmbeddingRecord, getAllStaff(), getDatabaseDiagnostics() (+12 more)
 
 ### Community 53 - "handler"
 Cohesion: 0.18
@@ -447,8 +443,8 @@ Cohesion: 0.10
 Nodes (3): health(), root(), startup_db()
 
 ### Community 55 - "ref_node_fs"
-Cohesion: 0.11
-Nodes (11): BACKUP_DIR, computeHash(), runBackupAndReset(), SCRATCH_DIR, supabase, computeHash(), restoreAttendance(), supabase (+3 more)
+Cohesion: 0.10
+Nodes (16): BACKUP_DIR, computeHash(), runBackupAndReset(), SCRATCH_DIR, supabase, computeHash(), restoreAttendance(), supabase (+8 more)
 
 ### Community 56 - "attendance-reminder-service.ts"
 Cohesion: 0.12
@@ -456,11 +452,11 @@ Nodes (36): runTestSuite(), DATA_DIR, DEFAULT_REMINDER_SETTINGS, dispatchPushNot
 
 ### Community 57 - "audit-log.ts"
 Cohesion: 0.22
-Nodes (17): runTests(), errorResponse(), handleFaceDetectionLogApi(), jsonResponse(), FaceDetectionLogRecord, getDuplicateWindowSeconds(), getFaceDetectionLogs(), getLocalStoreLogs() (+9 more)
+Nodes (16): runTests(), errorResponse(), handleFaceDetectionLogApi(), jsonResponse(), FaceDetectionLogRecord, getDuplicateWindowSeconds(), getFaceDetectionLogs(), getLocalStoreLogs() (+8 more)
 
 ### Community 58 - "VerificationViewModel.kt"
-Cohesion: 0.16
-Nodes (4): BiometricResult, PerformanceMetrics, PipelineState, VerificationViewModel
+Cohesion: 0.13
+Nodes (5): FaceDetectionService, BiometricResult, PerformanceMetrics, PipelineState, VerificationViewModel
 
 ### Community 59 - "HeadDirection"
 Cohesion: 0.22
@@ -475,20 +471,20 @@ Cohesion: 0.11
 Nodes (18): aliases, components, hooks, lib, ui, utils, iconLibrary, registries (+10 more)
 
 ### Community 62 - "FileRoutesByPath"
-Cohesion: 0.11
-Nodes (19): Route, Route, Route, Route, Route, Route, Route, Route (+11 more)
+Cohesion: 0.10
+Nodes (20): Route, Route, Route, Route, Route, Route, Route, Route (+12 more)
 
 ### Community 63 - "FaceDetectionService.kt"
-Cohesion: 0.17
-Nodes (7): Error, FaceDetectionResult, FaceDetectionService, FaceKeypoint, MultipleFaces, NoFace, SingleFace
+Cohesion: 0.19
+Nodes (6): Error, FaceDetectionResult, FaceKeypoint, MultipleFaces, NoFace, SingleFace
 
 ### Community 64 - "attendance.ts"
 Cohesion: 0.14
 Nodes (14): APPROVED_CAMPUS_BSSIDS, computeCentroid(), FALLBACK_GEOFENCE_POLYGON, GeofenceCache, getActiveGeofencePolygon(), handleGetGeofence(), InMemChallenge, isAuthorizedCampusEgressIp() (+6 more)
 
 ### Community 65 - "sidebar.tsx"
-Cohesion: 0.07
-Nodes (30): Separator, SidebarContent, SidebarContext, SidebarContextProps, SidebarFooter, SidebarGroup, SidebarGroupAction, SidebarGroupContent (+22 more)
+Cohesion: 0.06
+Nodes (39): Separator, SheetContent, SheetContentProps, SheetDescription, SheetFooter(), SheetHeader(), SheetOverlay, SheetTitle (+31 more)
 
 ### Community 66 - "calibrate-clean-gallery.js"
 Cohesion: 0.12
@@ -507,12 +503,16 @@ Cohesion: 0.12
 Nodes (17): GeofenceMapProps, GpsDiagnosticPanelProps, DEFAULT_MAX_ACQUISITION_SECONDS, GPS_ACCEPTANCE_THRESHOLD_METERS, GPS_TARGET_ACCURACY_METERS, GpsAccuracyTierInfo, GpsCoordinates, GpsPermissionState (+9 more)
 
 ### Community 70 - "server.ts"
-Cohesion: 0.18
-Nodes (16): extractTrustedClientIp(), getAuthorizedCampusEgressIps(), handler(), isPrivateIp(), sanitizeIp(), VERIFIED_SONA_EGRESS_IPS, @tanstack/react-start@^1.168.60, @tanstack/react-start (+8 more)
+Cohesion: 0.19
+Nodes (12): consumeLastCapturedError(), describeError(), describeStatus(), originalConsoleError, safeStringify(), renderErrorPage(), defaultHandler, fetch() (+4 more)
 
-### Community 71 - "test-one-faculty-one-device-policy.js"
-Cohesion: 0.20
-Nodes (7): createMockReqRes(), generateDeviceKeyPair(), mintNetworkToken(), mintStaffToken(), runPolicyTestSuite(), signWithDeviceKey(), supabase
+### Community 71 - "test-one-faculty-one-phone-login-policy.js"
+Cohesion: 0.11
+Nodes (18): ../api/staff/session.ts, createMockReqRes(), generateDeviceKeyPair(), mintNetworkToken(), mintStaffToken(), runPolicyTestSuite(), signWithDeviceKey(), supabase (+10 more)
+
+### Community 72 - "pg"
+Cohesion: 0.08
+Nodes (15): pg, jsonDb, pool, cosineDistance(), decodeJpegToPlanar(), pool, run(), inspectLocalJson() (+7 more)
 
 ### Community 74 - "verify_deepface_complete.py"
 Cohesion: 0.22
@@ -527,12 +527,12 @@ Cohesion: 0.26
 Nodes (8): assert(), computeCanonicalTemplateDigest(), computeCosineDistance(), generateDeterministicVector(), mockReqRes(), runRegressionSuite(), SimulatedBiometricBridgeEngine, supabase
 
 ### Community 77 - "admin.staff.tsx"
-Cohesion: 0.18
-Nodes (24): AttendanceDetailDialog(), StatusBadge(), Tone, toneForStatus(), toneMap, DialogContent, DialogContentProps, DialogDescription (+16 more)
+Cohesion: 0.17
+Nodes (28): AttendanceDetailDialog(), AttendanceTable(), EmptyState(), StatusBadge(), Tone, toneForStatus(), toneMap, DialogContent (+20 more)
 
 ### Community 78 - "ref_crypto"
-Cohesion: 0.09
-Nodes (18): BACKUP_DIR_LOCAL, supabase, APPROVED_TEST_STAFF_IDS, GENUINE_STAFF_CODES, supabase, TEST_SECURITY_EVENT_STAFF_CODES, runSafeReset(), supabase (+10 more)
+Cohesion: 0.08
+Nodes (22): BACKUP_DIR_LOCAL, supabase, APPROVED_TEST_STAFF_IDS, GENUINE_STAFF_CODES, supabase, TEST_SECURITY_EVENT_STAFF_CODES, align112FromRawImage(), ARCFACE_REFERENCE_POINTS (+14 more)
 
 ### Community 79 - "FaceLandmarkService"
 Cohesion: 0.21
@@ -595,8 +595,8 @@ Cohesion: 0.15
 Nodes (12): jobs, verify, name, on, name, run, uses, with (+4 more)
 
 ### Community 96 - "test-face-dialog-responsive-layout.js"
-Cohesion: 0.15
-Nodes (11): dialogUiCode, dialogUiPath, __dirname, expectedActions, faceScanDialogCode, faceScanDialogPath, __filename, livenessEngineCode (+3 more)
+Cohesion: 0.05
+Nodes (32): __dirname, JSON_PATH, ROOT, adminFaceRequestsCode, adminFaceRequestsPath, __dirname, __filename, rootDir (+24 more)
 
 ### Community 97 - "test-face-pipeline.js"
 Cohesion: 0.27
@@ -607,16 +607,12 @@ Cohesion: 0.23
 Nodes (12): alignFaceToTensor(), analyzeQuality(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimatePose(), estimateSimilarityTransform(), extract5Landmarks() (+4 more)
 
 ### Community 99 - "admin.attendance-reminders.tsx"
-Cohesion: 0.27
-Nodes (16): ConfirmDialog(), AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter(), AlertDialogHeader(), AlertDialogOverlay (+8 more)
+Cohesion: 0.20
+Nodes (19): ConfirmDialog(), AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter(), AlertDialogHeader(), AlertDialogOverlay (+11 more)
 
 ### Community 100 - "viola-jones.ts"
 Cohesion: 0.22
 Nodes (9): CascadeStage, clusterDetections(), computeIoU(), detectFacesViolaJones(), FRONTAL_FACE_CASCADE, HaarFeature, HaarRect, IntegralImage (+1 more)
-
-### Community 101 - "FaceEmbeddingEntity"
-Cohesion: 0.15
-Nodes (4): FaceEmbeddingEntity, FaceMatchingService, IdentityEvaluation, MatchResult
 
 ### Community 102 - "GeofenceManager"
 Cohesion: 0.26
@@ -634,9 +630,9 @@ Nodes (11): jobs, trigger, name, on, schedule, workflow_dispatch, cron, name (+3
 Cohesion: 0.24
 Nodes (11): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, OUTPUT_DIR (+3 more)
 
-### Community 106 - "re-enroll-authoritative-p1.js"
-Cohesion: 0.23
-Nodes (11): align112FromRawImage(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_JSON_PATH, estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, PHOTOS_DIR (+3 more)
+### Community 106 - "staff-handler.ts"
+Cohesion: 0.26
+Nodes (13): cleanExpiredRevocations(), extractAdminToken(), getAdminTokenIdentifier(), getSupabase(), isTokenRevoked(), revokeAdminSessionToken(), verifyAdminSessionToken(), verifyAdminSessionTokenSync() (+5 more)
 
 ### Community 107 - "re-enroll-p1-corrected.js"
 Cohesion: 0.23
@@ -655,8 +651,8 @@ Cohesion: 0.23
 Nodes (10): FormControl, FormDescription, FormFieldContext, FormFieldContextValue, FormItem, FormItemContext, FormItemContextValue, FormLabel (+2 more)
 
 ### Community 111 - "admin.coordinate-points.tsx"
-Cohesion: 0.29
-Nodes (10): Textarea, fetchActiveGeofencePolygon(), setActiveGeofencePolygon(), computeCentroid(), CoordinatePointsPage(), DEFAULT_POINTS, isInsidePolygon(), isValidPoint() (+2 more)
+Cohesion: 0.33
+Nodes (7): fetchActiveGeofencePolygon(), setActiveGeofencePolygon(), computeCentroid(), CoordinatePointsPage(), isInsidePolygon(), isValidPoint(), pointToLatLng()
 
 ### Community 112 - "face-engine.ts"
 Cohesion: 0.23
@@ -690,9 +686,9 @@ Nodes (9): createMockReqRes(), __dirname, __filename, mintBiometricAttestation()
 Cohesion: 0.27
 Nodes (10): alignFaceToTensor(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), main(), MODELS_DIR (+2 more)
 
-### Community 122 - "handler"
-Cohesion: 0.21
-Nodes (15): extractStaffToken(), getActiveDeviceForStaff(), getSupabaseClient(), handler(), sendJsonResponse(), verifyStaffToken(), assert(), mockReqRes() (+7 more)
+### Community 122 - "lib/admin-auth.ts"
+Cohesion: 0.40
+Nodes (10): AuthenticatedAdmin, clearAdminToken(), getAdminToken(), getCachedAdmin(), loginAdmin(), logoutAdmin(), parseAdminToken(), setAdminToken() (+2 more)
 
 ### Community 123 - "verify-arcface-model-parity.js"
 Cohesion: 0.24
@@ -703,8 +699,8 @@ Cohesion: 0.27
 Nodes (10): ChartConfig, ChartContainer, ChartContext, ChartContextProps, ChartLegendContent, ChartStyle(), ChartTooltipContent, getPayloadConfigFromPayload() (+2 more)
 
 ### Community 125 - "LivenessSession"
-Cohesion: 0.18
-Nodes (6): runFullVerificationSuite(), runTestSuite(), runAttackSuite(), HeadPoseAngles, TemporalHeadPoseDetector, LivenessSession
+Cohesion: 0.14
+Nodes (10): createMock68Landmarks(), runFullVerificationSuite(), runTestSuite(), createMock68Landmarks(), runAttackSuite(), softmax(), HeadPoseAngles, TemporalHeadPoseDetector (+2 more)
 
 ### Community 126 - "CampusAttend — System Architecture and Operational Workflows"
 Cohesion: 0.11
@@ -718,25 +714,25 @@ Nodes (9): alignFaceToTensor(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_P
 Cohesion: 0.31
 Nodes (9): align112FromRawImage(), ARCFACE_REFERENCE_POINTS, cosineDistance(), estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, pool, run() (+1 more)
 
-### Community 129 - "diagnose-live-difference.js"
+### Community 129 - "find-failed-attempt-and-diagnose.js"
 Cohesion: 0.29
-Nodes (9): ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, engineTransform(), extract5Landmarks(), MODELS_DIR, PHOTOS_DIR, runDiagnosis() (+1 more)
+Nodes (9): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), findAndDiagnose(), MODELS_DIR (+1 more)
 
-### Community 130 - "diagnose-specific-failed-attempt.js"
-Cohesion: 0.29
-Nodes (9): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, OUTPUT_DIR (+1 more)
+### Community 130 - "pagination.tsx"
+Cohesion: 0.24
+Nodes (9): ButtonProps, Pagination(), PaginationContent, PaginationEllipsis(), PaginationItem, PaginationLink(), PaginationLinkProps, PaginationNext() (+1 more)
 
 ### Community 131 - "CampusAttendApp.kt"
-Cohesion: 0.18
+Cohesion: 0.15
 Nodes (3): CampusAttendApp, AndroidNotificationManager, CampusFirebaseMessagingService
 
 ### Community 132 - "CampusAttend — Comprehensive Technical Viva Voce Preparation Guide"
 Cohesion: 0.12
-Nodes (15): CampusAttend — Comprehensive Technical Viva Voce Preparation Guide, Category 3: Active Liveness & Presentation Attack Detection, Category 4: Android Security & Hardware Cryptography, Category 7: Frontend & Mobile Viewport Engineering, Category 8: Testing, Limitations & Academic Evaluation, Q10: How does the system estimate head yaw and pitch from facial landmarks?, Q11: Where are facial biometric templates stored, and why are they not stored on Supabase?, Q12: How does `BiometricKeystoreManager.kt` protect biometric embeddings using the Android Keystore? (+7 more)
+Nodes (15): CampusAttend — Comprehensive Technical Viva Voce Preparation Guide, Category 1: System Architecture & Overall Rationale, Category 4: Android Security & Hardware Cryptography, Category 6: Database & Serverless Architecture, Category 7: Frontend & Mobile Viewport Engineering, Q11: Where are facial biometric templates stored, and why are they not stored on Supabase?, Q12: How does `BiometricKeystoreManager.kt` protect biometric embeddings using the Android Keystore?, Q13: What prevents an employee from re-enrolling a friend's face on their device to enable proxy attendance? (+7 more)
 
-### Community 133 - "utils.ts"
-Cohesion: 0.16
-Nodes (21): SettingsSections(), ToggleRow(), AppShell(), AppShellProps, SidebarNav(), NavItem, DropdownMenuContent, DropdownMenuItem (+13 more)
+### Community 133 - ".findBestMatch"
+Cohesion: 0.44
+Nodes (3): FaceMatchingService, IdentityEvaluation, MatchResult
 
 ### Community 134 - "Scalable Staff Face Database & Biometric Enrollment System"
 Cohesion: 0.13
@@ -746,9 +742,9 @@ Nodes (14): 1. PostgreSQL Database Schema & Architecture, 2. One-to-Many Relatio
 Cohesion: 0.30
 Nodes (3): BiometricKeystoreManager, DeviceKeyResult, EncryptedResult
 
-### Community 136 - "supabase.ts"
-Cohesion: 0.36
-Nodes (7): AttendanceRecord, Device, FaceDetectionLog, FaceEmbedding, GeofenceZone, SecurityEvent, Staff
+### Community 136 - "use-attendance.ts"
+Cohesion: 0.13
+Nodes (20): AttendanceDetailDialogProps, AttendanceRecord, formatDisplayDate(), getMonthKey(), getWeekdayName(), getWorkingDaysInMonth(), MonthlyStats, useAttendance() (+12 more)
 
 ### Community 137 - "device-info.ts"
 Cohesion: 0.36
@@ -774,9 +770,13 @@ Nodes (8): alignFaceToTensor(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_P
 Cohesion: 0.31
 Nodes (8): alignFaceToTensor(), ARCFACE_REFERENCE_POINTS, estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, ONNX_PATH, ROOT, test()
 
-### Community 144 - "test-critical-security-hardening.ts"
-Cohesion: 0.33
-Nodes (9): assert(), callApi(), envPath, mintAdminToken(), mintNetworkToken(), mintStaffToken(), pool, runRegressionSuite() (+1 more)
+### Community 144 - "test-umeyama-fix.js"
+Cohesion: 0.36
+Nodes (8): align112FromRawImage(), ARCFACE_REFERENCE_POINTS, cosineDistance(), estimateSimilarityTransformCorrect(), extract5Landmarks(), extractEmbedding(), MODELS_DIR, run()
+
+### Community 145 - "jsdelivr-download.cjs"
+Cohesion: 0.29
+Nodes (7): dest, downloadFile(), fs, https, main(), models, path
 
 ### Community 146 - "verify-self-consistency.js"
 Cohesion: 0.33
@@ -799,8 +799,8 @@ Cohesion: 0.32
 Nodes (5): ARCFACE_REFERENCE_POINTS, estimateSimilarityTransform(), main(), processFrame(), warpImage()
 
 ### Community 151 - "wifi-status.ts"
-Cohesion: 0.27
-Nodes (10): APPROVED_CAMPUS_BSSIDS, CAMPUS_WIFI_FAILURE_MESSAGE, createNetworkAuthToken(), handler(), isAuthorizedCampusBssid(), normalizeBssid(), REGISTERED_CAMPUS_BSSID, SECONDARY_APPROVED_BSSID (+2 more)
+Cohesion: 0.21
+Nodes (13): APPROVED_CAMPUS_BSSIDS, CAMPUS_WIFI_FAILURE_MESSAGE, createNetworkAuthToken(), handler(), isAuthorizedCampusBssid(), normalizeBssid(), REGISTERED_CAMPUS_BSSID, SECONDARY_APPROVED_BSSID (+5 more)
 
 ### Community 153 - "diagnose-live-matching.js"
 Cohesion: 0.33
@@ -810,6 +810,10 @@ Nodes (8): alignFaceToTensor(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_P
 Cohesion: 0.25
 Nodes (10): alignFaceToTensor(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), main(), MODELS_DIR (+2 more)
 
+### Community 156 - "network-info.ts"
+Cohesion: 0.48
+Nodes (6): extractTrustedClientIp(), getAuthorizedCampusEgressIps(), handler(), isPrivateIp(), sanitizeIp(), VERIFIED_SONA_EGRESS_IPS
+
 ### Community 157 - "trace-session-56c2a043-direct.js"
 Cohesion: 0.27
 Nodes (10): align112(), ARCFACE_REFERENCE_POINTS, computeVectorFingerprint(), cosineDistance(), DB_PATH, estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR (+2 more)
@@ -817,6 +821,10 @@ Nodes (10): align112(), ARCFACE_REFERENCE_POINTS, computeVectorFingerprint(), co
 ### Community 158 - "router.tsx"
 Cohesion: 0.29
 Nodes (6): @tanstack/react-query@^5.101.1, @tanstack/react-query, getRouter(), Register, routeTree, startInstance
+
+### Community 159 - "AntiSpoofService"
+Cohesion: 0.17
+Nodes (4): AntiSpoofAggregatedResult, AntiSpoofService, PresentationAttackAnalysis, softmax()
 
 ### Community 160 - "test-attendance-persistence-history.js"
 Cohesion: 0.48
@@ -826,21 +834,17 @@ Nodes (6): createMockRes(), mintAdminToken(), mintNetworkToken(), mintStaffToken
 Cohesion: 0.29
 Nodes (5): ARCFACE_REFERENCE_POINTS, flippedCorrectLandmarks, normalLandmarks, resFlipped, resNormal
 
-### Community 163 - "error-capture.ts"
-Cohesion: 0.38
-Nodes (4): describeError(), describeStatus(), originalConsoleError, safeStringify()
+### Community 163 - "test-arcface-mirror-eval.js"
+Cohesion: 0.33
+Nodes (3): ARCFACE_REFERENCE_POINTS, estimateSimilarityTransform(), test()
 
 ### Community 164 - "TemporalLivenessTracker"
 Cohesion: 0.33
 Nodes (3): EARSample, StreamState, TemporalLivenessTracker
 
-### Community 165 - "test-two-stage-face-approval-workflow.js"
-Cohesion: 0.53
-Nodes (5): assert(), computeCanonicalTemplateDigest(), mockReqRes(), runTestSuite(), supabase
-
-### Community 166 - "ref_node_assert"
-Cohesion: 0.43
-Nodes (5): generateDeviceKeyPair(), runProductionTests(), signWithDeviceKey(), supabase, test()
+### Community 166 - "Category 3: Active Liveness & Presentation Attack Detection"
+Cohesion: 0.50
+Nodes (4): Category 3: Active Liveness & Presentation Attack Detection, Q10: How does the system estimate head yaw and pitch from facial landmarks?, Q8: What anti-spoofing techniques does CampusAttend use?, Q9: Why were nodding and blinking removed from the attendance challenge?
 
 ### Community 168 - "calc-transform.js"
 Cohesion: 0.40
@@ -862,9 +866,9 @@ Nodes (4): generateEcKeyPair(), request(), runTest(), signData()
 Cohesion: 0.40
 Nodes (3): ARCFACE_REFERENCE_POINTS, { invM }, src
 
-### Community 174 - "Category 1: System Architecture & Overall Rationale"
+### Community 174 - "Category 8: Testing, Limitations & Academic Evaluation"
 Cohesion: 0.50
-Nodes (4): Category 1: System Architecture & Overall Rationale, Q1: What is CampusAttend, and what core technical problems does it solve?, Q2: Why did you choose a hybrid web/Android architecture instead of a purely native or purely web approach?, Q3: What are the three factors of attendance verification, and why must all three be satisfied concurrently?
+Nodes (4): Category 8: Testing, Limitations & Academic Evaluation, Q21: What automated tests exist in the project, and what were the results?, Q22: What are the biometric performance metrics (FAR, FRR, EER) of CampusAttend?, Q23: Has CampusAttend been tested on a physical Android device?
 
 ### Community 175 - "lovable-error-reporting.ts"
 Cohesion: 0.40
@@ -874,17 +878,9 @@ Nodes (3): LovableErrorOptions, LovableEvents, Window
 Cohesion: 0.50
 Nodes (4): Category 5: Geofencing, Location & Kalman Filtering, Q14: How does CampusAttend verify that a user is physically inside the campus?, Q15: Why is a 1D Kalman Filter used for GPS coordinates?, Q16: Can a user bypass the geofence using a fake GPS or mock location application?
 
-### Community 180 - "Category 6: Database & Serverless Architecture"
-Cohesion: 0.50
-Nodes (4): Category 6: Database & Serverless Architecture, Q17: What tables exist in the Supabase PostgreSQL database, and what are their roles?, Q18: What is the purpose of the `atomic_consume_face_approval_token` stored procedure?, Q19: How are duplicate punches prevented if an employee taps "Mark Attendance" multiple times?
-
 ### Community 181 - "Geo-fenced attendence system"
 Cohesion: 0.50
 Nodes (3): Build with Lovable, Development, Geo-fenced attendence system
-
-### Community 184 - "test-reenroll-modal-responsive-layout.js"
-Cohesion: 0.20
-Nodes (8): dialogUiCode, dialogUiPath, __dirname, faceEnrollmentCode, faceEnrollmentPath, __filename, rootDir, viewports
 
 ### Community 185 - "verify-live-pipeline-full.js"
 Cohesion: 0.29
@@ -894,10 +890,6 @@ Nodes (9): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), DB_PATH, esti
 Cohesion: 0.22
 Nodes (9): Command, CommandDialog(), CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator (+1 more)
 
-### Community 187 - "sheet.tsx"
-Cohesion: 0.31
-Nodes (9): SheetContent, SheetContentProps, SheetDescription, SheetFooter(), SheetHeader(), SheetOverlay, SheetTitle, sheetVariants (+1 more)
-
 ### Community 188 - "test-db-reproducibility.js"
 Cohesion: 0.33
 Nodes (8): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), estimateSimilarityTransform(), extract5Landmarks(), MODELS_DIR, pool, test()
@@ -905,10 +897,6 @@ Nodes (8): align112(), ARCFACE_REFERENCE_POINTS, cosineDistance(), estimateSimil
 ### Community 190 - "test-mobile-vs-stored.js"
 Cohesion: 0.25
 Nodes (5): ARCFACE_REFERENCE_POINTS, cosineDistance(), MODELS_DIR, pool, run()
-
-### Community 191 - "breadcrumb.tsx"
-Cohesion: 0.25
-Nodes (7): Breadcrumb, BreadcrumbEllipsis(), BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator()
 
 ### Community 192 - "drawer.tsx"
 Cohesion: 0.29
@@ -922,37 +910,33 @@ Nodes (7): NavigationMenu, NavigationMenuContent, NavigationMenuIndicator, Navig
 Cohesion: 0.38
 Nodes (5): ARCFACE_REFERENCE_POINTS, auditFrame(), computeFloat32Checksum(), cosineDistance(), pool
 
-### Community 195 - "toggle-group.tsx"
-Cohesion: 0.43
-Nodes (5): ToggleGroup, ToggleGroupContext, ToggleGroupItem, Toggle, toggleVariants
+### Community 195 - "class-variance-authority"
+Cohesion: 0.20
+Nodes (11): class-variance-authority@^0.7.1, class-variance-authority, Alert, AlertDescription, AlertTitle, alertVariants, ToggleGroup, ToggleGroupContext (+3 more)
 
-### Community 197 - "alert.tsx"
-Cohesion: 0.50
-Nodes (4): Alert, AlertDescription, AlertTitle, alertVariants
-
-### Community 198 - "input-otp.tsx"
-Cohesion: 0.40
-Nodes (4): InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot
+### Community 198 - "utils.ts"
+Cohesion: 0.09
+Nodes (15): stateStyles, VerificationState, HoverCardContent, InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot, PopoverContent (+7 more)
 
 ## Knowledge Gaps
 - **22 isolated node(s):** `NoFace`, `AWAITING_OPEN`, `CLOSING`, `REOPENED`, `LEFT` (+17 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1348 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **75 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1357 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **73 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `BiometricKeystoreManager` connect `BiometricKeystoreManager` to `AndroidBiometricBridge`, `AndroidBiometricBridge.kt`, `VerificationViewModel.kt`, `CampusAttend — Comprehensive Technical Viva Voce Preparation Guide`, `BiometricKeystoreManager.kt`, `CampusAttend — System Architecture and Operational Workflows`?**
-  _High betweenness centrality (0.297) - this node is a cross-community bridge._
+  _High betweenness centrality (0.314) - this node is a cross-community bridge._
 - **What connects `NoFace`, `AWAITING_OPEN`, `CLOSING` to the rest of the system?**
   _22 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `ref_fs` be split into smaller, more focused modules?**
-  _Cohesion score 0.03570269393054203 - nodes in this community are weakly interconnected._
-- **Why does `2. Comprehensive Implementation Verification Matrix` connect `arcface-engine.ts` to `liveness-engine.ts`, `BiometricKeystoreManager`?**
-  _High betweenness centrality (0.294) - this node is a cross-community bridge._
+  _Cohesion score 0.047619047619047616 - nodes in this community are weakly interconnected._
+- **Why does `2. Comprehensive Implementation Verification Matrix` connect `FaceScanDialog.tsx` to `liveness-engine.ts`, `BiometricKeystoreManager`?**
+  _High betweenness centrality (0.310) - this node is a cross-community bridge._
 - **Should `cn` be split into smaller, more focused modules?**
-  _Cohesion score 0.0494458653026428 - nodes in this community are weakly interconnected._
-- **Why does `AndroidBiometricBridge` connect `AndroidBiometricBridge` to `MainActivity.kt`, `AndroidBiometricBridge.kt`, `BiometricKeystoreManager`, `Category 1: System Architecture & Overall Rationale`, `BiometricRepository`, `CampusAttend — System Architecture and Operational Workflows`?**
-  _High betweenness centrality (0.139) - this node is a cross-community bridge._
+  _Cohesion score 0.059887005649717516 - nodes in this community are weakly interconnected._
+- **Why does `AndroidBiometricBridge` connect `AndroidBiometricBridge` to `MainActivity.kt`, `AndroidBiometricBridge.kt`, `CampusAttend — Comprehensive Technical Viva Voce Preparation Guide`, `BiometricKeystoreManager`, `BiometricRepository`, `CampusAttend — System Architecture and Operational Workflows`?**
+  _High betweenness centrality (0.134) - this node is a cross-community bridge._
 - **Should `MainActivity.kt` be split into smaller, more focused modules?**
-  _Cohesion score 0.0380517503805175 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.04242424242424243 - nodes in this community are weakly interconnected._
