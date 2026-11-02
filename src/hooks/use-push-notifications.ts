@@ -18,6 +18,7 @@ export interface PushNotificationState {
   isRegistered: boolean;
   requestPermission: () => Promise<string>;
   openSettings: () => void;
+  scheduleTestAlert: (delaySeconds?: number) => boolean;
 }
 
 export function usePushNotifications(): PushNotificationState {
@@ -85,6 +86,16 @@ export function usePushNotifications(): PushNotificationState {
     }
   }, []);
 
+  // Schedule native test alert for background/closed verification
+  const scheduleTestAlert = useCallback((delaySeconds = 5): boolean => {
+    if (typeof window === "undefined") return false;
+    const bridge = (window as any).AndroidNotificationBridge;
+    if (bridge && typeof bridge.scheduleTestReminder === "function") {
+      return bridge.scheduleTestReminder(delaySeconds);
+    }
+    return false;
+  }, []);
+
   // Sync token to server when active staff member is resolved
   useEffect(() => {
     const staffCode = activeStaff?.staffId;
@@ -117,7 +128,22 @@ export function usePushNotifications(): PushNotificationState {
         });
 
         if (res.ok) {
+          const json = await res.json();
           setIsRegistered(true);
+
+          // Synchronize institution reminder times to Android native AlarmManager for background alarms
+          const sched = json.reminderSchedule;
+          const bridge = typeof window !== "undefined" ? (window as any).AndroidNotificationBridge : null;
+          if (sched && sched.enabled && bridge && typeof bridge.syncReminderSchedule === "function") {
+            const daysStr = Array.isArray(sched.applicable_days) ? sched.applicable_days.join(",") : "";
+            bridge.syncReminderSchedule(
+              sched.reminder_time_1 || "09:00",
+              sched.reminder_time_2 || "10:00",
+              !!sched.reminder_time_2_enabled,
+              daysStr,
+              sched.timezone || "Asia/Kolkata"
+            );
+          }
         }
       } catch (err) {
         console.warn("[usePushNotifications] Token synchronization notice:", err);
@@ -161,5 +187,6 @@ export function usePushNotifications(): PushNotificationState {
     isRegistered,
     requestPermission,
     openSettings,
+    scheduleTestAlert,
   };
 }

@@ -784,6 +784,7 @@ export default async function handler(req: any, res?: any) {
     try {
       const now = new Date().toISOString();
       const platform = (body?.platform || "android").toLowerCase();
+      let reminderSchedule: any = null;
       let record: any = {
         staff_code: targetStaffCode,
         device_id: deviceId,
@@ -836,12 +837,35 @@ export default async function handler(req: any, res?: any) {
         } catch (secErr) {
           console.warn("[api/device] Push token security_event fallback:", secErr);
         }
+        try {
+          const { data: secSet } = await supabase
+            .from("security_events")
+            .select("device")
+            .eq("event", "REMINDER_SETTINGS")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (secSet?.device) {
+            const p = JSON.parse(secSet.device);
+            if (p) {
+              reminderSchedule = {
+                enabled: p.en !== false,
+                reminder_time_1: p.t1 || "09:00",
+                reminder_time_2_enabled: !!p.t2en,
+                reminder_time_2: p.t2 || "10:00",
+                applicable_days: p.days || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+                timezone: p.tz || "Asia/Kolkata",
+              };
+            }
+          }
+        } catch {}
       }
 
       return sendJsonResponse(res, 200, {
         success: true,
         message: "Push token registered successfully for staff reminders.",
         deviceToken: record,
+        reminderSchedule,
       });
     } catch (tokenErr: any) {
       console.warn("[api/device] Push token registration warning:", tokenErr);

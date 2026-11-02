@@ -19,15 +19,15 @@
     "ast_empty": true
   },
   "android/app/build.gradle.kts": {
-    "mtime": 1788078410.8624587,
-    "seen": 1793625222.3884556,
-    "ast_hash": "2f51b9798ee2ea9e19b307f617d68f9b",
-    "semantic_hash": "2f51b9798ee2ea9e19b307f617d68f9b"
+    "mtime": 1793632776.0169115,
+    "seen": 1793633782.640565,
+    "ast_hash": "e4ec968e42f9380d338dd7626284748c",
+    "semantic_hash": ""
   },
   "android/app/src/main/java/com/campusattend/biometric/CampusAttendApp.kt": {
-    "mtime": 1793629694.6990385,
-    "seen": 1793630782.86936,
-    "ast_hash": "9475341e0383c6a2ab381b9f9ce2fe61",
+    "mtime": 1793632874.9570284,
+    "seen": 1793633782.640565,
+    "ast_hash": "08913cc1935d8185d846194e726bb97e",
     "semantic_hash": ""
   },
   "android/app/src/main/java/com/campusattend/biometric/MainActivity.kt": {
@@ -175,16 +175,16 @@
     "semantic_hash": "d5b9eb88cfefa449473c6539a7c8fd16"
   },
   "android/app/src/main/java/com/campusattend/biometric/notification/AndroidNotificationBridge.kt": {
-    "mtime": 1793629747.1350257,
-    "seen": 1793630782.8909154,
-    "ast_hash": "1b0bc35d0c9d1bffbb35a6f98bc606ff",
+    "mtime": 1793632861.764221,
+    "seen": 1793633782.6512518,
+    "ast_hash": "644bf99f69e5406a2ec113837cd5db90",
     "semantic_hash": ""
   },
   "android/app/src/main/java/com/campusattend/biometric/notification/AndroidNotificationManager.kt": {
-    "mtime": 1793517471.867591,
-    "seen": 1793625222.3944552,
-    "ast_hash": "6eb8f899adc206bfc43c4bc5d5e5946c",
-    "semantic_hash": "6eb8f899adc206bfc43c4bc5d5e5946c"
+    "mtime": 1793632848.879796,
+    "seen": 1793633782.6512518,
+    "ast_hash": "bf446ac5e14647c429db49a7c965a10a",
+    "semantic_hash": ""
   },
   "android/app/src/main/java/com/campusattend/biometric/recognition/FaceEmbeddingService.kt": {
     "mtime": 1787587908.122578,
@@ -259,10 +259,10 @@
     "semantic_hash": "ff607dfadd3d7b58e00579c76b713101"
   },
   "android/build.gradle.kts": {
-    "mtime": 1788078406.3726509,
-    "seen": 1793625222.3974545,
-    "ast_hash": "3112d63b21968203cbe898520619dba4",
-    "semantic_hash": "3112d63b21968203cbe898520619dba4"
+    "mtime": 1793632757.613961,
+    "seen": 1793633782.6582286,
+    "ast_hash": "c16fe601e40782ef2c4a8fd532b76f17",
+    "semantic_hash": ""
   },
   "android/settings.gradle.kts": {
     "mtime": 1788078233.1008663,
@@ -283,9 +283,9 @@
     "semantic_hash": "a72add0e0bd0492e494ec323b11cec64"
   },
   "api/admin/staff/index.ts": {
-    "mtime": 1793630131.6380148,
-    "seen": 1793630782.905789,
-    "ast_hash": "c958662f7c4e1c9186786c9ce0a2d493",
+    "mtime": 1793632046.6434422,
+    "seen": 1793633782.6597533,
+    "ast_hash": "66244b3c586ff94cdcc362f5ef6c4e88",
     "semantic_hash": ""
   },
   "api/attendance.ts": {
@@ -295,10 +295,10 @@
     "semantic_hash": "b8d2e861d2cc367976aaf1ab5eabb875"
   },
   "api/device/index.ts": {
-    "mtime": 1793544952.6747785,
-    "seen": 1793625222.3984544,
-    "ast_hash": "2681edb7d75fe5594aa693af2a595a61",
-    "semantic_hash": "2681edb7d75fe5594aa693af2a595a61"
+    "mtime": 1793633298.5218313,
+    "seen": 1793633782.6597533,
+    "ast_hash": "af659fe936a3a581ed527ff6c7c19c56",
+    "semantic_hash": ""
   },
   "api/face/verify.ts": {
     "mtime": 1793255223.372908,
@@ -343,8 +343,8 @@
     "semantic_hash": "d9a5358de725b840c808a17fa6638620"
   },
   "data/attendance-reminder-settings.json": {
-    "mtime": 1793630674.372419,
-    "seen": 1793630782.9127965,
+    "mtime": 1793633741.045799,
+    "seen": 1793633782.662784,
     "ast_hash": "6bcee78ed930dbedc95aebc0dab95c08",
     "semantic_hash": "6bcee78ed930dbedc95aebc0dab95c08",
     "ast_empty": true
@@ -2539,9 +2539,9 @@
     "semantic_hash": "1bb3ebac7752b497a78d34e341975bbd"
   },
   "src/hooks/use-push-notifications.ts": {
-    "mtime": 1793629771.680127,
-    "seen": 1793630783.25565,
-    "ast_hash": "cc5ae536d1c905d81ab02adf275a7504",
+    "mtime": 1793633346.792727,
+    "seen": 1793633782.8280823,
+    "ast_hash": "b57e28644600053269a2f155aad5af93",
     "semantic_hash": ""
   },
   "src/hooks/use-wifi-status.ts": {
@@ -2809,9 +2809,9 @@
     "semantic_hash": "fdf005db398ec6e8ea556a1ff47517a1"
   },
   "src/routes/admin.attendance-reminders.tsx": {
-    "mtime": 1793630348.4098077,
-    "seen": 1793630783.2945287,
-    "ast_hash": "a8938086759db5a98358ba386a0d4374",
+    "mtime": 1793633581.3414533,
+    "seen": 1793633782.8484585,
+    "ast_hash": "da5fe344b0deff70141785e545033680",
     "semantic_hash": ""
   },
   "src/routes/admin.attendance.tsx": {
@@ -2899,8 +2899,8 @@
     "semantic_hash": "d0a118c71181a468d241412d1f7dc4dc"
   },
   "src/routes/mark-attendance.tsx": {
-    "mtime": 1793629810.421518,
-    "seen": 1793630783.3064427,
+    "mtime": 1793632406.7838304,
+    "seen": 1793633782.8596396,
     "ast_hash": "d2f83bb259874604dbcbaec64d46b5a3",
     "semantic_hash": ""
   },
@@ -4252,6 +4252,30 @@
     "mtime": 1787388225.223708,
     "seen": 1793630783.319871,
     "ast_hash": "c08e522b0428fdcf36500279a82b28ea",
+    "semantic_hash": ""
+  },
+  "android/app/google-services.json": {
+    "mtime": 1793632749.1936224,
+    "seen": 1793633782.640565,
+    "ast_hash": "6db231bfa7cb12a72c98541a4cacdb28",
+    "semantic_hash": ""
+  },
+  "android/app/src/main/java/com/campusattend/biometric/notification/AttendanceAlarmScheduler.kt": {
+    "mtime": 1793632814.3538368,
+    "seen": 1793633782.6512518,
+    "ast_hash": "802366d300de7087e77c2dbb83dc4876",
+    "semantic_hash": ""
+  },
+  "android/app/src/main/java/com/campusattend/biometric/notification/AttendanceReminderReceiver.kt": {
+    "mtime": 1793632826.7431295,
+    "seen": 1793633782.6512518,
+    "ast_hash": "9eb15c95d7374b3bf39fadb2384f2dbf",
+    "semantic_hash": ""
+  },
+  "android/app/src/main/java/com/campusattend/biometric/notification/CampusFirebaseMessagingService.kt": {
+    "mtime": 1793632794.3676155,
+    "seen": 1793633782.6512518,
+    "ast_hash": "14716c92a9d1b052e68b2cb4b2dbba54",
     "semantic_hash": ""
   },
   "package-lock.json": {

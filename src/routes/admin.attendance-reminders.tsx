@@ -197,7 +197,19 @@ function AdminAttendanceRemindersPage() {
       if (res.ok) {
         const json = await res.json();
         if (json.success) {
-          if (json.settings) setSettings(json.settings);
+          if (json.settings) {
+          setSettings(json.settings);
+          const bridge = typeof window !== "undefined" ? (window as any).AndroidNotificationBridge : null;
+          if (bridge && typeof bridge.syncReminderSchedule === "function" && json.settings.enabled) {
+            bridge.syncReminderSchedule(
+              json.settings.reminder_time_1 || "09:00",
+              json.settings.reminder_time_2 || "10:00",
+              !!json.settings.reminder_time_2_enabled,
+              (json.settings.applicable_days || []).join(","),
+              json.settings.timezone || "Asia/Kolkata"
+            );
+          }
+        }
           if (json.stats) setStats(json.stats);
           if (Array.isArray(json.recentLogs)) setRecentLogs(json.recentLogs);
           if (Array.isArray(json.recentRuns)) setRecentRuns(json.recentRuns);
@@ -207,6 +219,18 @@ function AdminAttendanceRemindersPage() {
             if (!testStaffCode && json.staffList.length > 0) {
               setTestStaffCode(json.staffList[0].staff_code);
             }
+          }
+
+          // Sync reminder times to Android native AlarmManager for background alarms
+          const bridge = typeof window !== "undefined" ? (window as any).AndroidNotificationBridge : null;
+          if (bridge && typeof bridge.syncReminderSchedule === "function" && json.settings?.enabled) {
+            bridge.syncReminderSchedule(
+              json.settings.reminder_time_1 || "09:00",
+              json.settings.reminder_time_2 || "10:00",
+              !!json.settings.reminder_time_2_enabled,
+              (json.settings.applicable_days || []).join(","),
+              json.settings.timezone || "Asia/Kolkata"
+            );
           }
         }
       } else if (res.status === 401) {
@@ -250,7 +274,19 @@ function AdminAttendanceRemindersPage() {
         toast.success("Reminder Settings Saved", {
           description: "Automated schedule and notification payload updated successfully.",
         });
-        if (json.settings) setSettings(json.settings);
+        if (json.settings) {
+          setSettings(json.settings);
+          const bridge = typeof window !== "undefined" ? (window as any).AndroidNotificationBridge : null;
+          if (bridge && typeof bridge.syncReminderSchedule === "function" && json.settings.enabled) {
+            bridge.syncReminderSchedule(
+              json.settings.reminder_time_1 || "09:00",
+              json.settings.reminder_time_2 || "10:00",
+              !!json.settings.reminder_time_2_enabled,
+              (json.settings.applicable_days || []).join(","),
+              json.settings.timezone || "Asia/Kolkata"
+            );
+          }
+        }
         if (json.stats) setStats(json.stats);
       } else {
         toast.error("Failed to save settings", {
@@ -342,6 +378,39 @@ function AdminAttendanceRemindersPage() {
       });
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  // Handle Local / Native Android Background Alarm Test (5 seconds delay)
+  const handleTestNativeAlarm = () => {
+    const bridge = typeof window !== "undefined" ? (window as any).AndroidNotificationBridge : null;
+    if (bridge && typeof bridge.scheduleTestReminder === "function") {
+      const ok = bridge.scheduleTestReminder(
+        5,
+        "CampusAttend • Background Push Test",
+        `Test push for ${testStaffCode || "faculty"}. Fired via Android AlarmManager even when app is closed!`
+      );
+      if (ok) {
+        toast.success("Background Alarm Armed (5s)", {
+          description: "Close or background CampusAttend immediately. The notification will trigger in 5 seconds via Android AlarmManager.",
+        });
+      } else {
+        toast.error("Failed to arm native alarm", {
+          description: "Check Android exact alarm permission.",
+        });
+      }
+    } else {
+      toast.info("Armed 5-Second Test Timer", {
+        description: "Testing in browser mode. In Android APK, this tests native AlarmManager when closed.",
+      });
+      setTimeout(() => {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("CampusAttend • Attendance Reminder", {
+            body: `Test reminder for ${testStaffCode || "faculty"}. Please mark your attendance.`,
+            icon: "/icons/icon-192x192.png",
+          });
+        }
+      }, 5000);
     }
   };
 
@@ -688,24 +757,36 @@ function AdminAttendanceRemindersPage() {
                 </Select>
               </div>
 
-              <Button
-                variant="outline"
-                onClick={handleSendTestNotification}
-                disabled={isTesting || !testStaffCode}
-                className="gap-2 min-w-[190px]"
-              >
-                {isTesting ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Sending Test Push…
-                  </>
-                ) : (
-                  <>
-                    <Send className="size-4" />
-                    Send Test Notification
-                  </>
-                )}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleSendTestNotification}
+                  disabled={isTesting || !testStaffCode}
+                  className="gap-2 min-w-[190px]"
+                >
+                  {isTesting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Sending Test Push…
+                    </>
+                  ) : (
+                    <>
+                      <Send className="size-4" />
+                      Send Test Notification
+                    </>
+                  )}
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  onClick={handleTestNativeAlarm}
+                  className="gap-2"
+                  title="Test notification trigger after 5 seconds via Android AlarmManager (test while app is closed)"
+                >
+                  <Clock className="size-4" />
+                  Test Background OS Alert (5s)
+                </Button>
+              </div>
             </div>
 
             {/* Selected Faculty Diagnostics Card */}

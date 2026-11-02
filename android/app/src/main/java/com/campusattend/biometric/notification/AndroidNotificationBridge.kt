@@ -119,6 +119,33 @@ class AndroidNotificationBridge(
     }
 
     @JavascriptInterface
+    fun scheduleTestReminder(delaySeconds: Int): Boolean {
+        return AttendanceAlarmScheduler.scheduleTestReminder(context, delaySeconds)
+    }
+
+    @JavascriptInterface
+    fun syncReminderSchedule(
+        time1: String,
+        time2: String?,
+        time2Enabled: Boolean,
+        days: String?,
+        timezone: String?
+    ): Boolean {
+        val applicableDays = days?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+            ?: listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+        val tz = if (timezone.isNullOrBlank()) "Asia/Kolkata" else timezone.trim()
+        AttendanceAlarmScheduler.scheduleDailyReminders(
+            context = context,
+            time1 = time1.trim(),
+            time2Enabled = time2Enabled,
+            time2 = time2?.trim() ?: "10:00",
+            applicableDays = applicableDays,
+            timezone = tz
+        )
+        return true
+    }
+
+    @JavascriptInterface
     fun getNotificationChannelInfo(): String {
         val json = JSONObject()
         json.put("channelId", AndroidNotificationManager.CHANNEL_ID)

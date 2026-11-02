@@ -47,6 +47,16 @@ object AndroidNotificationManager {
     }
 
     /**
+     * Save the real Firebase Cloud Messaging token.
+     */
+    fun saveDeviceToken(context: Context, token: String) {
+        if (token.isBlank()) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_DEVICE_TOKEN, token.trim()).apply()
+        Log.i("NotificationManager", "Stored device push token: $token")
+    }
+
+    /**
      * Retrieve or persistently generate this device's notification push token.
      */
     fun getOrCreateDeviceToken(context: Context): String {
