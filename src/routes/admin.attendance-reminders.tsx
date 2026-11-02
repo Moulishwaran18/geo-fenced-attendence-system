@@ -7,27 +7,31 @@
  * 1. Administrator-only access control.
  * 2. Real-time configuration of automatic reminder times, working days, and timezone.
  * 3. Daily delivery statistics and active attendance status dashboard.
- * 4. Manual single-staff test notification trigger (zero side-effects on attendance records).
- * 5. Immediate manual scheduler execution.
- * 6. Audit logs showing delivery status, idempotency keys, and errors.
+ * 4. Manual single-staff test notification trigger (uses ONLY real database staff).
+ * 5. Immediate manual scheduler execution with confirmation dialog and eligibility breakdown.
+ * 6. Audit logs showing delivery status, idempotency keys, and error reasons.
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
+  AlertTriangle,
   Bell,
   BellOff,
   BellRing,
   CalendarCheck,
   CheckCircle2,
   Clock,
+  ExternalLink,
   Globe,
+  Info,
   Loader2,
   Play,
   RefreshCw,
   Send,
   Shield,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Users,
   XCircle,
@@ -49,8 +53,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useAdminAuth, getAdminAuthHeaders } from "@/lib/admin-auth";
-import { staffDirectory } from "@/mocks/data";
 
 export const Route = createFileRoute("/admin/attendance-reminders")({
   head: () => ({
@@ -110,6 +123,31 @@ interface StatsState {
   };
 }
 
+export interface RealStaffItem {
+  id: string;
+  staff_code: string;
+  name: string;
+  department: string;
+  designation?: string;
+  active: boolean;
+  hasDevice: boolean;
+  deviceId?: string | null;
+  deviceModel?: string | null;
+  hasToken: boolean;
+  token?: string | null;
+  markedToday?: boolean;
+}
+
+interface TestDeliveryResult {
+  success: boolean;
+  staffCode: string;
+  message: string;
+  stage?: string;
+  messageId?: string;
+  error?: string;
+  timestamp: string;
+}
+
 function AdminAttendanceRemindersPage() {
   const { authenticated: isAdmin, loading: isAuthLoading } = useAdminAuth();
 
@@ -133,6 +171,10 @@ function AdminAttendanceRemindersPage() {
     notifications_failed_today: 0,
   });
 
+  const [staffList, setStaffList] = useState<RealStaffItem[]>([]);
+  const [testStaffCode, setTestStaffCode] = useState<string>("");
+  const [testResult, setTestResult] = useState<TestDeliveryResult | null>(null);
+
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [recentRuns, setRecentRuns] = useState<any[]>([]);
 
@@ -140,7 +182,7 @@ function AdminAttendanceRemindersPage() {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [isRunningManual, setIsRunningManual] = useState<boolean>(false);
-  const [testStaffCode, setTestStaffCode] = useState<string>("SCT-001");
+  const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState<boolean>(false);
 
   // Fetch reminder configuration & telemetry from server
   const loadData = useCallback(async () => {
@@ -159,6 +201,13 @@ function AdminAttendanceRemindersPage() {
           if (json.stats) setStats(json.stats);
           if (Array.isArray(json.recentLogs)) setRecentLogs(json.recentLogs);
           if (Array.isArray(json.recentRuns)) setRecentRuns(json.recentRuns);
+
+          if (Array.isArray(json.staffList)) {
+            setStaffList(json.staffList);
+            if (!testStaffCode && json.staffList.length > 0) {
+              setTestStaffCode(json.staffList[0].staff_code);
+            }
+          }
         }
       } else if (res.status === 401) {
         toast.error("Administrator session required.");
@@ -168,7 +217,7 @@ function AdminAttendanceRemindersPage() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [testStaffCode]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -218,10 +267,17 @@ function AdminAttendanceRemindersPage() {
     }
   };
 
-  // Handle Send Test Notification
+  // Handle Send Test Notification (Strictly Isolated to Single Staff)
   const handleSendTestNotification = async () => {
+    if (!testStaffCode) {
+      toast.error("Select a staff member first.");
+      return;
+    }
+
     try {
       setIsTesting(true);
+      setTestResult(null);
+
       const headers = {
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -239,27 +295,57 @@ function AdminAttendanceRemindersPage() {
       });
 
       const json = await res.json();
+      const timestamp = new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" });
+
       if (res.ok && json.success) {
         toast.success("Test Notification Dispatched", {
-          description: `Dispatched test reminder to ${testStaffCode}. Attendance records unaffected.`,
+          description: json.message || `Dispatched test reminder to ${testStaffCode}. Attendance records unaffected.`,
+        });
+        setTestResult({
+          success: true,
+          staffCode: testStaffCode,
+          message: json.message,
+          stage: json.deliveryStage || "delivered",
+          messageId: json.messageId,
+          timestamp,
         });
         if (json.stats) setStats(json.stats);
         if (Array.isArray(json.recentLogs)) setRecentLogs(json.recentLogs);
       } else {
-        toast.error("Test notification failed", {
-          description: json.message || "Failed to deliver test notification.",
+        const errorDesc = json.message || json.error || "Failed to deliver test notification.";
+        toast.error("Test Notification Failed", {
+          description: errorDesc,
         });
+        setTestResult({
+          success: false,
+          staffCode: testStaffCode,
+          message: errorDesc,
+          stage: json.deliveryStage || "failed",
+          error: json.error || "DELIVERY_ERROR",
+          timestamp,
+        });
+        if (json.stats) setStats(json.stats);
+        if (Array.isArray(json.recentLogs)) setRecentLogs(json.recentLogs);
       }
     } catch (err: any) {
+      const errorMsg = err?.message || "Network communication error.";
       toast.error("Test Notification Error", {
-        description: err?.message || "Network error.",
+        description: errorMsg,
+      });
+      setTestResult({
+        success: false,
+        staffCode: testStaffCode,
+        message: errorMsg,
+        stage: "network_error",
+        error: "NETWORK_EXCEPTION",
+        timestamp: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }),
       });
     } finally {
       setIsTesting(false);
     }
   };
 
-  // Handle Manual Immediate Scheduler Run
+  // Handle Manual Bulk Scheduler Run
   const handleRunSchedulerNow = async (slot: "first" | "second" = "first") => {
     try {
       setIsRunningManual(true);
@@ -281,8 +367,9 @@ function AdminAttendanceRemindersPage() {
 
       const json = await res.json();
       if (res.ok && json.success) {
-        toast.success("Scheduler Executed", {
-          description: json.result?.summaryMessage || "Attendance reminders evaluated and sent.",
+        const summary = json.result?.summary_message || json.message || "Attendance reminders evaluated and sent.";
+        toast.success("Scheduler Executed Successfully", {
+          description: summary,
         });
         if (json.stats) setStats(json.stats);
         if (Array.isArray(json.recentLogs)) setRecentLogs(json.recentLogs);
@@ -310,6 +397,29 @@ function AdminAttendanceRemindersPage() {
     const h12 = h % 12 === 0 ? 12 : h % 12;
     return `${String(h12).padStart(2, "0")}:${mStr} ${ampm}`;
   };
+
+  // Compute Next Expected Scheduler Run Time
+  const nextExpectedRun = useMemo(() => {
+    if (!settings.enabled) return "Disabled (Scheduler paused)";
+    const currentTime = stats.server_ist_time?.time24 || "09:00";
+    if (currentTime < settings.reminder_time_1) {
+      return `Today at ${format12h(settings.reminder_time_1)} (First Reminder)`;
+    }
+    if (settings.reminder_time_2_enabled && currentTime < settings.reminder_time_2) {
+      return `Today at ${format12h(settings.reminder_time_2)} (Second Reminder)`;
+    }
+    return `Tomorrow at ${format12h(settings.reminder_time_1)} (First Reminder)`;
+  }, [settings.enabled, settings.reminder_time_1, settings.reminder_time_2, settings.reminder_time_2_enabled, stats.server_ist_time]);
+
+  // Selected staff member record
+  const selectedStaff = useMemo(() => {
+    return staffList.find((s) => s.staff_code.toUpperCase() === testStaffCode.toUpperCase()) || null;
+  }, [staffList, testStaffCode]);
+
+  // Missing token count for unmarked faculty
+  const missingTokenCount = useMemo(() => {
+    return staffList.filter((s) => !s.markedToday && !s.hasToken).length;
+  }, [staffList]);
 
   // Toggle weekday selection
   const toggleWeekday = (day: string) => {
@@ -358,7 +468,7 @@ function AdminAttendanceRemindersPage() {
             </Button>
             <Button
               size="sm"
-              onClick={() => void handleRunSchedulerNow("first")}
+              onClick={() => setIsConfirmDialogOpen(true)}
               disabled={isRunningManual || isLoading}
               className="gap-1.5"
             >
@@ -377,6 +487,68 @@ function AdminAttendanceRemindersPage() {
           </div>
         }
       />
+
+      {/* Confirmation Dialog for Bulk Manual Scheduler Execution */}
+      <AlertDialog open={isConfirmDialogOpen} onOpenChange={setIsConfirmDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-foreground">
+              <Play className="size-5 text-primary" /> Confirm Manual Scheduler Execution
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-muted-foreground">
+              Run the attendance reminder scheduler now? This will evaluate attendance for all active faculty and send notifications to eligible staff who have not marked attendance today.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="rounded-xl border border-border/80 bg-muted/40 p-4 space-y-3">
+            <div className="font-semibold text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
+              <Info className="size-3.5 text-primary" /> Live Scheduler Evaluation Preview (Asia/Kolkata)
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="rounded-lg bg-card p-2.5 border border-border/60">
+                <span className="text-muted-foreground block">Total Active Staff:</span>
+                <strong className="text-foreground text-sm font-semibold">{stats.total_active_staff}</strong>
+              </div>
+              <div className="rounded-lg bg-card p-2.5 border border-border/60">
+                <span className="text-muted-foreground block">Marked Attendance:</span>
+                <strong className="text-emerald-600 dark:text-emerald-400 text-sm font-semibold">
+                  {stats.marked_attendance_count}
+                </strong>
+              </div>
+              <div className="rounded-lg bg-card p-2.5 border border-border/60">
+                <span className="text-muted-foreground block">Eligible for Reminder:</span>
+                <strong className="text-amber-600 dark:text-amber-400 text-sm font-semibold">
+                  {stats.unmarked_attendance_count}
+                </strong>
+              </div>
+              <div className="rounded-lg bg-card p-2.5 border border-border/60">
+                <span className="text-muted-foreground block">Missing Push Tokens:</span>
+                <strong className="text-rose-500 text-sm font-semibold">
+                  {missingTokenCount}
+                </strong>
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Staff who have already marked attendance or who already received a reminder for this slot today will be safely skipped.
+            </p>
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRunningManual}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setIsConfirmDialogOpen(false);
+                void handleRunSchedulerNow("first");
+              }}
+              disabled={isRunningManual}
+              className="gap-1.5"
+            >
+              {isRunningManual ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+              Confirm & Run Scheduler
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="space-y-6">
         {/* Live Active Configuration Summary Card */}
@@ -400,8 +572,7 @@ function AdminAttendanceRemindersPage() {
                   </Badge>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Server-side scheduler runs automatically via Vercel Cron in{" "}
-                  <strong>{settings.timezone}</strong> timezone.
+                  Server-side scheduler executes automated reminders according to <strong>{settings.timezone}</strong> timezone.
                 </p>
               </div>
             </div>
@@ -431,7 +602,7 @@ function AdminAttendanceRemindersPage() {
               </strong>
             </div>
             <div>
-              <span className="text-muted-foreground block">Applicable Days:</span>
+              <span className="text-muted-foreground block">Applicable Schedule:</span>
               <strong className="text-foreground text-sm font-semibold">
                 {settings.applicable_days.length === 6 && !settings.applicable_days.includes("Sunday")
                   ? "Mon to Sat"
@@ -439,8 +610,8 @@ function AdminAttendanceRemindersPage() {
               </strong>
             </div>
             <div>
-              <span className="text-muted-foreground block">Timezone:</span>
-              <strong className="text-foreground text-sm font-semibold">{settings.timezone}</strong>
+              <span className="text-muted-foreground block">Next Expected Run:</span>
+              <strong className="text-primary text-sm font-semibold">{nextExpectedRun}</strong>
             </div>
           </div>
         </div>
@@ -451,7 +622,7 @@ function AdminAttendanceRemindersPage() {
             <StatCard
               label="Total Active Staff"
               value={stats.total_active_staff}
-              hint="Registered faculty members"
+              hint="Real database faculty records"
               icon={Users}
               tone="primary"
             />
@@ -472,17 +643,166 @@ function AdminAttendanceRemindersPage() {
             <StatCard
               label="Notifications Sent"
               value={stats.notifications_sent_today}
-              hint="Delivered to devices today"
+              hint="Delivered push alerts today"
               icon={Send}
               tone="success"
             />
             <StatCard
-              label="Notifications Failed"
+              label="Notifications Skipped/Failed"
               value={stats.notifications_failed_today}
-              hint="Errors or missing tokens"
+              hint="Missing tokens or errors"
               icon={XCircle}
               tone={stats.notifications_failed_today > 0 ? "danger" : "neutral"}
             />
+          </div>
+        </Section>
+
+        {/* Administrator Manual Test Notification Panel */}
+        <Section
+          title="Manual Test Notification Dispatcher"
+          description="Send an isolated test attendance reminder to a specific faculty member's physical device without affecting attendance records or running bulk notifications."
+        >
+          <div className="rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-sm space-y-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div className="space-y-2 flex-1 max-w-md">
+                <Label htmlFor="test-staff-code" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Target Staff Member (Real Database Records Only)
+                </Label>
+                <Select value={testStaffCode} onValueChange={(val) => setTestStaffCode(val)}>
+                  <SelectTrigger id="test-staff-code" className="font-medium">
+                    <SelectValue placeholder="Select Real Staff Member" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {staffList.length === 0 ? (
+                      <SelectItem disabled value="none">
+                        No active faculty accounts in database
+                      </SelectItem>
+                    ) : (
+                      staffList.map((s) => (
+                        <SelectItem key={s.staff_code} value={s.staff_code}>
+                          {s.name} ({s.staff_code}) — {s.department}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Button
+                variant="outline"
+                onClick={handleSendTestNotification}
+                disabled={isTesting || !testStaffCode}
+                className="gap-2 min-w-[190px]"
+              >
+                {isTesting ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Sending Test Push…
+                  </>
+                ) : (
+                  <>
+                    <Send className="size-4" />
+                    Send Test Notification
+                  </>
+                )}
+              </Button>
+            </div>
+
+            {/* Selected Faculty Diagnostics Card */}
+            {selectedStaff && (
+              <div className="rounded-xl border border-border/80 bg-muted/20 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-foreground text-sm">{selectedStaff.name}</span>
+                    <Badge variant="outline" className="font-mono text-xs">
+                      {selectedStaff.staff_code}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">• {selectedStaff.department}</span>
+                  </div>
+                  <Badge variant={selectedStaff.active ? "default" : "destructive"}>
+                    {selectedStaff.active ? "Active Faculty" : "Inactive"}
+                  </Badge>
+                </div>
+
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {/* Physical Device Binding */}
+                  {selectedStaff.hasDevice ? (
+                    <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 gap-1">
+                      <Smartphone className="size-3" />
+                      Device: {selectedStaff.deviceModel || selectedStaff.deviceId}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-amber-600 border-amber-300 gap-1">
+                      <AlertTriangle className="size-3" />
+                      No Physical Device Registered
+                    </Badge>
+                  )}
+
+                  {/* FCM / Push Token Status */}
+                  {selectedStaff.hasToken ? (
+                    <Badge className="bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20 gap-1">
+                      <BellRing className="size-3" />
+                      Push Token Registered
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-rose-500 border-rose-300 gap-1">
+                      <BellOff className="size-3" />
+                      No Push Token Registered
+                    </Badge>
+                  )}
+
+                  {/* Today's Attendance Record */}
+                  {selectedStaff.markedToday ? (
+                    <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 gap-1">
+                      <CheckCircle2 className="size-3" />
+                      Attendance Marked Today
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-muted-foreground gap-1">
+                      <Clock className="size-3" />
+                      Attendance Not Yet Marked
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Test Notification Real-Time Dispatch Result */}
+            {testResult && (
+              <div
+                className={`rounded-xl border p-4 text-xs space-y-1.5 ${
+                  testResult.success
+                    ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-950 dark:text-emerald-200"
+                    : "border-rose-500/30 bg-rose-500/5 text-rose-950 dark:text-rose-200"
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold">
+                  <div className="flex items-center gap-1.5">
+                    {testResult.success ? (
+                      <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400" />
+                    ) : (
+                      <XCircle className="size-4 text-rose-600 dark:text-rose-400" />
+                    )}
+                    <span>
+                      {testResult.success
+                        ? `Test Push Delivered to ${testResult.staffCode}`
+                        : `Test Push Not Delivered to ${testResult.staffCode}`}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[11px] text-muted-foreground">{testResult.timestamp}</span>
+                </div>
+                <p className="text-muted-foreground">{testResult.message}</p>
+                <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] pt-1">
+                  <span>Delivery Stage: <strong>{testResult.stage}</strong></span>
+                  {testResult.messageId && (
+                    <>
+                      <span>•</span>
+                      <span>Message ID: <strong>{testResult.messageId}</strong></span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </Section>
 
@@ -668,53 +988,6 @@ function AdminAttendanceRemindersPage() {
           </div>
         </div>
 
-        {/* Administrator Manual Test Notification Panel */}
-        <Section
-          title="Manual Test Notification Dispatcher"
-          description="Test mobile push notification delivery to a specific faculty member's device without altering attendance records or sending bulk notifications."
-        >
-          <div className="rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-sm">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div className="space-y-2 flex-1 max-w-sm">
-                <Label htmlFor="test-staff-code" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Target Staff Member for Test
-                </Label>
-                <Select value={testStaffCode} onValueChange={(val) => setTestStaffCode(val)}>
-                  <SelectTrigger id="test-staff-code">
-                    <SelectValue placeholder="Select Staff" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {staffDirectory.map((s) => (
-                      <SelectItem key={s.id} value={s.id}>
-                        {s.name} ({s.id})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <Button
-                variant="outline"
-                onClick={handleSendTestNotification}
-                disabled={isTesting}
-                className="gap-2"
-              >
-                {isTesting ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Sending Test…
-                  </>
-                ) : (
-                  <>
-                    <Send className="size-4" />
-                    Send Test Notification
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </Section>
-
         {/* Recent Delivery Audit Trail Table */}
         <Section
           title="Recent Reminder Notification Logs"
@@ -748,11 +1021,19 @@ function AdminAttendanceRemindersPage() {
 
                       return (
                         <tr key={log.id || log.idempotency_key || idx} className="hover:bg-muted/30">
-                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground whitespace-nowrap">
-                            {log.sent_at ? new Date(log.sent_at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }) : "—"}
+                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                            {log.sent_at
+                              ? new Date(log.sent_at).toLocaleTimeString("en-IN", {
+                                  timeZone: "Asia/Kolkata",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                  hour12: true,
+                                })
+                              : "—"}
                           </td>
-                          <td className="px-4 py-3 text-xs font-medium uppercase">
-                            <Badge variant="outline" className="text-[10px] font-mono">
+                          <td className="px-4 py-3">
+                            <Badge variant="outline" className="text-xs uppercase">
                               {log.reminder_slot}
                             </Badge>
                           </td>
@@ -760,27 +1041,20 @@ function AdminAttendanceRemindersPage() {
                             {log.staff_code}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            {isDelivered && (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
-                                <CheckCircle2 className="size-3" /> DELIVERED
-                              </span>
-                            )}
-                            {isFailed && (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-rose-300 bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700 dark:border-rose-800 dark:bg-rose-950/60 dark:text-rose-300">
-                                <XCircle className="size-3" /> FAILED
-                              </span>
-                            )}
-                            {isSkipped && (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
-                                SKIPPED
-                              </span>
-                            )}
+                            <Badge
+                              variant={
+                                isDelivered ? "default" : isSkipped ? "secondary" : "destructive"
+                              }
+                              className="text-xs"
+                            >
+                              {log.status.toUpperCase()}
+                            </Badge>
                           </td>
-                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground truncate max-w-[180px]">
-                            {log.idempotency_key}
+                          <td className="px-4 py-3 font-mono text-[11px] text-muted-foreground max-w-[180px] truncate">
+                            {log.idempotency_key || "—"}
                           </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">
-                            {log.error_message || "Delivered successfully"}
+                            {log.error_message || (isDelivered ? "Successfully dispatched" : "—")}
                           </td>
                         </tr>
                       );

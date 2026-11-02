@@ -2,21 +2,27 @@ package com.campusattend.biometric.notification
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
-import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.campusattend.biometric.MainActivity
 import org.json.JSONObject
 
 /**
  * JavaScript Bridge for Android Notification Operations.
  *
  * Exposes device push registration, notification permission telemetry,
- * and high-priority native notification dispatching to the CampusAttend WebView.
+ * application settings navigation, and high-priority native notification dispatching
+ * to the CampusAttend WebView.
  */
 class AndroidNotificationBridge(
     private val context: Context,
@@ -31,37 +37,74 @@ class AndroidNotificationBridge(
 
     @JavascriptInterface
     fun getPermissionStatus(): String {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            // Android 12 and below: Notifications granted automatically at install
-            return "granted"
+        // 1. Check master application notification setting in Android system
+        val systemEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+        if (!systemEnabled) {
+            return "denied"
         }
-        val granted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
 
-        return if (granted) "granted" else "denied"
+        // 2. Check Android 13+ runtime POST_NOTIFICATIONS permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val runtimeGranted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!runtimeGranted) {
+                return "denied"
+            }
+        }
+
+        // 3. Check notification channel status
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val channel = nm?.getNotificationChannel(AndroidNotificationManager.CHANNEL_ID)
+            if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                return "denied"
+            }
+        }
+
+        return "granted"
     }
 
     @JavascriptInterface
     fun requestPermission(): String {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            return "granted"
+        val currentStatus = getPermissionStatus()
+        if (currentStatus == "granted") return "granted"
+
+        val mainActivity = activity as? MainActivity
+        if (mainActivity != null) {
+            mainActivity.requestNotificationPermission()
+            return "requested"
         }
-        val act = activity ?: return getPermissionStatus()
-        val alreadyGranted = ContextCompat.checkSelfPermission(
-            act,
-            Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
 
-        if (alreadyGranted) return "granted"
+        return currentStatus
+    }
 
-        ActivityCompat.requestPermissions(
-            act,
-            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-            2002
-        )
-        return "requested"
+    @JavascriptInterface
+    fun openNotificationSettings(): Boolean {
+        val mainActivity = activity as? MainActivity
+        if (mainActivity != null) {
+            mainActivity.openAppNotificationSettings()
+            return true
+        }
+
+        return try {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("NotificationBridge", "Failed to open notification settings: ${e.message}", e)
+            false
+        }
     }
 
     @JavascriptInterface

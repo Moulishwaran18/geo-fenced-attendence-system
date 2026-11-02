@@ -280,11 +280,20 @@ async function dispatchPushNotification(payload: {
   message: string;
   destinationRoute?: string;
   staffCode: string;
-}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+}): Promise<{ success: boolean; messageId?: string; error?: string; stage?: string }> {
   const { token, title, message, destinationRoute = "/mark-attendance", staffCode } = payload;
   const fcmServerKey = process.env["FCM_SERVER_KEY"];
 
-  if (token && fcmServerKey) {
+  if (!token) {
+    return {
+      success: false,
+      error: "NO_DEVICE_TOKEN: Staff member has no active registered push token.",
+      stage: "missing_token",
+    };
+  }
+
+  // 1. Attempt FCM delivery if FCM_SERVER_KEY is configured
+  if (fcmServerKey) {
     try {
       const fcmRes = await fetch("https://fcm.googleapis.com/fcm/send", {
         method: "POST",
@@ -310,13 +319,37 @@ async function dispatchPushNotification(payload: {
 
       if (fcmRes.ok) {
         const json = await fcmRes.json();
-        return { success: true, messageId: json.results?.[0]?.message_id || `fcm_${Date.now()}` };
+        const fcmMsgId = json.results?.[0]?.message_id;
+        if (fcmMsgId) {
+          return { success: true, messageId: fcmMsgId, stage: "fcm_delivered" };
+        }
+        if (json.failure && json.results?.[0]?.error) {
+          return {
+            success: false,
+            error: `FCM_ERROR: ${json.results[0].error}`,
+            stage: "fcm_failed",
+          };
+        }
+        return { success: true, messageId: `fcm_${Date.now()}`, stage: "fcm_delivered" };
+      } else {
+        const errText = await fcmRes.text();
+        return {
+          success: false,
+          error: `FCM_HTTP_${fcmRes.status}: ${errText.slice(0, 100)}`,
+          stage: "fcm_failed",
+        };
       }
-    } catch (fcmErr) {
+    } catch (fcmErr: any) {
       console.warn("[dispatchPushNotification] FCM dispatch notice:", fcmErr);
+      return {
+        success: false,
+        error: `FCM_NETWORK_ERROR: ${fcmErr?.message || "Unknown error"}`,
+        stage: "fcm_failed",
+      };
     }
   }
 
+  // 2. Realtime delivery to connected Android WebView native notification bridge
   try {
     const sb = getSupabaseClient();
     if (sb) {
@@ -333,6 +366,11 @@ async function dispatchPushNotification(payload: {
           timestamp: new Date().toISOString(),
         },
       });
+      return {
+        success: true,
+        messageId: `rt_${Date.now()}_${staffCode}`,
+        stage: "realtime_delivered",
+      };
     }
   } catch (rtErr) {
     console.warn("[dispatchPushNotification] Supabase realtime broadcast notice:", rtErr);
@@ -341,6 +379,7 @@ async function dispatchPushNotification(payload: {
   return {
     success: true,
     messageId: `notif_${crypto.randomBytes(8).toString("hex")}`,
+    stage: "local_delivered",
   };
 }
 
@@ -529,6 +568,7 @@ async function executeAttendanceReminders(options: {
 
   let sentCount = 0;
   let failedCount = 0;
+  let skippedCount = 0;
   const scheduledTime12 =
     slot === "second"
       ? formatTimeTo12Hour(settings.reminder_time_2)
@@ -580,7 +620,22 @@ async function executeAttendanceReminders(options: {
     }
 
     if (!token) {
-      token = `FALLBACK_PUSH_TOKEN_${staffCode}`;
+      const skippedLog: ReminderLog = {
+        staff_code: staffCode,
+        reminder_slot: slot,
+        attendance_date: istTime.dateStr,
+        scheduled_time: scheduledTime12,
+        sent_at: new Date().toISOString(),
+        status: "skipped",
+        idempotency_key: idempotencyKey,
+        error_message: "NO_DEVICE_TOKEN: Staff member has no active registered push token.",
+      };
+      memoryLogs.set(idempotencyKey, skippedLog);
+      if (sb) {
+        try { await sb.from("attendance_reminder_logs").insert(skippedLog); } catch {}
+      }
+      skippedCount++;
+      continue;
     }
 
     const dispatchRes = await dispatchPushNotification({
@@ -626,7 +681,13 @@ async function executeAttendanceReminders(options: {
     notifications_sent_count: sentCount,
     notifications_failed_count: failedCount,
     status: "completed",
-    summary_message: `Processed ${unmarkedStaff.length} unmarked staff; sent ${sentCount} reminders, failed ${failedCount}.`,
+    summary_message: `Evaluated ${activeStaff.length} active staff (${markedStaffCodes.size} marked today, ${unmarkedStaff.length} unmarked). Sent ${sentCount} reminders, skipped ${skippedCount} (missing tokens), failed ${failedCount}.`,
+    details: {
+      sentCount,
+      skippedCount,
+      failedCount,
+      unmarkedCount: unmarkedStaff.length,
+    },
   };
 
   memoryRuns.unshift(completedRun);
@@ -1356,15 +1417,93 @@ export default async function handler(req: any, res?: any) {
 
     // --- Attendance Reminders Admin Settings & Control: /api/admin/attendance-reminders ---
     if (pathname.includes("/attendance-reminders") || pathname.includes("/reminders")) {
+      const sb = supabase;
       if (method === "GET") {
         const settings = await getReminderSettings();
         const stats = await getReminderDashboardStats();
         const recentLogs = await getRecentReminderLogs(50);
         const recentRuns = await getRecentExecutionRuns(20);
+
+        // Fetch real active staff with device binding and push token availability
+        let staffList: any[] = [];
+        if (sb) {
+          try {
+            const { data: staffData } = await sb
+              .from("staff")
+              .select("id, staff_code, name, department, designation, status, active")
+              .eq("status", "Active")
+              .order("staff_code");
+
+            const { data: deviceData } = await sb
+              .from("devices")
+              .select("id, staff_code, model, os, status");
+
+            const { data: tokenData } = await sb
+              .from("staff_device_tokens")
+              .select("staff_code, device_id, token, is_active");
+
+            const istTime = getIstDateTime();
+            const { data: records } = await sb
+              .from("attendance_record")
+              .select("staff_code, staff_id, date, verification_date, created_at")
+              .or(`date.eq.${istTime.dateStr},verification_date.eq.${istTime.dateStr},created_at.gte.${istTime.dateStr}T00:00:00`);
+
+            const markedCodes = new Set<string>();
+            if (records) {
+              for (const r of records) {
+                const code = (r.staff_code || r.staff_id || "").trim().toUpperCase();
+                if (code) markedCodes.add(code);
+              }
+            }
+
+            const deviceMap = new Map<string, any>();
+            if (deviceData) {
+              for (const d of deviceData) {
+                const sc = (d.staff_code || "").trim().toUpperCase();
+                if (sc) deviceMap.set(sc, d);
+              }
+            }
+
+            const tokenMap = new Map<string, any>();
+            if (tokenData) {
+              for (const t of tokenData) {
+                if (t.is_active) {
+                  tokenMap.set(t.staff_code.trim().toUpperCase(), t);
+                }
+              }
+            }
+
+            if (staffData && staffData.length > 0) {
+              staffList = staffData.map((s: any) => {
+                const sc = s.staff_code.trim().toUpperCase();
+                const dev = deviceMap.get(sc);
+                const tok = tokenMap.get(sc) || Array.from(memoryTokens.values()).find((m) => m.staff_code.toUpperCase() === sc && m.is_active);
+                return {
+                  id: s.id,
+                  staff_code: s.staff_code,
+                  name: s.name,
+                  department: s.department,
+                  designation: s.designation,
+                  active: s.active !== false && s.status === "Active",
+                  hasDevice: !!dev,
+                  deviceId: dev?.id || null,
+                  deviceModel: dev?.model || null,
+                  hasToken: !!tok?.token,
+                  token: tok?.token || null,
+                  markedToday: markedCodes.has(sc),
+                };
+              });
+            }
+          } catch (err) {
+            console.warn("[GET /attendance-reminders] Error building real staff list:", err);
+          }
+        }
+
         return sendJsonResponse(res, 200, {
           success: true,
           settings,
           stats,
+          staffList,
           recentLogs,
           recentRuns,
         });
@@ -1393,26 +1532,198 @@ export default async function handler(req: any, res?: any) {
           });
         }
         if (action === "test-notification" || action === "test") {
-          const testStaffCode = (body?.staffCode || "SCT-001").trim().toUpperCase();
-          const testDeviceId = body?.deviceId || "DEV_ADMIN_TEST";
-          const testToken = body?.token || `TEST_DEVICE_TOKEN_${testStaffCode}`;
-          await registerStaffDeviceToken({
+          const testStaffCode = String(body?.staffCode || "").trim().toUpperCase();
+          if (!testStaffCode) {
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: "MISSING_STAFF_CODE",
+              message: "Real staff ID is required to send test notification.",
+            });
+          }
+
+          // 1. Look up real staff member in database
+          let targetStaff: any = null;
+          if (sb) {
+            try {
+              const { data: sRow } = await sb
+                .from("staff")
+                .select("id, staff_code, name, department, designation, status, active")
+                .ilike("staff_code", testStaffCode)
+                .maybeSingle();
+              if (sRow) targetStaff = sRow;
+            } catch {}
+          }
+
+          if (!targetStaff) {
+            return sendJsonResponse(res, 404, {
+              success: false,
+              error: "INVALID_STAFF_ID",
+              message: `Staff ID '${testStaffCode}' does not exist in institution directory.`,
+            });
+          }
+
+          // 2. Query registered physical device
+          let registeredDevice: any = null;
+          if (sb) {
+            try {
+              const { data: dRow } = await sb
+                .from("devices")
+                .select("*")
+                .ilike("staff_code", testStaffCode)
+                .maybeSingle();
+              if (dRow) registeredDevice = dRow;
+            } catch {}
+          }
+
+          // 3. Query active device push token
+          let activeToken = "";
+          let deviceId = registeredDevice?.id || `DEV_${testStaffCode}`;
+
+          if (sb) {
+            try {
+              const { data: tokRow } = await sb
+                .from("staff_device_tokens")
+                .select("token, device_id")
+                .ilike("staff_code", testStaffCode)
+                .eq("is_active", true)
+                .order("updated_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (tokRow?.token) {
+                activeToken = tokRow.token;
+                if (tokRow.device_id) deviceId = tokRow.device_id;
+              }
+            } catch {}
+          }
+
+          if (!activeToken) {
+            const memTok = Array.from(memoryTokens.values()).find(
+              (t) => t.staff_code.toUpperCase() === testStaffCode && t.is_active
+            );
+            if (memTok?.token) {
+              activeToken = memTok.token;
+              deviceId = memTok.device_id;
+            }
+          }
+
+          const istTime = getIstDateTime();
+          const scheduledTime12 = istTime.time12;
+
+          // If no registered device
+          if (!registeredDevice && !activeToken) {
+            const skipLog: ReminderLog = {
+              staff_code: testStaffCode,
+              reminder_slot: "test",
+              attendance_date: istTime.dateStr,
+              scheduled_time: scheduledTime12,
+              sent_at: new Date().toISOString(),
+              status: "skipped",
+              idempotency_key: `test_${testStaffCode}_${Date.now()}`,
+              error_message: "NO_REGISTERED_DEVICE: Staff member has no registered physical device.",
+            };
+            memoryLogs.set(skipLog.idempotency_key, skipLog);
+            if (sb) {
+              try { await sb.from("attendance_reminder_logs").insert(skipLog); } catch {}
+            }
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: "NO_REGISTERED_DEVICE",
+              message: `Staff member ${testStaffCode} (${targetStaff.name}) has no registered device. The staff member must complete device registration first.`,
+              staff: {
+                id: targetStaff.id,
+                staff_code: targetStaff.staff_code,
+                name: targetStaff.name,
+                hasDevice: false,
+                hasToken: false,
+              },
+            });
+          }
+
+          // If device registered but push token missing
+          if (!activeToken) {
+            const skipLog: ReminderLog = {
+              staff_code: testStaffCode,
+              reminder_slot: "test",
+              attendance_date: istTime.dateStr,
+              scheduled_time: scheduledTime12,
+              sent_at: new Date().toISOString(),
+              status: "skipped",
+              idempotency_key: `test_${testStaffCode}_${Date.now()}`,
+              error_message: "NO_DEVICE_TOKEN: Staff member has registered device but no active push token.",
+            };
+            memoryLogs.set(skipLog.idempotency_key, skipLog);
+            if (sb) {
+              try { await sb.from("attendance_reminder_logs").insert(skipLog); } catch {}
+            }
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: "NO_DEVICE_TOKEN",
+              message: `Staff member ${testStaffCode} (${targetStaff.name}) has a registered device (${registeredDevice?.model || "Device"}) but no active push notification token is registered.`,
+              staff: {
+                id: targetStaff.id,
+                staff_code: targetStaff.staff_code,
+                name: targetStaff.name,
+                hasDevice: true,
+                deviceId,
+                hasToken: false,
+              },
+            });
+          }
+
+          // 4. Send the test push notification
+          const testTitle = "CampusAttend – Test Attendance Reminder";
+          const testMessage = "This is a test notification from your administrator. Open CampusAttend to mark your attendance.";
+
+          const dispatchRes = await dispatchPushNotification({
+            token: activeToken,
+            title: testTitle,
+            message: testMessage,
+            destinationRoute: "/mark-attendance",
             staffCode: testStaffCode,
-            deviceId: testDeviceId,
-            token: testToken,
-            platform: "android",
           });
-          const testResult = await executeAttendanceReminders({
-            forceSlot: "test",
-            testStaffCode,
-            isManual: true,
-          });
+
+          const logEntry: ReminderLog = {
+            staff_code: testStaffCode,
+            reminder_slot: "test",
+            attendance_date: istTime.dateStr,
+            scheduled_time: scheduledTime12,
+            sent_at: new Date().toISOString(),
+            device_token: activeToken,
+            status: dispatchRes.success ? "delivered" : "failed",
+            idempotency_key: `test_${testStaffCode}_${Date.now()}`,
+            error_message: dispatchRes.success ? null : (dispatchRes.error || "Push delivery failure"),
+          };
+
+          memoryLogs.set(logEntry.idempotency_key, logEntry);
+          if (sb) {
+            try { await sb.from("attendance_reminder_logs").insert(logEntry); } catch {}
+          }
+
           const stats = await getReminderDashboardStats();
           const recentLogs = await getRecentReminderLogs(50);
+
+          if (!dispatchRes.success) {
+            return sendJsonResponse(res, 502, {
+              success: false,
+              error: "PUSH_DELIVERY_FAILED",
+              message: `Failed to deliver test notification to ${targetStaff.name} (${testStaffCode}): ${dispatchRes.error || "Push dispatch error"}.`,
+              deliveryStage: dispatchRes.stage || "failed",
+              stats,
+              recentLogs,
+            });
+          }
+
           return sendJsonResponse(res, 200, {
             success: true,
-            message: `Test notification sent to staff ${testStaffCode}.`,
-            result: testResult,
+            message: `Test notification successfully dispatched to ${targetStaff.name} (${testStaffCode}).`,
+            deliveryStage: dispatchRes.stage || "delivered",
+            messageId: dispatchRes.messageId,
+            staff: {
+              staff_code: targetStaff.staff_code,
+              name: targetStaff.name,
+              deviceId,
+              token: activeToken,
+            },
             stats,
             recentLogs,
           });

@@ -91,6 +91,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val requestNotificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        runOnUiThread {
+            webView?.evaluateJavascript(
+                "if (window.__onNotificationPermissionChanged) { window.__onNotificationPermissionChanged($isGranted); }",
+                null
+            )
+        }
+    }
+
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
 
     private val fileChooserLauncher = registerForActivityResult(
@@ -449,9 +460,50 @@ class MainActivity : ComponentActivity() {
         wifiBridge?.refreshNetworkCallback(force = false)
         runOnUiThread {
             webView?.evaluateJavascript(
-                "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
+                "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); } if (window.__onNotificationPermissionChanged) { window.__onNotificationPermissionChanged(); }",
                 null
             )
+        }
+    }
+
+    fun requestNotificationPermission() {
+        runOnUiThread {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                val status = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                if (status != PackageManager.PERMISSION_GRANTED) {
+                    requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    val areEnabled = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+                    if (!areEnabled) {
+                        openAppNotificationSettings()
+                    }
+                }
+            } else {
+                val areEnabled = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+                if (!areEnabled) {
+                    openAppNotificationSettings()
+                }
+            }
+        }
+    }
+
+    fun openAppNotificationSettings() {
+        runOnUiThread {
+            try {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                    }
+                } else {
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", packageName, null)
+                    }
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to open notification settings: ${e.message}", e)
+            }
         }
     }
 

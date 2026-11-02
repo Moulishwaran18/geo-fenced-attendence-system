@@ -17,6 +17,7 @@ export interface PushNotificationState {
   deviceToken: string | null;
   isRegistered: boolean;
   requestPermission: () => Promise<string>;
+  openSettings: () => void;
 }
 
 export function usePushNotifications(): PushNotificationState {
@@ -27,8 +28,8 @@ export function usePushNotifications(): PushNotificationState {
   const [isRegistered, setIsRegistered] = useState<boolean>(false);
   const syncAttemptedRef = useRef<boolean>(false);
 
-  // Check Android Notification Bridge availability
-  useEffect(() => {
+  // Check Android Notification Bridge availability & permission status
+  const checkStatus = useCallback(() => {
     if (typeof window === "undefined") return;
     const bridge = (window as any).AndroidNotificationBridge;
     if (bridge) {
@@ -44,17 +45,44 @@ export function usePushNotifications(): PushNotificationState {
     }
   }, []);
 
+  useEffect(() => {
+    checkStatus();
+
+    // Recheck permission when user returns to app from system notification settings
+    const handleRecheck = () => {
+      checkStatus();
+    };
+
+    (window as any).__onNotificationPermissionChanged = handleRecheck;
+    window.addEventListener("focus", handleRecheck);
+    document.addEventListener("visibilitychange", handleRecheck);
+
+    return () => {
+      delete (window as any).__onNotificationPermissionChanged;
+      window.removeEventListener("focus", handleRecheck);
+      document.removeEventListener("visibilitychange", handleRecheck);
+    };
+  }, [checkStatus]);
+
   // Request Notification Permission
   const requestPermission = useCallback(async (): Promise<string> => {
     if (typeof window === "undefined") return "unsupported";
     const bridge = (window as any).AndroidNotificationBridge;
     if (bridge && typeof bridge.requestPermission === "function") {
       const result = bridge.requestPermission();
-      const updatedStatus = bridge.getPermissionStatus ? bridge.getPermissionStatus() : result;
-      setPermissionStatus(updatedStatus === "granted" ? "granted" : updatedStatus === "denied" ? "denied" : "not_requested");
-      return updatedStatus;
+      checkStatus();
+      return result;
     }
     return "unsupported";
+  }, [checkStatus]);
+
+  // Open Android Notification Settings directly
+  const openSettings = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const bridge = (window as any).AndroidNotificationBridge;
+    if (bridge && typeof bridge.openNotificationSettings === "function") {
+      bridge.openNotificationSettings();
+    }
   }, []);
 
   // Sync token to server when active staff member is resolved
@@ -66,15 +94,23 @@ export function usePushNotifications(): PushNotificationState {
 
     async function syncToken() {
       try {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        };
+        if (activeStaff?.token) {
+          headers["Authorization"] = `Bearer ${activeStaff.token}`;
+          headers["x-staff-token"] = activeStaff.token;
+        }
+
         const res = await fetch("/api/device", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers,
+          credentials: "include",
           body: JSON.stringify({
             action: "push-token",
             staffCode,
-            deviceId: `DEV_${staffCode}`,
+            deviceId: activeStaff?.deviceId || `DEV_${staffCode}`,
             token: deviceToken,
             platform: "android",
           }),
@@ -89,7 +125,7 @@ export function usePushNotifications(): PushNotificationState {
     }
 
     void syncToken();
-  }, [activeStaff?.staffId, deviceToken]);
+  }, [activeStaff?.staffId, activeStaff?.deviceId, activeStaff?.token, deviceToken]);
 
   // Realtime listener for incoming attendance reminder broadcasts
   useEffect(() => {
@@ -124,5 +160,6 @@ export function usePushNotifications(): PushNotificationState {
     deviceToken,
     isRegistered,
     requestPermission,
+    openSettings,
   };
 }

@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Satellite,
   ScanFace,
+  Settings,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -1089,14 +1090,24 @@ function MarkAttendancePage() {
               title="Notification Permission Disabled"
               description="Attendance reminder notifications are blocked on this device. Enable notification permissions in Android Settings to receive scheduled daily attendance alerts."
               action={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void pushNotif.requestPermission()}
-                  className="mt-2 h-8 gap-1.5"
-                >
-                  <Bell className="size-3.5" /> Enable Notifications
-                </Button>
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void pushNotif.requestPermission()}
+                    className="h-8 gap-1.5"
+                  >
+                    <Bell className="size-3.5" /> Request Permission
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={() => void pushNotif.openSettings()}
+                    className="h-8 gap-1.5"
+                  >
+                    <Settings className="size-3.5" /> Open App Settings
+                  </Button>
+                </div>
               }
             />
           )}
