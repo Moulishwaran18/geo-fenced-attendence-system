@@ -60,6 +60,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.campusattend.biometric.bridge.AndroidBiometricBridge
+import com.campusattend.biometric.bridge.AndroidPdfBridge
+import com.campusattend.biometric.notification.AndroidNotificationBridge
+import com.campusattend.biometric.notification.AndroidNotificationManager
 import com.campusattend.biometric.location.AndroidLocationBridge
 import com.campusattend.biometric.location.NativeLocationService
 import com.campusattend.biometric.wifi.AndroidWifiBridge
@@ -71,16 +74,29 @@ class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var wifiBridge: AndroidWifiBridge? = null
     private var biometricBridge: AndroidBiometricBridge? = null
+    private var pdfBridge: AndroidPdfBridge? = null
+    private var notificationBridge: AndroidNotificationBridge? = null
 
     private val defaultServerUrl = "https://geo-fenced-attendence-system.vercel.app/mark-attendance"
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        wifiBridge?.refreshNetworkCallback()
+        wifiBridge?.refreshNetworkCallback(force = true)
         runOnUiThread {
             webView?.evaluateJavascript(
                 "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
+                null
+            )
+        }
+    }
+
+    private val requestNotificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        runOnUiThread {
+            webView?.evaluateJavascript(
+                "if (window.__onNotificationPermissionChanged) { window.__onNotificationPermissionChanged($isGranted); }",
                 null
             )
         }
@@ -117,6 +133,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WebView.setWebContentsDebuggingEnabled(true)
         locationService = NativeLocationService(this)
+        AndroidNotificationManager.createNotificationChannel(this)
 
         checkAndRequestPermissions()
 
@@ -125,6 +142,13 @@ class MainActivity : ComponentActivity() {
         if (initialUrl.contains("localhost") || initialUrl.contains("10.186.230")) {
             initialUrl = defaultServerUrl
             prefs.edit().putString("server_url", defaultServerUrl).apply()
+        }
+
+        // Handle direct deep link / notification click navigation
+        val notifDest = intent?.getStringExtra("destination")
+        if (!notifDest.isNullOrBlank()) {
+            val base = defaultServerUrl.substringBefore("/mark-attendance")
+            initialUrl = if (notifDest.startsWith("http")) notifDest else "$base${if (notifDest.startsWith("/")) notifDest else "/$notifDest"}"
         }
 
         setContent {
@@ -237,6 +261,31 @@ class MainActivity : ComponentActivity() {
                                             val currentUa = userAgentString ?: ""
                                             if (!currentUa.contains("CampusAttendNative")) {
                                                 userAgentString = "$currentUa CampusAttendNative/1.0"
+                                            }
+                                        }
+
+                                        setDownloadListener { url, _, _, mimetype, _ ->
+                                            try {
+                                                if (url.startsWith("data:application/pdf;base64,")) {
+                                                    val base64Data = url.substringAfter("base64,")
+                                                    AndroidPdfBridge.executeSavePdf(
+                                                        ctx,
+                                                        base64Data,
+                                                        "CampusAttend_Monthly_Attendance_Report.pdf",
+                                                        this@MainActivity,
+                                                        openAfterSave = true
+                                                    )
+                                                } else {
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                                        if (!mimetype.isNullOrBlank()) {
+                                                            setDataAndType(Uri.parse(url), mimetype)
+                                                        }
+                                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                    ctx.startActivity(intent)
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e("MainActivity", "DownloadListener error: ${e.message}", e)
                                             }
                                         }
 
@@ -375,6 +424,22 @@ class MainActivity : ComponentActivity() {
                                             bioBridge,
                                             "AndroidBiometricBridge"
                                         )
+                                        val pBridge = AndroidPdfBridge(ctx, this@MainActivity, this)
+                                        pdfBridge = pBridge
+                                        addJavascriptInterface(
+                                            pBridge,
+                                            "AndroidPdfBridge"
+                                        )
+                                        addJavascriptInterface(
+                                            pBridge,
+                                            "AndroidDownloadBridge"
+                                        )
+                                        val notifBridge = AndroidNotificationBridge(ctx, this@MainActivity, this)
+                                        notificationBridge = notifBridge
+                                        addJavascriptInterface(
+                                            notifBridge,
+                                            "AndroidNotificationBridge"
+                                        )
 
                                         loadUrl(currentUrl)
                                     }
@@ -392,12 +457,90 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        wifiBridge?.refreshNetworkCallback()
+        wifiBridge?.refreshNetworkCallback(force = false)
         runOnUiThread {
             webView?.evaluateJavascript(
-                "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); }",
+                "if (window.__onAndroidPermissionsChanged) { window.__onAndroidPermissionsChanged(); } if (window.__onNotificationPermissionChanged) { window.__onNotificationPermissionChanged(); }",
                 null
             )
+        }
+    }
+
+    fun requestNotificationPermission() {
+        runOnUiThread {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                val status = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                if (status != PackageManager.PERMISSION_GRANTED) {
+                    requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    val areEnabled = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+                    if (!areEnabled) {
+                        openAppNotificationSettings()
+                    }
+                }
+            } else {
+                val areEnabled = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+                if (!areEnabled) {
+                    openAppNotificationSettings()
+                }
+            }
+        }
+    }
+
+    fun openAppNotificationSettings() {
+        runOnUiThread {
+            try {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                    }
+                } else {
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", packageName, null)
+                    }
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to open notification settings: ${e.message}", e)
+            }
+        }
+    }
+
+    fun openBatteryOptimizationSettings() {
+        runOnUiThread {
+            try {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                } else {
+                    Intent(android.provider.Settings.ACTION_SETTINGS)
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to open battery optimization settings: ${e.message}", e)
+            }
+        }
+    }
+
+    fun openChannelSettings(channelId: String) {
+        runOnUiThread {
+            try {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                        putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                        putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, channelId)
+                    }
+                } else {
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", packageName, null)
+                    }
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to open channel settings: ${e.message}", e)
+            }
         }
     }
 
@@ -452,6 +595,7 @@ class MainActivity : ComponentActivity() {
         )
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
         val needed = permissions.filter {
@@ -463,9 +607,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: android.content.Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val dest = intent?.getStringExtra("destination")
+        if (!dest.isNullOrBlank()) {
+            val base = defaultServerUrl.substringBefore("/mark-attendance")
+            val targetUrl = if (dest.startsWith("http")) dest else "$base${if (dest.startsWith("/")) dest else "/$dest"}"
+            runOnUiThread {
+                webView?.loadUrl(targetUrl)
+            }
+        }
+    }
+
     override fun onDestroy() {
         fileChooserCallback?.onReceiveValue(null)
         fileChooserCallback = null
+        wifiBridge?.unregisterWifiNetworkCallback()
         super.onDestroy()
         locationService.stopLocationUpdates()
         webView?.destroy()

@@ -2214,4 +2214,33 @@ class AndroidBiometricBridge(
             }.toString()
         }
     }
+
+    /**
+     * Download and save Monthly Attendance PDF directly to phone's Download/CampusAttend/ directory.
+     */
+    @JavascriptInterface
+    fun downloadPdf(base64Data: String, filename: String): String {
+        return AndroidPdfBridge.executeSavePdf(
+            context,
+            base64Data,
+            filename,
+            context as? android.app.Activity,
+            openAfterSave = false
+        )
+    }
+
+    /**
+     * Open the downloaded PDF in external PDF viewer.
+     */
+    @JavascriptInterface
+    fun openDownloadedPdf(uriString: String? = null): Boolean {
+        val targetUri = if (!uriString.isNullOrBlank()) {
+            android.net.Uri.parse(uriString)
+        } else {
+            AndroidPdfBridge.lastSavedUri
+        } ?: return false
+
+        val act = context as? android.app.Activity ?: return false
+        return AndroidPdfBridge.openPdfIntent(act, targetUri)
+    }
 }

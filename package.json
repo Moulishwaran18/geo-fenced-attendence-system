@@ -88,6 +88,8 @@
     "face-api.js": "^0.22.2",
     "input-otp": "^1.4.2",
     "jpeg-js": "^0.4.4",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "lucide-react": "^0.575.0",
     "onnxruntime-web": "^1.27.0",
     "pg": "^8.23.0",

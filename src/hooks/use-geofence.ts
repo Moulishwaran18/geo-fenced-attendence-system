@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   AUTHORIZED_GEOFENCE_POLYGON,
   evaluateGeofence,
+  fetchActiveGeofencePolygon,
+  getActiveGeofencePolygon,
   haversineDistanceMeters,
   type GeofenceEvaluation,
   type LatLng,
@@ -345,7 +347,7 @@ export function useGeofence(
       // Evaluate against authoritative campus polygon using the Kalman-filtered position of best accepted location
       const evalResult = evaluateGeofence(
         { lat: reading.filteredLat, lng: reading.filteredLng, accuracy: reading.accuracy },
-        AUTHORIZED_GEOFENCE_POLYGON,
+        getActiveGeofencePolygon(),
       );
 
       setCoords(reading);
@@ -532,7 +534,7 @@ export function useGeofence(
       // The final geofence calculation must use the best genuine accepted location
       const evalResult = evaluateGeofence(
         { lat: bestAcceptedReading.filteredLat, lng: bestAcceptedReading.filteredLng, accuracy: bestAcceptedReading.accuracy },
-        AUTHORIZED_GEOFENCE_POLYGON,
+        getActiveGeofencePolygon(),
       );
       setEvaluation(evalResult);
 
@@ -870,6 +872,13 @@ export function useGeofence(
     }
   }, [startAcquisition]);
 
+  // Fetch dynamic geofence polygon from server on mount (refreshes every 5 min)
+  useEffect(() => {
+    void fetchActiveGeofencePolygon();
+    const interval = setInterval(() => { void fetchActiveGeofencePolygon(); }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     if (autoWatch) {
       void startAcquisition();
@@ -970,6 +979,6 @@ export function useGeofence(
     openLocationSettings,
     // Expose RMS deviation from the latest reading (if available)
     rmsPositionDeviation: readingsHistory.length > 0 ? (readingsHistory[readingsHistory.length - 1]?.rmsPositionDeviation ?? null) : null,
-    polygon: AUTHORIZED_GEOFENCE_POLYGON,
+    polygon: getActiveGeofencePolygon(),
   };
 }

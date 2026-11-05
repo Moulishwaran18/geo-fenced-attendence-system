@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   AlertCircle,
   ArrowUpDown,
   CalendarDays,
   CheckCircle2,
+  FileDown,
   Filter,
   RefreshCw,
   Search,
@@ -168,6 +169,12 @@ function HistoryPage() {
         description="Complete chronological staff attendance records from database."
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Button asChild size="sm" className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90">
+              <Link to={"/export-monthly-pdf" as "/"}>
+                <FileDown className="size-3.5" />
+                Export Monthly PDF
+              </Link>
+            </Button>
             <Button
               variant="outline"
               size="sm"

@@ -1,0 +1,20 @@
+{
+  "id": "default",
+  "enabled": true,
+  "reminder_time_1": "09:30",
+  "reminder_time_2_enabled": false,
+  "reminder_time_2": "10:00",
+  "applicable_days": [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday"
+  ],
+  "timezone": "Asia/Kolkata",
+  "title": "CampusAttend – Attendance Reminder",
+  "message": "You have not marked your attendance today. Please open CampusAttend and complete your attendance verification.",
+  "updated_at": "2026-11-01T08:39:26.745Z",
+  "updated_by": "admin"
+}

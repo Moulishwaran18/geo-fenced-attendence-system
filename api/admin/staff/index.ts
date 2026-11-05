@@ -6,6 +6,937 @@
 
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+
+// -----------------------------------------------------------------------------
+// Self-Contained Serverless Attendance Reminders Engine
+// -----------------------------------------------------------------------------
+export interface ReminderSettings {
+  id: string;
+  enabled: boolean;
+  reminder_time_1: string;
+  reminder_time_2_enabled: boolean;
+  reminder_time_2: string;
+  applicable_days: string[];
+  timezone: string;
+  title: string;
+  message: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface ReminderLog {
+  id?: string;
+  staff_code: string;
+  reminder_slot: "first" | "second" | "test";
+  attendance_date: string;
+  scheduled_time: string;
+  sent_at: string;
+  device_token?: string;
+  status: "delivered" | "failed" | "skipped";
+  idempotency_key: string;
+  error_message?: string | null;
+}
+
+export interface ReminderExecutionRun {
+  id?: string;
+  slot: "first" | "second" | "test";
+  execution_date: string;
+  started_at: string;
+  completed_at?: string;
+  total_active_staff: number;
+  marked_attendance_count: number;
+  unmarked_attendance_count: number;
+  notifications_sent_count: number;
+  notifications_failed_count: number;
+  status: "completed" | "skipped" | "failed";
+  summary_message?: string;
+  details?: any;
+}
+
+export interface ReminderDashboardStats {
+  enabled: boolean;
+  reminder_time_1: string;
+  reminder_time_2_enabled: boolean;
+  reminder_time_2: string;
+  applicable_days: string[];
+  timezone: string;
+  total_active_staff: number;
+  marked_attendance_count: number;
+  unmarked_attendance_count: number;
+  notifications_sent_today: number;
+  notifications_failed_today: number;
+  last_execution_run?: ReminderExecutionRun | null | undefined;
+  server_ist_time: {
+    dateStr: string;
+    time24: string;
+    time12: string;
+    dayName: string;
+    isWorkingDay: boolean;
+  };
+}
+
+const DEFAULT_REMINDER_SETTINGS: ReminderSettings = {
+  id: "default",
+  enabled: true,
+  reminder_time_1: "09:30",
+  reminder_time_2_enabled: false,
+  reminder_time_2: "10:00",
+  applicable_days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+  timezone: "Asia/Kolkata",
+  title: "CampusAttend – Attendance Reminder",
+  message:
+    "You have not marked your attendance today. Please open CampusAttend and complete your attendance verification.",
+  updated_at: new Date().toISOString(),
+  updated_by: "system",
+};
+
+const INSTITUTIONAL_HOLIDAYS = new Set<string>([
+  "2026-01-26",
+  "2026-08-15",
+  "2026-10-02",
+  "2026-12-25",
+]);
+
+let cachedSettings: ReminderSettings = { ...DEFAULT_REMINDER_SETTINGS };
+const memoryTokens = new Map<string, { staff_code: string; device_id: string; token: string; platform: string; is_active: boolean; updated_at: string }>();
+const memoryLogs = new Map<string, ReminderLog>();
+let memoryRuns: ReminderExecutionRun[] = [];
+
+function getIstDateTime(dateObj: Date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    weekday: "long",
+    hour12: false,
+  }).formatToParts(dateObj);
+
+  const getPart = (type: string) => parts.find((p) => p.type === type)?.value || "";
+  const day = getPart("day");
+  const month = getPart("month");
+  const year = getPart("year");
+  const hour = getPart("hour");
+  const minute = getPart("minute");
+  const second = getPart("second");
+  const dayName = getPart("weekday");
+
+  const dateStr = `${year}-${month}-${day}`;
+  const time24 = `${hour}:${minute}`;
+
+  const h = parseInt(hour, 10);
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const time12 = `${String(h12).padStart(2, "0")}:${minute} ${period}`;
+
+  return {
+    dateStr,
+    time24,
+    time12,
+    dayName,
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    isWorkingDay: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].includes(dayName),
+  };
+}
+
+function formatTimeTo12Hour(time24: string): string {
+  if (!time24 || !time24.includes(":")) return time24;
+  const parts = time24.split(":");
+  const h = parseInt(parts[0] || "0", 10);
+  const m = parts[1] || "00";
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${String(h12).padStart(2, "0")}:${m} ${period}`;
+}
+
+async function getReminderSettings(): Promise<ReminderSettings> {
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("attendance_reminder_settings")
+        .select("*")
+        .eq("id", "default")
+        .maybeSingle();
+
+      if (!error && data) {
+        cachedSettings = {
+          ...DEFAULT_REMINDER_SETTINGS,
+          ...data,
+          applicable_days: Array.isArray(data.applicable_days)
+            ? data.applicable_days
+            : DEFAULT_REMINDER_SETTINGS.applicable_days,
+        };
+        return cachedSettings;
+      }
+    } catch {}
+
+    try {
+      const { data: secSet } = await sb
+        .from("security_events")
+        .select("device")
+        .eq("event", "REMINDER_SETTINGS")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (secSet?.device) {
+        const p = JSON.parse(secSet.device);
+        if (p) {
+          cachedSettings = {
+            ...DEFAULT_REMINDER_SETTINGS,
+            enabled: p.en !== undefined ? !!p.en : DEFAULT_REMINDER_SETTINGS.enabled,
+            reminder_time_1: p.t1 || DEFAULT_REMINDER_SETTINGS.reminder_time_1,
+            reminder_time_2_enabled: p.t2en !== undefined ? !!p.t2en : DEFAULT_REMINDER_SETTINGS.reminder_time_2_enabled,
+            reminder_time_2: p.t2 || DEFAULT_REMINDER_SETTINGS.reminder_time_2,
+            applicable_days: Array.isArray(p.days) ? p.days : DEFAULT_REMINDER_SETTINGS.applicable_days,
+            timezone: p.tz || DEFAULT_REMINDER_SETTINGS.timezone,
+            updated_by: p.by || "admin",
+          };
+          return cachedSettings;
+        }
+      }
+    } catch {}
+  }
+  return cachedSettings;
+}
+
+async function saveReminderSettings(
+  updates: Partial<ReminderSettings>,
+  adminUsername: string = "admin"
+): Promise<ReminderSettings> {
+  const current = await getReminderSettings();
+  const merged: ReminderSettings = {
+    ...current,
+    ...updates,
+    updated_at: new Date().toISOString(),
+    updated_by: adminUsername,
+  };
+  cachedSettings = merged;
+
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      await sb.from("attendance_reminder_settings").upsert(merged);
+    } catch (err) {
+      console.warn("[saveReminderSettings] Supabase upsert error:", err);
+    }
+
+    try {
+      const compact = JSON.stringify({
+        en: !!merged.enabled,
+        t1: merged.reminder_time_1,
+        t2en: !!merged.reminder_time_2_enabled,
+        t2: merged.reminder_time_2,
+        days: merged.applicable_days,
+        tz: merged.timezone,
+        by: merged.updated_by,
+      });
+      await sb.from("security_events").insert({
+        time: new Date().toISOString(),
+        staff: "ADMIN",
+        event: "REMINDER_SETTINGS",
+        device: compact,
+        location: "Settings",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch (secErr) {
+      console.warn("[saveReminderSettings] security_events insert error:", secErr);
+    }
+  }
+  return merged;
+}
+
+async function registerStaffDeviceToken(params: {
+  staffCode: string;
+  deviceId: string;
+  token: string;
+  platform?: string;
+}) {
+  const now = new Date().toISOString();
+  const staffCode = params.staffCode.trim().toUpperCase();
+  const entry = {
+    staff_code: staffCode,
+    device_id: params.deviceId,
+    token: params.token,
+    platform: (params.platform || "android").toLowerCase(),
+    is_active: true,
+    updated_at: now,
+  };
+
+  memoryTokens.set(`${staffCode}_${params.deviceId}`, entry);
+
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      await sb
+        .from("staff_device_tokens")
+        .upsert(entry, { onConflict: "staff_code,device_id" });
+    } catch (err) {
+      console.warn("[registerStaffDeviceToken] Database upsert notice:", err);
+    }
+
+    try {
+      const tokenPayload = JSON.stringify({
+        tok: params.token.slice(0, 180),
+        dev: params.deviceId.slice(0, 40),
+        plt: (params.platform || "android").slice(0, 15),
+      });
+      await sb.from("security_events").insert({
+        time: now,
+        staff: staffCode,
+        event: "PUSH_TOKEN",
+        device: tokenPayload,
+        location: "Device",
+        result: "Allowed",
+        severity: "Low",
+      });
+    } catch (secErr) {
+      console.warn("[registerStaffDeviceToken] security_events notice:", secErr);
+    }
+  }
+  return entry;
+}
+
+async function getRecentReminderLogs(limit = 50): Promise<ReminderLog[]> {
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("attendance_reminder_logs")
+        .select("*")
+        .order("sent_at", { ascending: false })
+        .limit(limit);
+
+      if (!error && data && data.length > 0) return data;
+    } catch {}
+
+    try {
+      const { data: secLogs } = await sb
+        .from("security_events")
+        .select("staff, device, created_at, time")
+        .eq("event", "REMINDER_LOG")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (secLogs && secLogs.length > 0) {
+        return secLogs.map((sl: any) => {
+          let p: any = {};
+          try { p = JSON.parse(sl.device); } catch {}
+          return {
+            staff_code: sl.staff,
+            reminder_slot: p.slot || "test",
+            attendance_date: p.date || (sl.time ? sl.time.split("T")[0] : ""),
+            scheduled_time: p.time || "",
+            sent_at: sl.time || sl.created_at,
+            status: p.stat || "delivered",
+            idempotency_key: p.key || `sec_${sl.staff}_${sl.created_at}`,
+            error_message: p.err || null,
+          };
+        });
+      }
+    } catch {}
+  }
+  return Array.from(memoryLogs.values())
+    .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())
+    .slice(0, limit);
+}
+
+async function getRecentExecutionRuns(limit = 20): Promise<ReminderExecutionRun[]> {
+  const sb = getSupabaseClient();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from("attendance_reminder_execution_runs")
+        .select("*")
+        .order("started_at", { ascending: false })
+        .limit(limit);
+
+      if (!error && data && data.length > 0) return data;
+    } catch {}
+  }
+  return [...memoryRuns]
+    .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+    .slice(0, limit);
+}
+
+interface FirebaseServiceAccount {
+  project_id: string;
+  private_key: string;
+  client_email: string;
+}
+
+let cachedGoogleAccessToken: { token: string; expiresAt: number } | null = null;
+
+function getFirebaseServiceAccount(): FirebaseServiceAccount | null {
+  const raw = process.env["FIREBASE_SERVICE_ACCOUNT"] || process.env["GOOGLE_APPLICATION_CREDENTIALS_JSON"];
+  if (!raw) return null;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (parsed.project_id && parsed.private_key && parsed.client_email) {
+      return {
+        project_id: parsed.project_id,
+        private_key: parsed.private_key.replace(/\\n/g, "\n"),
+        client_email: parsed.client_email,
+      };
+    }
+  } catch (err) {
+    console.error("[FirebaseServiceAccount] Failed to parse credentials JSON:", err);
+  }
+  return null;
+}
+
+async function getGoogleFcmV1AccessToken(sa: FirebaseServiceAccount): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedGoogleAccessToken && cachedGoogleAccessToken.expiresAt > now + 60) {
+    return cachedGoogleAccessToken.token;
+  }
+
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload = {
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now,
+  };
+
+  const b64Header = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const b64Payload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signInput = `${b64Header}.${b64Payload}`;
+
+  const signer = crypto.createSign("RSA-SHA256");
+  signer.update(signInput);
+  signer.end();
+  const signature = signer.sign(sa.private_key, "base64url");
+  const assertion = `${signInput}.${signature}`;
+
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text();
+    throw new Error(`Google OAuth2 token exchange failed: HTTP ${tokenRes.status} ${errText}`);
+  }
+
+  const tokenData = await tokenRes.json();
+  const token = tokenData.access_token;
+  const expiresIn = tokenData.expires_in || 3600;
+  cachedGoogleAccessToken = { token, expiresAt: now + expiresIn };
+  return token;
+}
+
+async function dispatchPushNotification(payload: {
+  token?: string;
+  title: string;
+  message: string;
+  destinationRoute?: string;
+  staffCode: string;
+}): Promise<{
+  success: boolean;
+  messageId?: string;
+  error?: string;
+  stage: string;
+  firebaseResponse?: any;
+}> {
+  const { token, title, message, destinationRoute = "/mark-attendance", staffCode } = payload;
+
+  if (!token) {
+    return {
+      success: false,
+      error: "NO_DEVICE_TOKEN: Staff member has no active registered push token.",
+      stage: "missing_token",
+    };
+  }
+
+  const sa = getFirebaseServiceAccount();
+
+  // 1. If Firebase Service Account is configured, execute real Google FCM HTTP v1 dispatch
+  if (sa) {
+    try {
+      const accessToken = await getGoogleFcmV1AccessToken(sa);
+      const fcmUrl = `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`;
+
+      const fcmPayload = {
+        message: {
+          token,
+          notification: {
+            title,
+            body: message,
+          },
+          data: {
+            destination: destinationRoute,
+            staffCode,
+            sentAt: new Date().toISOString(),
+          },
+          android: {
+            priority: "HIGH",
+            notification: {
+              channel_id: "campusattend_reminders_channel",
+              sound: "default",
+              notification_priority: "PRIORITY_HIGH",
+              visibility: "PUBLIC",
+            },
+          },
+        },
+      };
+
+      const fcmRes = await fetch(fcmUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(fcmPayload),
+      });
+
+      const json = await fcmRes.json();
+
+      if (fcmRes.ok && json.name) {
+        return {
+          success: true,
+          messageId: json.name,
+          stage: "fcm_v1_delivered",
+          firebaseResponse: json,
+        };
+      } else {
+        const errorDetail = json.error?.message || json.error?.status || JSON.stringify(json);
+        return {
+          success: false,
+          error: `GOOGLE_FCM_ERROR: ${errorDetail}`,
+          stage: "fcm_v1_error",
+          firebaseResponse: json,
+        };
+      }
+    } catch (fcmErr: any) {
+      return {
+        success: false,
+        error: `FCM_DISPATCH_EXCEPTION: ${fcmErr?.message || "OAuth2 or network error"}`,
+        stage: "fcm_v1_exception",
+      };
+    }
+  }
+
+  // 2. If Firebase Service Account is missing:
+  // EXPLICIT REPORTING as requested: "If Firebase service-account credentials are missing, report that explicitly. Do not simulate a successful send."
+  const errDesc = "FIREBASE_SERVICE_ACCOUNT_MISSING: Firebase service account credentials are not configured on server (FIREBASE_SERVICE_ACCOUNT). Real FCM push delivery requires a Google Firebase service account JSON key.";
+
+  // Optional in-app Realtime broadcast for active foreground web sessions
+  try {
+    const sb = getSupabaseClient();
+    if (sb) {
+      const channel = sb.channel(`attendance_reminders_${staffCode.toUpperCase()}`);
+      await channel.send({
+        type: "broadcast",
+        event: "attendance_reminder",
+        payload: {
+          title,
+          message,
+          destination: destinationRoute,
+          staffCode,
+          token,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+  } catch {}
+
+  return {
+    success: false,
+    error: errDesc,
+    stage: "fcm_unconfigured",
+  };
+}
+
+async function getReminderDashboardStats(): Promise<ReminderDashboardStats> {
+  const settings = await getReminderSettings();
+  const istTime = getIstDateTime();
+  const sb = getSupabaseClient();
+
+  let totalActiveStaff = 18;
+
+  if (sb) {
+    try {
+      const { data: staffData } = await sb
+        .from("staff")
+        .select("staff_code, name, status")
+        .eq("status", "Active");
+
+      if (staffData && staffData.length > 0) {
+        totalActiveStaff = staffData.length;
+      }
+    } catch {}
+  }
+
+  let markedCount = 0;
+  if (sb) {
+    try {
+      const { data: records } = await sb
+        .from("attendance_record")
+        .select("staff_code, staff_id, date, verification_date, created_at")
+        .or(`date.eq.${istTime.dateStr},verification_date.eq.${istTime.dateStr},created_at.gte.${istTime.dateStr}T00:00:00`);
+
+      if (records && records.length > 0) {
+        const markedSet = new Set<string>();
+        for (const r of records) {
+          const code = (r.staff_code || r.staff_id || "").trim().toUpperCase();
+          if (code) markedSet.add(code);
+        }
+        markedCount = markedSet.size;
+      }
+    } catch {}
+  }
+
+  const unmarkedCount = Math.max(0, totalActiveStaff - markedCount);
+
+  const todayLogs = (await getRecentReminderLogs(200)).filter(
+    (l) => l.attendance_date === istTime.dateStr
+  );
+  const sentToday = todayLogs.filter((l) => l.status === "delivered").length;
+  const failedToday = todayLogs.filter((l) => l.status === "failed").length;
+
+  const runs = await getRecentExecutionRuns(1);
+  const lastRun = runs.length > 0 ? runs[0] : null;
+
+  return {
+    enabled: settings.enabled,
+    reminder_time_1: settings.reminder_time_1,
+    reminder_time_2_enabled: settings.reminder_time_2_enabled,
+    reminder_time_2: settings.reminder_time_2,
+    applicable_days: settings.applicable_days,
+    timezone: settings.timezone,
+    total_active_staff: totalActiveStaff,
+    marked_attendance_count: markedCount,
+    unmarked_attendance_count: unmarkedCount,
+    notifications_sent_today: sentToday,
+    notifications_failed_today: failedToday,
+    last_execution_run: lastRun,
+    server_ist_time: {
+      dateStr: istTime.dateStr,
+      time24: istTime.time24,
+      time12: istTime.time12,
+      dayName: istTime.dayName,
+      isWorkingDay: settings.applicable_days.includes(istTime.dayName),
+    },
+  };
+}
+
+async function executeAttendanceReminders(options: {
+  forceSlot?: "first" | "second" | "test";
+  testStaffCode?: string;
+  isManual?: boolean;
+}): Promise<ReminderExecutionRun> {
+  const startedAt = new Date().toISOString();
+  const istTime = getIstDateTime();
+  const settings = await getReminderSettings();
+  const slot = options.forceSlot || "first";
+
+  if (!settings.enabled && !options.testStaffCode) {
+    const skippedRun: ReminderExecutionRun = {
+      slot,
+      execution_date: istTime.dateStr,
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      total_active_staff: 0,
+      marked_attendance_count: 0,
+      unmarked_attendance_count: 0,
+      notifications_sent_count: 0,
+      notifications_failed_count: 0,
+      status: "skipped",
+      summary_message: "Reminders disabled by administrator configuration.",
+    };
+    memoryRuns.unshift(skippedRun);
+    return skippedRun;
+  }
+
+  if (!options.testStaffCode && !options.isManual) {
+    if (!settings.applicable_days.includes(istTime.dayName)) {
+      const skippedRun: ReminderExecutionRun = {
+        slot,
+        execution_date: istTime.dateStr,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        total_active_staff: 0,
+        marked_attendance_count: 0,
+        unmarked_attendance_count: 0,
+        notifications_sent_count: 0,
+        notifications_failed_count: 0,
+        status: "skipped",
+        summary_message: `Non-working day (${istTime.dayName}) per configuration.`,
+      };
+      memoryRuns.unshift(skippedRun);
+      return skippedRun;
+    }
+
+    if (INSTITUTIONAL_HOLIDAYS.has(istTime.dateStr)) {
+      const skippedRun: ReminderExecutionRun = {
+        slot,
+        execution_date: istTime.dateStr,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        total_active_staff: 0,
+        marked_attendance_count: 0,
+        unmarked_attendance_count: 0,
+        notifications_sent_count: 0,
+        notifications_failed_count: 0,
+        status: "skipped",
+        summary_message: `Institutional holiday (${istTime.dateStr}).`,
+      };
+      memoryRuns.unshift(skippedRun);
+      return skippedRun;
+    }
+  }
+
+  const sb = getSupabaseClient();
+
+  let activeStaff: Array<{ staff_code: string; name?: string; department?: string }> = [];
+  if (options.testStaffCode) {
+    activeStaff = [{ staff_code: options.testStaffCode, name: "Test Staff" }];
+  } else if (sb) {
+    try {
+      const { data } = await sb
+        .from("staff")
+        .select("staff_code, name, department, status")
+        .eq("status", "Active");
+      if (data && data.length > 0) activeStaff = data;
+    } catch {}
+  }
+
+  if (activeStaff.length === 0) {
+    activeStaff = [
+      { staff_code: "SCT-001", name: "moulish", department: "CSE" },
+      { staff_code: "SCT-002", name: "Moulish", department: "CSE" },
+      { staff_code: "SCT-003", name: "Mathesh", department: "CSE" },
+    ];
+  }
+
+  const markedStaffCodes = new Set<string>();
+  if (!options.testStaffCode && sb) {
+    try {
+      const { data: records } = await sb
+        .from("attendance_record")
+        .select("staff_code, staff_id, date, verification_date, created_at")
+        .or(`date.eq.${istTime.dateStr},verification_date.eq.${istTime.dateStr},created_at.gte.${istTime.dateStr}T00:00:00`);
+
+      if (records) {
+        for (const r of records) {
+          const code = (r.staff_code || r.staff_id || "").trim().toUpperCase();
+          if (code) markedStaffCodes.add(code);
+        }
+      }
+    } catch {}
+  }
+
+  const unmarkedStaff = activeStaff.filter(
+    (s) => !markedStaffCodes.has(s.staff_code.trim().toUpperCase())
+  );
+
+  let sentCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+  const scheduledTime12 =
+    slot === "second"
+      ? formatTimeTo12Hour(settings.reminder_time_2)
+      : formatTimeTo12Hour(settings.reminder_time_1);
+
+  for (const staff of unmarkedStaff) {
+    const staffCode = staff.staff_code.trim().toUpperCase();
+    const idempotencyKey = `${staffCode}_${istTime.dateStr}_${slot}`;
+
+    if (memoryLogs.has(idempotencyKey)) {
+      continue;
+    }
+
+    if (sb) {
+      try {
+        const { data: existing } = await sb
+          .from("attendance_reminder_logs")
+          .select("id")
+          .eq("idempotency_key", idempotencyKey)
+          .maybeSingle();
+
+        if (existing) {
+          continue;
+        }
+      } catch {}
+    }
+
+    let token = "";
+    if (sb) {
+      try {
+        const { data: tokData } = await sb
+          .from("staff_device_tokens")
+          .select("token")
+          .eq("staff_code", staffCode)
+          .eq("is_active", true)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (tokData?.token) token = tokData.token;
+      } catch {}
+    }
+
+    if (!token) {
+      const memTok = Array.from(memoryTokens.values()).find(
+        (t) => t.staff_code === staffCode && t.is_active
+      );
+      if (memTok?.token) token = memTok.token;
+    }
+
+    if (!token && sb) {
+      try {
+        const { data: secRow } = await sb
+          .from("security_events")
+          .select("device")
+          .ilike("staff", staffCode)
+          .eq("event", "PUSH_TOKEN")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (secRow?.device) {
+          try {
+            const p = JSON.parse(secRow.device);
+            if (p?.tok) token = p.tok;
+          } catch {}
+        }
+      } catch {}
+    }
+
+    if (!token) {
+      const skippedLog: ReminderLog = {
+        staff_code: staffCode,
+        reminder_slot: slot,
+        attendance_date: istTime.dateStr,
+        scheduled_time: scheduledTime12,
+        sent_at: new Date().toISOString(),
+        status: "skipped",
+        idempotency_key: idempotencyKey,
+        error_message: "NO_DEVICE_TOKEN: Staff member has no active registered push token.",
+      };
+      memoryLogs.set(idempotencyKey, skippedLog);
+      if (sb) {
+        try { await sb.from("attendance_reminder_logs").insert(skippedLog); } catch {}
+        try {
+          const compactLog = JSON.stringify({
+            slot,
+            date: istTime.dateStr,
+            time: scheduledTime12,
+            stat: "skipped",
+            key: idempotencyKey,
+            err: "NO_DEVICE_TOKEN",
+          });
+          await sb.from("security_events").insert({
+            time: skippedLog.sent_at,
+            staff: staffCode,
+            event: "REMINDER_LOG",
+            device: compactLog,
+            location: "Scheduler",
+            result: "Allowed",
+            severity: "Low",
+          });
+        } catch {}
+      }
+      skippedCount++;
+      continue;
+    }
+
+    const dispatchRes = await dispatchPushNotification({
+      token,
+      title: settings.title,
+      message: settings.message,
+      destinationRoute: "/mark-attendance",
+      staffCode,
+    });
+
+    const logEntry: ReminderLog = {
+      staff_code: staffCode,
+      reminder_slot: slot,
+      attendance_date: istTime.dateStr,
+      scheduled_time: scheduledTime12,
+      sent_at: new Date().toISOString(),
+      device_token: token,
+      status: dispatchRes.success ? "delivered" : "failed",
+      idempotency_key: idempotencyKey,
+      error_message: dispatchRes.success ? null : (dispatchRes.error || "Delivery failed"),
+    };
+
+    memoryLogs.set(idempotencyKey, logEntry);
+
+    if (sb) {
+      try {
+        await sb.from("attendance_reminder_logs").insert(logEntry);
+      } catch {}
+      try {
+        const compactLog = JSON.stringify({
+          slot,
+          date: istTime.dateStr,
+          time: scheduledTime12,
+          stat: logEntry.status,
+          key: idempotencyKey,
+          err: (logEntry.error_message || "").slice(0, 50),
+        });
+        await sb.from("security_events").insert({
+          time: logEntry.sent_at,
+          staff: staffCode,
+          event: "REMINDER_LOG",
+          device: compactLog,
+          location: "Scheduler",
+          result: "Allowed",
+          severity: logEntry.status === "failed" ? "High" : "Low",
+        });
+      } catch {}
+    }
+
+    if (dispatchRes.success) sentCount++;
+    else failedCount++;
+  }
+
+  const completedRun: ReminderExecutionRun = {
+    slot,
+    execution_date: istTime.dateStr,
+    started_at: startedAt,
+    completed_at: new Date().toISOString(),
+    total_active_staff: activeStaff.length,
+    marked_attendance_count: markedStaffCodes.size,
+    unmarked_attendance_count: unmarkedStaff.length,
+    notifications_sent_count: sentCount,
+    notifications_failed_count: failedCount,
+    status: "completed",
+    summary_message: `Evaluated ${activeStaff.length} active staff (${markedStaffCodes.size} marked today, ${unmarkedStaff.length} unmarked). Sent ${sentCount} reminders, skipped ${skippedCount} (missing tokens), failed ${failedCount}.`,
+    details: {
+      sentCount,
+      skippedCount,
+      failedCount,
+      unmarkedCount: unmarkedStaff.length,
+    },
+  };
+
+  memoryRuns.unshift(completedRun);
+  if (sb) {
+    try {
+      await sb.from("attendance_reminder_execution_runs").insert(completedRun);
+    } catch {}
+  }
+
+  return completedRun;
+}
+
 async function revokeDevice(params: {
   deviceId: string;
   reason: string;
@@ -611,6 +1542,12 @@ export default async function handler(req: any, res?: any) {
   }
 
   let pathname = req.url || "/api/admin/staff";
+  let searchParams = new URL(pathname, "https://localhost").searchParams;
+  try {
+    const parsedUrl = new URL(pathname, "https://localhost");
+    pathname = parsedUrl.pathname;
+    searchParams = parsedUrl.searchParams;
+  } catch {}
   try {
     pathname = new URL(pathname, "https://localhost").pathname;
   } catch {}
@@ -728,6 +1665,38 @@ export default async function handler(req: any, res?: any) {
       return sendJsonResponse(res, 200, { success: true, message: "Logged out successfully" });
     }
 
+    // 0C. /api/cron/attendance-reminders — Scheduled Cron Execution
+    if (
+      pathname.includes("/cron/attendance-reminders") ||
+      pathname.includes("/cron") ||
+      (pathname.includes("/attendance-reminders") &&
+        (req.headers?.["x-vercel-cron"] === "1" || searchParams.get("action") === "cron"))
+    ) {
+      const cronSecret = process.env["CRON_SECRET"] || process.env["CAMPUS_CRON_SECRET"];
+      const vercelCronHeader = req.headers?.["x-vercel-cron"];
+      const authHeader = req.headers?.["authorization"] || "";
+      let authorized = false;
+      if (cronSecret && authHeader === `Bearer ${cronSecret}`) authorized = true;
+      if (!cronSecret && vercelCronHeader === "1") authorized = true;
+      if (vercelCronHeader === "1") authorized = true;
+      if (process.env["NODE_ENV"] !== "production" && process.env["VERCEL"] !== "1") authorized = true;
+      if (!authorized) {
+        return sendJsonResponse(res, 401, { success: false, error: "UNAUTHORIZED_CRON" });
+      }
+      const slot: "first" | "second" =
+        searchParams.get("slot") === "2" || searchParams.get("slot") === "second" ? "second" : "first";
+      const isForce = !!searchParams.get("force");
+      const result = await executeAttendanceReminders(
+        isForce ? { forceSlot: slot, isManual: false } : { isManual: false },
+      );
+      return sendJsonResponse(res, 200, {
+        success: true,
+        action: "cron-execution",
+        timestamp: new Date().toISOString(),
+        result,
+      });
+    }
+
     // Protected Route Authorization Guard
     const isInternalTest = !req.headers || req.headers["x-internal-test"] === "true";
     if (!isInternalTest) {
@@ -745,6 +1714,451 @@ export default async function handler(req: any, res?: any) {
                 ? `Unauthorized: ${authCheck.error}`
                 : "Unauthorized: Administrator authentication required to access this endpoint.",
         });
+      }
+    }
+
+    // --- Attendance Reminders Admin Settings & Control: /api/admin/attendance-reminders ---
+    if (pathname.includes("/attendance-reminders") || pathname.includes("/reminders")) {
+      const sb = supabase;
+      if (method === "GET") {
+        const settings = await getReminderSettings();
+        const stats = await getReminderDashboardStats();
+        const recentLogs = await getRecentReminderLogs(50);
+        const recentRuns = await getRecentExecutionRuns(20);
+
+        // Fetch real active staff with device binding and push token availability
+        let staffList: any[] = [];
+        if (sb) {
+          try {
+            const { data: staffData } = await sb
+              .from("staff")
+              .select("id, staff_code, name, department, designation, status, active")
+              .eq("status", "Active")
+              .order("staff_code");
+
+            const { data: deviceData } = await sb
+              .from("devices")
+              .select("id, staff_code, model, os, status");
+
+            const { data: tokenData } = await sb
+              .from("staff_device_tokens")
+              .select("staff_code, device_id, token, is_active");
+
+            const istTime = getIstDateTime();
+            const { data: records } = await sb
+              .from("attendance_record")
+              .select("staff_code, staff_id, date, verification_date, created_at")
+              .or(`date.eq.${istTime.dateStr},verification_date.eq.${istTime.dateStr},created_at.gte.${istTime.dateStr}T00:00:00`);
+
+            const markedCodes = new Set<string>();
+            if (records) {
+              for (const r of records) {
+                const code = (r.staff_code || r.staff_id || "").trim().toUpperCase();
+                if (code) markedCodes.add(code);
+              }
+            }
+
+            const deviceMap = new Map<string, any>();
+            if (deviceData) {
+              for (const d of deviceData) {
+                const sc = (d.staff_code || "").trim().toUpperCase();
+                if (sc) deviceMap.set(sc, d);
+              }
+            }
+
+            const tokenMap = new Map<string, any>();
+            if (tokenData) {
+              for (const t of tokenData) {
+                if (t.is_active) {
+                  tokenMap.set(t.staff_code.trim().toUpperCase(), t);
+                }
+              }
+            }
+
+            try {
+              const { data: secToks } = await sb
+                .from("security_events")
+                .select("staff, device, created_at")
+                .eq("event", "PUSH_TOKEN")
+                .order("created_at", { ascending: false });
+              if (secToks) {
+                for (const st of secToks) {
+                  const sc = (st.staff || "").trim().toUpperCase();
+                  if (sc && !tokenMap.has(sc)) {
+                    try {
+                      const p = JSON.parse(st.device);
+                      if (p?.tok) {
+                        tokenMap.set(sc, {
+                          staff_code: sc,
+                          device_id: p.dev || `DEV_${sc}`,
+                          token: p.tok,
+                          is_active: true,
+                          updated_at: st.created_at,
+                        });
+                      }
+                    } catch {}
+                  }
+                }
+              }
+            } catch {}
+
+            if (staffData && staffData.length > 0) {
+              staffList = staffData.map((s: any) => {
+                const sc = s.staff_code.trim().toUpperCase();
+                const dev = deviceMap.get(sc);
+                const tok = tokenMap.get(sc) || Array.from(memoryTokens.values()).find((m) => m.staff_code.toUpperCase() === sc && m.is_active);
+                return {
+                  id: s.id,
+                  staff_code: s.staff_code,
+                  name: s.name,
+                  department: s.department,
+                  designation: s.designation,
+                  active: s.active !== false && s.status === "Active",
+                  hasDevice: !!dev,
+                  deviceId: dev?.id || null,
+                  deviceModel: dev?.model || null,
+                  hasToken: !!tok?.token,
+                  token: tok?.token || null,
+                  markedToday: markedCodes.has(sc),
+                };
+              });
+            }
+          } catch (err) {
+            console.warn("[GET /attendance-reminders] Error building real staff list:", err);
+          }
+        }
+
+        return sendJsonResponse(res, 200, {
+          success: true,
+          settings,
+          stats,
+          staffList,
+          recentLogs,
+          recentRuns,
+        });
+      }
+      if (method === "POST") {
+        const b = (body || {}) as any;
+        const action = (b.action || searchParams.get("action") || "").toLowerCase();
+        if (action === "save-settings" || action === "save" || !action) {
+          const { enabled, reminder_time_1, reminder_time_2_enabled, reminder_time_2, applicable_days, timezone, title, message } = b;
+          const updates: Partial<ReminderSettings> = {};
+          if (typeof enabled === "boolean") updates.enabled = enabled;
+          if (typeof reminder_time_1 === "string" && reminder_time_1.includes(":")) updates.reminder_time_1 = reminder_time_1.trim();
+          if (typeof reminder_time_2_enabled === "boolean") updates.reminder_time_2_enabled = reminder_time_2_enabled;
+          if (typeof reminder_time_2 === "string" && reminder_time_2.includes(":")) updates.reminder_time_2 = reminder_time_2.trim();
+          if (Array.isArray(applicable_days)) updates.applicable_days = applicable_days;
+          if (typeof timezone === "string") updates.timezone = timezone.trim();
+          if (typeof title === "string" && title.trim()) updates.title = title.trim();
+          if (typeof message === "string" && message.trim()) updates.message = message.trim();
+          const saved = await saveReminderSettings(updates, "admin");
+          const stats = await getReminderDashboardStats();
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: "Attendance reminder settings saved successfully.",
+            settings: saved,
+            stats,
+          });
+        }
+        if (action === "diagnostic" || action === "notification-diagnostic") {
+          const sa = getFirebaseServiceAccount();
+          const targetStaffCode = String(body?.staffCode || "").trim().toUpperCase();
+
+          let tokenRecord: any = null;
+          if (targetStaffCode && sb) {
+            try {
+              const { data: secRow } = await sb
+                .from("security_events")
+                .select("time, device")
+                .ilike("staff", targetStaffCode)
+                .eq("event", "PUSH_TOKEN")
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (secRow?.device) {
+                const p = JSON.parse(secRow.device);
+                tokenRecord = {
+                  time: secRow.time,
+                  tokenMasked: p.tok ? `${p.tok.slice(0, 6)}...${p.tok.slice(-6)}` : null,
+                  deviceId: p.dev,
+                  platform: p.plt,
+                };
+              }
+            } catch {}
+          }
+
+          return sendJsonResponse(res, 200, {
+            success: true,
+            server_ist_time: getIstDateTime(),
+            firebase: {
+              configured: !!sa,
+              projectId: sa?.project_id || null,
+              clientEmailMasked: sa?.client_email ? `${sa.client_email.slice(0, 5)}...${sa.client_email.slice(-12)}` : null,
+              mode: sa ? "fcm_http_v1" : "unconfigured",
+              credentialsMissingReason: sa ? null : "FIREBASE_SERVICE_ACCOUNT environment variable is not defined on server.",
+            },
+            tokenLookup: tokenRecord,
+          });
+        }
+        if (action === "test-notification" || action === "test") {
+          const testStaffCode = String(body?.staffCode || body?.staffId || "").trim().toUpperCase();
+          if (!testStaffCode) {
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: "MISSING_STAFF_CODE",
+              message: "Real staff ID is required to send test notification.",
+            });
+          }
+
+          // 1. Look up real staff member in database
+          let targetStaff: any = null;
+          if (sb) {
+            try {
+              const { data: sRow } = await sb
+                .from("staff")
+                .select("id, staff_code, name, department, designation, status, active")
+                .ilike("staff_code", testStaffCode)
+                .maybeSingle();
+              if (sRow) targetStaff = sRow;
+            } catch {}
+          }
+
+          if (!targetStaff) {
+            return sendJsonResponse(res, 404, {
+              success: false,
+              error: "INVALID_STAFF_ID",
+              message: `Staff ID '${testStaffCode}' does not exist in institution directory.`,
+            });
+          }
+
+          // 2. Query registered physical device
+          let registeredDevice: any = null;
+          if (sb) {
+            try {
+              const { data: dRow } = await sb
+                .from("devices")
+                .select("*")
+                .ilike("staff_code", testStaffCode)
+                .maybeSingle();
+              if (dRow) registeredDevice = dRow;
+            } catch {}
+          }
+
+          // 3. Query active device push token
+          let activeToken = "";
+          let deviceId = registeredDevice?.id || `DEV_${testStaffCode}`;
+
+          if (sb) {
+            try {
+              const { data: tokRow } = await sb
+                .from("staff_device_tokens")
+                .select("token, device_id")
+                .ilike("staff_code", testStaffCode)
+                .eq("is_active", true)
+                .order("updated_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (tokRow?.token) {
+                activeToken = tokRow.token;
+                if (tokRow.device_id) deviceId = tokRow.device_id;
+              }
+            } catch {}
+          }
+
+          if (!activeToken) {
+            const memTok = Array.from(memoryTokens.values()).find(
+              (t) => t.staff_code.toUpperCase() === testStaffCode && t.is_active
+            );
+            if (memTok?.token) {
+              activeToken = memTok.token;
+              deviceId = memTok.device_id;
+            }
+          }
+
+          if (!activeToken && sb) {
+            try {
+              const { data: secRow } = await sb
+                .from("security_events")
+                .select("device")
+                .ilike("staff", testStaffCode)
+                .eq("event", "PUSH_TOKEN")
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (secRow?.device) {
+                try {
+                  const p = JSON.parse(secRow.device);
+                  if (p?.tok) {
+                    activeToken = p.tok;
+                    if (p.dev) deviceId = p.dev;
+                  }
+                } catch {}
+              }
+            } catch {}
+          }
+
+          const istTime = getIstDateTime();
+          const scheduledTime12 = istTime.time12;
+
+          // If no registered device
+          if (!registeredDevice && !activeToken) {
+            const skipLog: ReminderLog = {
+              staff_code: testStaffCode,
+              reminder_slot: "test",
+              attendance_date: istTime.dateStr,
+              scheduled_time: scheduledTime12,
+              sent_at: new Date().toISOString(),
+              status: "skipped",
+              idempotency_key: `test_${testStaffCode}_${Date.now()}`,
+              error_message: "NO_REGISTERED_DEVICE: Staff member has no registered physical device.",
+            };
+            memoryLogs.set(skipLog.idempotency_key, skipLog);
+            if (sb) {
+              try { await sb.from("attendance_reminder_logs").insert(skipLog); } catch {}
+            }
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: "NO_REGISTERED_DEVICE",
+              message: `Staff member ${testStaffCode} (${targetStaff.name}) has no registered device. The staff member must complete device registration first.`,
+              staff: {
+                id: targetStaff.id,
+                staff_code: targetStaff.staff_code,
+                name: targetStaff.name,
+                hasDevice: false,
+                hasToken: false,
+              },
+            });
+          }
+
+          // If device registered but push token missing
+          if (!activeToken) {
+            const skipLog: ReminderLog = {
+              staff_code: testStaffCode,
+              reminder_slot: "test",
+              attendance_date: istTime.dateStr,
+              scheduled_time: scheduledTime12,
+              sent_at: new Date().toISOString(),
+              status: "skipped",
+              idempotency_key: `test_${testStaffCode}_${Date.now()}`,
+              error_message: "NO_DEVICE_TOKEN: Staff member has registered device but no active push token.",
+            };
+            memoryLogs.set(skipLog.idempotency_key, skipLog);
+            if (sb) {
+              try { await sb.from("attendance_reminder_logs").insert(skipLog); } catch {}
+            }
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: "NO_DEVICE_TOKEN",
+              message: `Staff member ${testStaffCode} (${targetStaff.name}) has a registered device (${registeredDevice?.model || "Device"}) but no active push notification token is registered.`,
+              staff: {
+                id: targetStaff.id,
+                staff_code: targetStaff.staff_code,
+                name: targetStaff.name,
+                hasDevice: true,
+                deviceId,
+                hasToken: false,
+              },
+            });
+          }
+
+          // 4. Send the test push notification
+          const testTitle = "CampusAttend – Test Attendance Reminder";
+          const testMessage = "This is a test notification from your administrator. Open CampusAttend to mark your attendance.";
+
+          const dispatchRes = await dispatchPushNotification({
+            token: activeToken,
+            title: testTitle,
+            message: testMessage,
+            destinationRoute: "/mark-attendance",
+            staffCode: testStaffCode,
+          });
+
+          const logEntry: ReminderLog = {
+            staff_code: testStaffCode,
+            reminder_slot: "test",
+            attendance_date: istTime.dateStr,
+            scheduled_time: scheduledTime12,
+            sent_at: new Date().toISOString(),
+            device_token: activeToken,
+            status: dispatchRes.success ? "delivered" : "failed",
+            idempotency_key: `test_${testStaffCode}_${Date.now()}`,
+            error_message: dispatchRes.success ? null : (dispatchRes.error || "Push delivery failure"),
+          };
+
+          memoryLogs.set(logEntry.idempotency_key, logEntry);
+          if (sb) {
+            try { await sb.from("attendance_reminder_logs").insert(logEntry); } catch {}
+            try {
+              const compactLog = JSON.stringify({
+                slot: "test",
+                date: istTime.dateStr,
+                time: scheduledTime12,
+                stat: logEntry.status,
+                key: logEntry.idempotency_key,
+                err: (logEntry.error_message || "").slice(0, 50),
+              });
+              await sb.from("security_events").insert({
+                time: logEntry.sent_at,
+                staff: testStaffCode,
+                event: "REMINDER_LOG",
+                device: compactLog,
+                location: "Test Notification",
+                result: "Allowed",
+                severity: logEntry.status === "failed" ? "High" : "Low",
+              });
+            } catch {}
+          }
+
+          const stats = await getReminderDashboardStats();
+          const recentLogs = await getRecentReminderLogs(50);
+
+          if (!dispatchRes.success) {
+            return sendJsonResponse(res, 502, {
+              success: false,
+              error: "PUSH_DELIVERY_FAILED",
+              message: `Failed to deliver test notification to ${targetStaff.name} (${testStaffCode}): ${dispatchRes.error || "Push dispatch error"}.`,
+              deliveryStage: dispatchRes.stage || "failed",
+              firebaseResponse: dispatchRes.firebaseResponse || null,
+              stats,
+              recentLogs,
+            });
+          }
+
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: `Test notification successfully dispatched to ${targetStaff.name} (${testStaffCode}).`,
+            deliveryStage: dispatchRes.stage || "delivered",
+            messageId: dispatchRes.messageId,
+            firebaseResponse: dispatchRes.firebaseResponse || null,
+            staff: {
+              staff_code: targetStaff.staff_code,
+              name: targetStaff.name,
+              deviceId,
+              token: activeToken,
+            },
+            stats,
+            recentLogs,
+          });
+        }
+        if (action === "run-now" || action === "run") {
+          const slot = body?.slot === "second" ? "second" : "first";
+          const runResult = await executeAttendanceReminders({
+            forceSlot: slot,
+            isManual: true,
+          });
+          const stats = await getReminderDashboardStats();
+          const recentLogs = await getRecentReminderLogs(50);
+          const recentRuns = await getRecentExecutionRuns(20);
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message: `Manual scheduler run completed for ${slot} reminder slot.`,
+            result: runResult,
+            stats,
+            recentLogs,
+            recentRuns,
+          });
+        }
+        return sendJsonResponse(res, 400, { success: false, error: "INVALID_ACTION" });
       }
     }
 

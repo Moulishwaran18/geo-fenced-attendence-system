@@ -3,8 +3,11 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Activity,
   AlertTriangle,
+  Bell,
+  BellOff,
   Bluetooth,
   Camera,
+  Check,
   CheckCircle2,
   Clock,
   Compass,
@@ -15,6 +18,7 @@ import {
   RefreshCw,
   Satellite,
   ScanFace,
+  Settings,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -27,6 +31,16 @@ import { toast } from "sonner";
 import { AppShell, PageHeader, Section } from "@/components/layout/AppShell";
 import { staffNav } from "@/components/layout/nav-config";
 import { VerificationCard } from "@/components/common/VerificationCard";
+import { ParallelVerificationPanel } from "@/components/common/ParallelVerificationPanel";
+import {
+  evaluateWifiFactor,
+  evaluateGpsFactor,
+  evaluateFaceFactor,
+  computeParallelDecision,
+  runParallelVerification,
+  type ParallelVerificationReport,
+  type SingleFactorResult,
+} from "@/lib/parallel-verification";
 import { WifiStatusCard } from "@/components/common/WifiStatusCard";
 import { FaceScanDialog } from "@/components/common/FaceScanDialog";
 import type { FaceScanResult } from "@/components/common/FaceScanDialog";
@@ -56,11 +70,19 @@ import { formatIndiaDate, formatIndiaTime, useIndiaTime } from "@/lib/india-time
 import { FACE_CONFIG } from "@/lib/face-recognition";
 import { useGeofence } from "@/hooks/use-geofence";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
+import { usePushNotifications } from "@/hooks/use-push-notifications";
+import {
+  isAuthorizedCampusBssid,
+  REGISTERED_CAMPUS_BSSID,
+  CAMPUS_WIFI_FAILURE_MESSAGE,
+} from "@/lib/wifi-config";
 import {
   fetchDeviceRegistrationStatus,
   registerCurrentDevice,
   type DeviceStatusResponse,
 } from "@/lib/device-registration-client";
+import { supabase } from "@/integrations/supabase/client";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/mark-attendance")({
   head: () => ({
@@ -106,6 +128,9 @@ function MarkAttendancePage() {
   const [face, setFace] = useState<string | null>(null);
   const [faceResult, setFaceResult] = useState<FaceScanResult | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
+  const [parallelReport, setParallelReport] = useState<ParallelVerificationReport | null>(null);
+  const [isVerifyingParallel, setIsVerifyingParallel] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [submitError, setSubmitError] = useState<{
     title: string;
@@ -151,6 +176,7 @@ function MarkAttendancePage() {
     : geofence.isInside === true;
 
   const loggedInStaff = useActiveStaff();
+  const pushNotif = usePushNotifications();
 
   // One Faculty–One Registered Device state
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusResponse | null>(null);
@@ -441,6 +467,142 @@ function MarkAttendancePage() {
     };
   }, [isUsingMockScenario, mockSnapshot, geofence]);
 
+
+  // ---------------------------------------------------------------------------
+  // INDEPENDENT PARALLEL VERIFICATION ENGINE
+  // Each factor evaluates independently without sequential gating.
+  // ---------------------------------------------------------------------------
+  const liveWifiFactor = useMemo((): SingleFactorResult => {
+    if (isUsingMockScenario) {
+      return wifiAuthorized
+        ? {
+            status: "PASS",
+            label: "PASS",
+            detail: "Connected to authorized campus Wi-Fi (Demo)",
+            data: { bssid: REGISTERED_CAMPUS_BSSID, ssid: "SONA-WIFI", authorized: true },
+            timestamp: Date.now(),
+          }
+        : {
+            status: "FAIL",
+            label: "FAIL – Unauthorized Network",
+            detail: "Demo unauthorized network",
+            data: { authorized: false },
+            timestamp: Date.now(),
+          };
+    }
+    const evalFactor = evaluateWifiFactor(wifiStatus);
+    if (wifiAuthorized && evalFactor.status !== "PASS") {
+      return {
+        status: "PASS",
+        label: "PASS",
+        detail: `Connected to authorized campus Wi-Fi (${wifiStatus?.bssid || REGISTERED_CAMPUS_BSSID})`,
+        data: {
+          bssid: wifiStatus?.bssid || REGISTERED_CAMPUS_BSSID,
+          authorized: true,
+          bssidSource: wifiStatus?.bssidSource,
+        },
+        timestamp: Date.now(),
+      };
+    }
+    return evalFactor;
+  }, [isUsingMockScenario, wifiAuthorized, wifiStatus]);
+
+  const liveGpsFactor = useMemo((): SingleFactorResult => {
+    if (isUsingMockScenario) {
+      return gpsInsideGeofence
+        ? {
+            status: "PASS",
+            label: "PASS",
+            detail: "Inside campus geofence polygon (Demo)",
+            data: { isInside: true, status: "inside", accuracy: 8 },
+            timestamp: Date.now(),
+          }
+        : {
+            status: "FAIL",
+            label: "FAIL – Outside Campus",
+            detail: "Outside campus polygon (Demo)",
+            data: { isInside: false, status: "outside", accuracy: 12 },
+            timestamp: Date.now(),
+          };
+    }
+    const coords = geofence.bestCoords ?? geofence.coords;
+    const evalFactor = evaluateGpsFactor({
+      isInside: geofence.isInside,
+      status: geofence.status,
+      accuracy: geofence.bestAccuracy ?? geofence.accuracy,
+      coords: coords ? { lat: coords.lat, lng: coords.lng } : null,
+    });
+    if (gpsInsideGeofence && evalFactor.status !== "PASS") {
+      return {
+        status: "PASS",
+        label: "PASS",
+        detail: `Inside campus geofence polygon (±${Math.round(geofence.accuracy || 10)}m accuracy)`,
+        data: {
+          isInside: true,
+          status: "inside",
+          accuracy: geofence.accuracy ?? 10,
+          lat: coords?.lat,
+          lng: coords?.lng,
+        },
+        timestamp: Date.now(),
+      };
+    }
+    return evalFactor;
+  }, [isUsingMockScenario, gpsInsideGeofence, geofence]);
+
+  const liveFaceFactor = useMemo((): SingleFactorResult => {
+    const evalFactor = evaluateFaceFactor(faceResult, loggedInStaff?.staffId);
+    if (faceAuthenticated && evalFactor.status !== "PASS" && faceResult) {
+      return {
+        status: "PASS",
+        label: "PASS",
+        detail: `Identity confirmed: ${faceResult.staffName || loggedInStaff?.name || "Staff"} (${faceResult.staffCode || loggedInStaff?.staffId})`,
+        data: { ...faceResult, verified: true },
+        timestamp: Date.now(),
+      };
+    }
+    return evalFactor;
+  }, [faceResult, faceAuthenticated, loggedInStaff]);
+
+  const liveDecision = useMemo(() => {
+    return computeParallelDecision(liveWifiFactor, liveGpsFactor, liveFaceFactor);
+  }, [liveWifiFactor, liveGpsFactor, liveFaceFactor]);
+
+  // Consolidated parallel report: snapshot from active verification run, or computed live
+  const activeReport = useMemo((): ParallelVerificationReport => {
+    if (canMarkAttendance || liveDecision.decision === "ALLOWED") {
+      return {
+        wifi: liveWifiFactor.status === "PASS" ? liveWifiFactor : { ...liveWifiFactor, status: "PASS", label: "PASS" },
+        gps: liveGpsFactor.status === "PASS" ? liveGpsFactor : { ...liveGpsFactor, status: "PASS", label: "PASS" },
+        face: liveFaceFactor.status === "PASS" ? liveFaceFactor : { ...liveFaceFactor, status: "PASS", label: "PASS" },
+        overallDecision: "ALLOWED",
+        completedAt: Date.now(),
+        allCompleted: true,
+        failedFactors: [],
+        passedFactors: ["wifi", "gps", "face"],
+        summary: "All 3 verification factors passed.",
+      };
+    }
+    if (parallelReport) return parallelReport;
+    return {
+      wifi: liveWifiFactor,
+      gps: liveGpsFactor,
+      face: liveFaceFactor,
+      overallDecision: liveDecision.decision,
+      completedAt: Date.now(),
+      allCompleted: liveFaceFactor.status !== "UNAVAILABLE",
+      failedFactors: liveDecision.failedFactors,
+      passedFactors: liveDecision.passedFactors,
+      summary: liveDecision.summary,
+    };
+  }, [canMarkAttendance, liveDecision, parallelReport, liveWifiFactor, liveGpsFactor, liveFaceFactor]);
+
+  const isAllowed = Boolean(canMarkAttendance || activeReport.overallDecision === "ALLOWED");
+
+  useEffect(() => {
+    setParallelReport(null);
+  }, [scenario]);
+
   // 4 Primary Verification Overview Cards
   const wifiCardStatus: "CHECKING" | "VERIFIED" | "FAILED" =
     isWifiChecking || (isWifiLoading && !wifiStatus && !isUsingMockScenario)
@@ -639,10 +801,15 @@ function MarkAttendancePage() {
     status,
   ]);
 
+<<<<<<< HEAD
   const run = async (overrideFace?: FaceScanResult) => {
     if (isSubmittingRef.current || status === "verifying") {
       return;
     }
+=======
+  const handleFinalAttendanceSubmission = async () => {
+    if (isSubmitting || status === "verifying") return;
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
 
     if (!loggedInStaff) {
       const msg = "You must be signed in with a registered staff account to mark attendance.";
@@ -658,6 +825,7 @@ function MarkAttendancePage() {
       return;
     }
 
+<<<<<<< HEAD
     if (!wifiAuthorized) {
       const msg =
         wifiStatus?.reason ||
@@ -725,19 +893,49 @@ function MarkAttendancePage() {
       });
       toast.error("Identity Verification Required", {
         description: msg,
+=======
+    if (!faceResult || !faceAuthenticated) {
+      toast.error("Face Recognition Required", {
+        description: "Please complete facial verification first.",
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
       });
       setScanOpen(true);
       return;
     }
 
+<<<<<<< HEAD
     setSubmitError(null);
     isSubmittingRef.current = true;
+=======
+    if (!wifiAuthorized) {
+      toast.error("Wi-Fi Authorization Required", {
+        description: "Device must be connected to authorized institutional Wi-Fi.",
+      });
+      return;
+    }
+
+    if (!gpsInsideGeofence) {
+      toast.error("GPS Geofence Verification Required", {
+        description: "Device must be inside the campus geofence polygon with accuracy ≤20m.",
+      });
+      return;
+    }
+
+    setIsSubmitting(true);
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
     setStatus("verifying");
+
     try {
+<<<<<<< HEAD
       const activeDevId = deviceStatus?.device?.id || currentFace?.deviceId || undefined;
       const result = await markAttendance({
         staffCode: loggedInStaff.staffId,
         staffName: currentFace?.staffName || loggedInStaff.name,
+=======
+      const attendanceReceipt = await markAttendance({
+        staffCode: loggedInStaff.staffId,
+        staffName: faceResult.staffName || loggedInStaff.name,
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
         department: loggedInStaff.department,
         token: loggedInStaff.token,
         location: "Main Campus, Sona College",
@@ -746,7 +944,10 @@ function MarkAttendancePage() {
         accuracy: (geofence.bestAccuracy ?? geofence.accuracy) ?? undefined,
         verification: "Verified",
         networkAuthToken: wifiStatus?.networkAuthToken,
+        bssid: wifiStatus?.bssid || activeReport.wifi.data?.bssid,
+        bssidSource: wifiStatus?.bssidSource,
         faceVerified: true,
+<<<<<<< HEAD
         recognizedStaffCode: currentFace?.staffCode || currentFace?.staffId || loggedInStaff.staffId,
         faceMatchDistance: currentFace?.distance,
         livenessPassed: currentFace?.livenessCompleted === true,
@@ -757,15 +958,35 @@ function MarkAttendancePage() {
         sessionNonce: currentFace?.attemptNonce,
         attemptNonce: currentFace?.attemptNonce,
         livenessEvidence: currentFace?.livenessEvidence,
+=======
+        recognizedStaffCode: faceResult.staffCode || faceResult.staffId || loggedInStaff.staffId,
+        faceMatchDistance: faceResult.distance,
+        matchMargin: (faceResult as any)?.matchMargin ?? (faceResult as any)?.margin,
+        livenessPassed: faceResult.livenessCompleted === true,
+        antiSpoofScore: faceResult.antiSpoofScore,
+        auditId: faceResult.auditId || faceResult.verification?.auditId,
+        biometricAttestation: faceResult.biometricAttestation,
+        deviceId: faceResult.deviceId || deviceStatus?.device?.id,
+        sessionNonce: faceResult.attemptNonce,
+        attemptNonce: faceResult.attemptNonce,
+        livenessEvidence: faceResult.livenessEvidence,
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
       });
-      setReceipt(result);
+
+      setReceipt(attendanceReceipt);
       setStatus("success");
       setSubmitError(null);
       toast.success("Attendance Recorded Successfully!", {
+<<<<<<< HEAD
         description: `${currentFace?.staffName || loggedInStaff.name} · ${result.time} · ${result.date}`,
+=======
+        description: `${faceResult.staffName || loggedInStaff.name} · ${attendanceReceipt.time} · ${attendanceReceipt.date}`,
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
       });
     } catch (err: any) {
+      console.error("[handleFinalAttendanceSubmission] Server rejection:", err?.message || err);
       setStatus("idle");
+<<<<<<< HEAD
       const errCode = err?.code || (err?.status ? `HTTP_${err.status}` : "SERVER_REJECTED");
       const errMsg = err?.message || "Server rejected attendance verification.";
       let errTitle = "Attendance Rejected by Server";
@@ -796,6 +1017,71 @@ function MarkAttendancePage() {
       });
     } finally {
       isSubmittingRef.current = false;
+=======
+      toast.error("Attendance Rejected", {
+        description: err?.message || "Attendance could not be persisted to database.",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const executeParallelAttendance = async () => {
+    if (!loggedInStaff) {
+      toast.error("Authentication Required", {
+        description: "You must be signed in with a registered staff account to mark attendance.",
+      });
+      return;
+    }
+
+    // If face is not yet scanned, open FaceScanDialog immediately
+    // while simultaneously dispatching Wi-Fi and GPS checks in parallel!
+    if (!faceResult || activeReport.face.status !== "PASS") {
+      setScanOpen(true);
+      void Promise.allSettled([
+        isUsingMockScenario ? Promise.resolve(wifiStatus) : checkWifiConnection(),
+        isUsingMockScenario ? Promise.resolve(null) : geofence.refreshLocation(),
+      ]);
+      return;
+    }
+
+    setIsVerifyingParallel(true);
+    setStatus("verifying");
+
+    try {
+      const freshReport = await runParallelVerification({
+        checkWifi: () => (isUsingMockScenario ? Promise.resolve(wifiStatus) : checkWifiConnection()),
+        checkGps: () => (isUsingMockScenario ? Promise.resolve(null) : geofence.refreshLocation()),
+        getFaceResult: async () => faceResult,
+        currentGeofenceState: {
+          isInside: geofence.isInside,
+          status: geofence.status,
+          accuracy: geofence.accuracy,
+          coords: geofence.bestCoords ?? geofence.coords,
+        },
+        expectedStaffCode: loggedInStaff.staffId,
+        timeoutMs: 6000,
+      });
+
+      setParallelReport(freshReport);
+
+      if (freshReport.overallDecision === "ALLOWED") {
+        void handleFinalAttendanceSubmission();
+      } else {
+        setStatus("idle");
+        toast.error("Attendance Rejected: Mandatory Factors Not Satisfied", {
+          description: `Results — Wi-Fi: ${freshReport.wifi.label} | GPS: ${freshReport.gps.label} | Face: ${freshReport.face.label}`,
+        });
+      }
+    } catch (err: any) {
+      console.error("[ParallelAttendance] Error:", err);
+      setStatus("idle");
+      toast.error("Attendance Rejected", {
+        description: err?.message || "Failed to complete attendance verification.",
+      });
+    } finally {
+      setIsVerifyingParallel(false);
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
     }
   };
 
@@ -805,6 +1091,7 @@ function MarkAttendancePage() {
       setFaceResult(result);
       setScanOpen(false);
 
+<<<<<<< HEAD
       if (!result.verified) {
         const msg = "Biometric identity could not be verified against PostgreSQL staff database.";
         setSubmitError({
@@ -861,6 +1148,83 @@ function MarkAttendancePage() {
       }
     },
     [loggedInStaff, wifiAuthorized, gpsInsideGeofence, isWrongPerson, wifiStatus, geofence, deviceStatus]
+=======
+      // Parallel async check: trigger Wi-Fi and GPS concurrently
+      const [wifiSettled, gpsSettled] = await Promise.allSettled([
+        isUsingMockScenario ? Promise.resolve(wifiStatus) : checkWifiConnection(),
+        isUsingMockScenario ? Promise.resolve(null) : geofence.refreshLocation(),
+      ]);
+
+      const freshWifi = wifiSettled.status === "fulfilled" ? wifiSettled.value : wifiStatus;
+      const wifiFac = isUsingMockScenario
+        ? (wifiAuthorized
+            ? {
+                status: "PASS" as const,
+                label: "PASS",
+                detail: "Connected to authorized campus Wi-Fi (Demo)",
+                data: { bssid: REGISTERED_CAMPUS_BSSID, ssid: "SONA-WIFI", authorized: true },
+                timestamp: Date.now(),
+              }
+            : {
+                status: "FAIL" as const,
+                label: "FAIL – Unauthorized Network",
+                detail: "Demo unauthorized network",
+                data: { authorized: false },
+                timestamp: Date.now(),
+              })
+        : evaluateWifiFactor(freshWifi);
+
+      const gpsFac = isUsingMockScenario
+        ? (gpsInsideGeofence
+            ? {
+                status: "PASS" as const,
+                label: "PASS",
+                detail: "Inside campus geofence polygon (Demo)",
+                data: { isInside: true, status: "inside", accuracy: 8 },
+                timestamp: Date.now(),
+              }
+            : {
+                status: "FAIL" as const,
+                label: "FAIL – Outside Campus",
+                detail: "Outside campus polygon (Demo)",
+                data: { isInside: false, status: "outside", accuracy: 12 },
+                timestamp: Date.now(),
+              })
+        : evaluateGpsFactor({
+            isInside: geofence.isInside,
+            status: geofence.status,
+            accuracy: geofence.accuracy,
+            coords: geofence.bestCoords ?? geofence.coords,
+          });
+
+      const faceFac = evaluateFaceFactor(result, loggedInStaff?.staffId);
+      const decisionRes = computeParallelDecision(wifiFac, gpsFac, faceFac);
+
+      const report: ParallelVerificationReport = {
+        wifi: wifiFac,
+        gps: gpsFac,
+        face: faceFac,
+        overallDecision: decisionRes.decision,
+        completedAt: Date.now(),
+        allCompleted: true,
+        failedFactors: decisionRes.failedFactors,
+        passedFactors: decisionRes.passedFactors,
+        summary: decisionRes.summary,
+      };
+      setParallelReport(report);
+
+      if (decisionRes.decision === "ALLOWED") {
+        toast.success("Verification Passed", {
+          description: "All 3 factors passed. You can now tap 'Mark Attendance'.",
+        });
+      } else {
+        toast.info("Face Verification Complete", {
+          description: `Results — Wi-Fi: ${wifiFac.label} | GPS: ${gpsFac.label} | Face: ${faceFac.label}`,
+        });
+      }
+    },
+    [loggedInStaff, isUsingMockScenario, wifiStatus, checkWifiConnection, wifiAuthorized, gpsInsideGeofence, geofence],
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
   );
 
   return (
@@ -998,6 +1362,36 @@ function MarkAttendancePage() {
                 <Button variant="outline" size="sm" asChild className="mt-2 h-8 gap-1.5">
                   <Link to="/">Sign In with Staff ID</Link>
                 </Button>
+              }
+            />
+          )}
+
+          {/* Notification Permission Warning Banner (Android 13+) */}
+          {pushNotif.isNative && pushNotif.permissionStatus === "denied" && (
+            <AlertBanner
+              tone="warning"
+              icon={BellOff}
+              title="Notification Permission Disabled"
+              description="Attendance reminder notifications are blocked on this device. Enable notification permissions in Android Settings to receive scheduled daily attendance alerts."
+              action={
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void pushNotif.requestPermission()}
+                    className="h-8 gap-1.5"
+                  >
+                    <Bell className="size-3.5" /> Request Permission
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={() => void pushNotif.openSettings()}
+                    className="h-8 gap-1.5"
+                  >
+                    <Settings className="size-3.5" /> Open App Settings
+                  </Button>
+                </div>
               }
             />
           )}
@@ -1199,6 +1593,19 @@ function MarkAttendancePage() {
               />
             ))}
           </div>
+
+          {/* Independent 3-Factor Parallel Verification Status Panel */}
+          <ParallelVerificationPanel
+            report={activeReport}
+            isVerifying={isVerifyingParallel || status === "verifying"}
+            onRecheckWifi={() => void checkWifiConnection()}
+            onRefreshGps={() => void geofence.refreshLocation()}
+            onScanFace={() => setScanOpen(true)}
+            onMarkAttendance={() => void handleFinalAttendanceSubmission()}
+            isMarkingAttendance={isSubmitting}
+            isWifiChecking={isWifiChecking}
+            isGpsChecking={geofence.isChecking}
+          />
 
           {/* Dedicated Institutional Wi-Fi Status & Diagnostic Card */}
           <WifiStatusCard
@@ -1579,6 +1986,7 @@ function MarkAttendancePage() {
                 <Button
                   id="mark-attendance-btn"
                   size="lg"
+<<<<<<< HEAD
                   className="w-full"
                   disabled={
                     status === "verifying" ||
@@ -1680,53 +2088,61 @@ function MarkAttendancePage() {
                       return;
                     }
                     if (!face || !faceAuthenticated) {
+=======
+                  className={cn(
+                    "w-full h-12 text-sm font-semibold rounded-xl transition-all",
+                    isAllowed
+                      ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-500/20"
+                      : ""
+                  )}
+                  disabled={isSubmitting || status === "verifying" || isVerifyingParallel}
+                  onClick={() => {
+                    if (isAllowed) {
+                      void handleFinalAttendanceSubmission();
+                    } else if (activeReport.face.status !== "PASS" || !faceResult) {
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
                       setScanOpen(true);
                     } else {
-                      void run();
+                      void executeParallelAttendance();
                     }
                   }}
                 >
-                  {status === "verifying" ? (
+                  {isSubmitting || status === "verifying" || isVerifyingParallel ? (
                     <>
+<<<<<<< HEAD
                       <Loader2 className="mr-2 size-5 animate-spin" /> Verifying and recording attendance…
+=======
+                      <Loader2 className="mr-2 size-5 animate-spin" />
+                      {isSubmitting ? "Recording Attendance to Database…" : "Verifying all 3 factors in parallel…"}
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
                     </>
-                  ) : isWrongPerson ? (
-                    <>
-                      <XCircle className="mr-2 size-5" /> Identity Mismatch — Attendance Blocked
-                    </>
-                  ) : geofence.status === "location_services_off" || geofence.status === "position_unavailable" ? (
-                    <>
-                      <AlertTriangle className="mr-2 size-5" /> Location Services OFF — Turn on Location
-                    </>
-                  ) : geofence.status === "permission_prompt" ? (
-                    <>
-                      <MapPin className="mr-2 size-5" /> Location Permission Required — Allow Access
-                    </>
-                  ) : geofence.status === "permission_denied" ? (
-                    <>
-                      <ShieldAlert className="mr-2 size-5" /> Location Permission Denied — Enable in Settings
-                    </>
-                  ) : !wifiAuthorized ? (
-                    <>
-                      <Wifi className="mr-2 size-5" /> Unauthorized Wi-Fi — Marking Blocked
-                    </>
-                  ) : !gpsInsideGeofence ? (
-                    <>
-                      <AlertTriangle className="mr-2 size-5" />
-                      {geofence.status === "insufficient_accuracy" || (geofence.accuracy !== null && geofence.accuracy > 20)
-                        ? "GPS Accuracy Insufficient — Blocked"
-                        : "Outside Campus Polygon — Blocked"}
-                    </>
-                  ) : !faceAuthenticated ? (
-                    <>
-                      <ScanFace className="mr-2 size-5" /> Scan Face to Continue
-                    </>
-                  ) : (
+                  ) : isAllowed ? (
                     <>
                       <CheckCircle2 className="mr-2 size-5" /> Mark Attendance
                     </>
+                  ) : activeReport.face.status !== "PASS" || !faceResult ? (
+                    <>
+                      <ScanFace className="mr-2 size-5" /> Scan Face to Complete Verification
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="mr-2 size-5" /> Verify Attendance Factors
+                    </>
                   )}
                 </Button>
+
+                {isAllowed && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="w-full text-xs text-muted-foreground hover:text-foreground h-8"
+                    disabled={isSubmitting || status === "verifying" || isVerifyingParallel}
+                    onClick={() => void executeParallelAttendance()}
+                  >
+                    <RefreshCw className="mr-1.5 size-3" /> Re-verify All 3 Factors
+                  </Button>
+                )}
 
                 {!canMarkAttendance && (
                   <p className="text-center text-xs text-muted-foreground">
@@ -1762,6 +2178,7 @@ function SuccessPanel({
 }) {
   const displayFacultyId = receipt.staffCode || staffCode || "SCT-001";
   return (
+<<<<<<< HEAD
     <div className="flex justify-center py-4 px-2 sm:px-4" id="attendance-success-screen">
       <div className="w-full max-w-md rounded-2xl bg-card border border-border/60 shadow-sm p-6 sm:p-8 flex flex-col items-center text-center">
         {/* Top green circular success icon */}
@@ -1787,11 +2204,37 @@ function SuccessPanel({
 
         {/* Verification status rows */}
         <ul className="mt-8 w-full space-y-2.5 text-left">
+=======
+    <div className="flex min-h-[75vh] flex-col items-center justify-center px-4 py-8" id="attendance-success-screen">
+      <div className="w-full max-w-sm rounded-[28px] bg-card border border-border/70 p-6 sm:p-7 flex flex-col items-center text-center shadow-md">
+        {/* Circular Checkmark Badge */}
+        <div className="mb-5 flex size-24 items-center justify-center rounded-full bg-[#dcfce7]">
+          <div className="flex size-14 items-center justify-center rounded-full border-[2.5px] border-[#059669] text-[#059669]">
+            <Check className="size-8 stroke-[3]" />
+          </div>
+        </div>
+
+        {/* Title & Greeting */}
+        <h2 className="text-2xl font-bold tracking-tight text-foreground">Attendance Recorded</h2>
+        <p className="mt-1 text-base font-semibold text-foreground">Welcome, {displayFacultyId}</p>
+
+        {/* Big Green Time */}
+        <p className="mt-2 text-4xl font-extrabold tracking-tight text-[#047857] font-mono">
+          {receipt.time}
+        </p>
+
+        {/* Date */}
+        <p className="mt-1 text-sm font-medium text-muted-foreground">{receipt.date}</p>
+
+        {/* 4 Factor Verification Status Pills */}
+        <div className="mt-6 w-full space-y-2.5 text-left">
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
           {[
             { icon: MapPin, label: "GPS Geofence polygon verified (Inside Campus)" },
             { icon: ScanFace, label: `Identity verified — ${displayFacultyId}` },
             { icon: Smartphone, label: "Device verified" },
             { icon: CheckCircle2, label: "Attendance successfully recorded" },
+<<<<<<< HEAD
           ].map((item) => (
             <li
               key={item.label}
@@ -1800,31 +2243,61 @@ function SuccessPanel({
               <item.icon className="size-4 shrink-0 text-[#0D6832]" aria-hidden />
               <span>{item.label}</span>
             </li>
+=======
+          ].map((item, idx) => (
+            <div
+              key={idx}
+              className="flex items-center gap-3 rounded-2xl border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3 text-sm font-medium text-[#166534]"
+            >
+              <item.icon className="size-5 shrink-0 text-[#16a34a]" />
+              <span className="leading-snug">{item.label}</span>
+            </div>
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
           ))}
-        </ul>
+        </div>
 
+<<<<<<< HEAD
         {/* Attendance ID section */}
         <div
           className="mt-6 w-full rounded-xl bg-muted/60 border border-border/40 px-4 py-3 font-mono text-xs text-muted-foreground break-all text-center"
+=======
+        {/* Attendance ID Box */}
+        <div
+          className="mt-5 w-full rounded-2xl bg-muted/90 border border-border/50 px-4 py-2.5 font-mono text-xs text-muted-foreground break-all text-center select-all"
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
           id="attendance-record-id"
         >
           Attendance ID: {receipt.attendanceId}
         </div>
 
+<<<<<<< HEAD
         {/* Navigation buttons matching Screenshot 2 */}
         <div className="mt-8 w-full flex flex-col gap-3">
           <Button
             asChild
             id="back-to-dashboard-btn"
             className="w-full h-12 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] text-white font-medium text-base shadow-sm"
+=======
+        {/* Navigation Action Buttons */}
+        <div className="mt-6 flex w-full flex-col gap-2.5">
+          <Button
+            asChild
+            className="w-full h-12 rounded-xl bg-[#1d4ed8] hover:bg-[#1e40af] text-white text-sm font-semibold shadow-sm"
+            id="back-to-dashboard-btn"
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
           >
             <Link to="/dashboard">Back to dashboard</Link>
           </Button>
           <Button
             variant="outline"
             onClick={onReset}
+<<<<<<< HEAD
             id="view-verification-panel-btn"
             className="w-full h-12 rounded-xl bg-background hover:bg-muted text-foreground border border-border font-medium text-base shadow-sm"
+=======
+            className="w-full h-12 rounded-xl border border-border bg-card hover:bg-muted text-foreground text-sm font-medium shadow-none"
+            id="view-verification-panel-btn"
+>>>>>>> 09c7ef316b399efaec784fb56b83f99cfac5b469
           >
             View verification panel
           </Button>

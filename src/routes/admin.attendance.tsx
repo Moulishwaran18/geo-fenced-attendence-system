@@ -84,7 +84,7 @@ function AdminAttendancePage() {
       if (!fetched) {
         try {
           const { data, error } = await supabase
-            .from("attendance_records")
+            .from("attendance_record")
             .select("*")
             .order("date", { ascending: false })
             .order("created_at", { ascending: false })

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useWifiStatus } from "@/hooks/use-wifi-status";
 import { Button } from "@/components/ui/button";
+import { APPROVED_CAMPUS_BSSIDS } from "@/lib/wifi-config";
 
 interface WifiGatekeeperProps {
   children: ReactNode;
@@ -109,9 +110,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                 Authorized Wi-Fi Connection Required
               </p>
               <p className="mt-2.5 max-w-md text-sm text-muted-foreground leading-relaxed">
-                CampusAttend is protected by institutional network security. This system can only be
-                accessed when your device is connected to an authorized campus Wi-Fi network whose name
-                contains <strong className="text-foreground">sona</strong> (case-insensitive).
+                CampusAttend is protected by institutional network security. This system can only be accessed when your device is connected to an approved campus Wi-Fi access point (<strong className="text-foreground font-mono">{APPROVED_CAMPUS_BSSIDS.join(" or ")}</strong>).
               </p>
             </div>
 
@@ -132,8 +131,12 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Wi-Fi Policy:</span>
-                  <span className="font-mono text-primary font-medium">SSID contains &quot;sona&quot;</span>
+                  <span className="text-muted-foreground">Approved Campus BSSIDs:</span>
+                  <span className="font-mono text-primary font-medium text-[11px]">{APPROVED_CAMPUS_BSSIDS.join(" | ")}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Connected BSSID:</span>
+                  <span className="font-mono text-foreground font-semibold">{status?.bssid || "Unavailable / Restricted"}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Verification Method:</span>
@@ -151,7 +154,15 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                     <span>Device Diagnostics:</span>
                     <span className="font-mono">
-                      API {status.apiLevel} · Fine: {status.hasFineLocation ? "✓" : "✗"} · Nearby: {status.hasNearbyWifi ? "✓" : "✗"} · Source: {status.ssidSource || "NONE"}
+                      API {status.apiLevel} · Fine: {status.hasFineLocation ? "✓" : "✗"} · Nearby: {status.hasNearbyWifi ? "✓" : "✗"} · GPS: {status.isLocationEnabled !== false ? "ON" : "OFF"} · BSSID Source: {status.bssidSource || status.ssidSource || "NONE"}
+                    </span>
+                  </div>
+                )}
+                {status?.bssidDiagnostic && (
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>BSSID Diag:</span>
+                    <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
+                      {status.bssidDiagnostic}
                     </span>
                   </div>
                 )}
@@ -174,7 +185,7 @@ export function WifiGatekeeper({ children }: WifiGatekeeperProps) {
               <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside pl-1">
                 <li>Open your device Wi-Fi settings.</li>
                 <li>
-                  Connect to an authorized Wi-Fi network containing <strong className="text-foreground">sona</strong> (e.g. SONA-WIFI).
+                  Connect to an official campus Wi-Fi network (AP BSSID: <strong className="text-foreground font-mono">{APPROVED_CAMPUS_BSSIDS.join(" or ")}</strong>).
                 </li>
                 <li>
                   Ensure you are using the <strong className="text-foreground">CampusAttend Android APK</strong> with Location permissions enabled.

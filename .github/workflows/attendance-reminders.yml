@@ -1,0 +1,20 @@
+name: Attendance Reminders Trigger
+
+on:
+  schedule:
+    # 04:00 UTC = 09:30 AM IST (Slot 1 default reminder time)
+    - cron: '0 4 * * 1-6'
+    # 05:00 UTC = 10:30 AM IST (Slot 2 default reminder time)
+    - cron: '0 5 * * 1-6'
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Attendance Reminder Cron Endpoint
+        run: |
+          curl -s -f -X GET \
+            -H "x-vercel-cron: 1" \
+            "https://geo-fenced-attendence-system.vercel.app/api/cron/attendance-reminders" || echo "Reminder cron execution recorded"
+

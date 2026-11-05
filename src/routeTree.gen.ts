@@ -11,16 +11,20 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as ExportMonthlyPdfRouteImport } from './routes/export-monthly-pdf'
 import { Route as FaceEnrollmentRouteImport } from './routes/face-enrollment'
 import { Route as GroundTruthRouteImport } from './routes/ground-truth'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as MarkAttendanceRouteImport } from './routes/mark-attendance'
+import { Route as NotificationDiagnosticRouteImport } from './routes/notification-diagnostic'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
+import { Route as AdminAttendanceRemindersRouteImport } from './routes/admin.attendance-reminders'
 import { Route as AdminAuditLogsRouteImport } from './routes/admin.audit-logs'
 import { Route as AdminCampusMapRouteImport } from './routes/admin.campus-map'
+import { Route as AdminCoordinatePointsRouteImport } from './routes/admin.coordinate-points'
 import { Route as AdminFaceEnrollmentRouteImport } from './routes/admin.face-enrollment'
 import { Route as AdminFaceRequestsRouteImport } from './routes/admin.face-requests'
 import { Route as AdminStaffRouteImport } from './routes/admin.staff'
@@ -33,6 +37,11 @@ const IndexRoute = IndexRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ExportMonthlyPdfRoute = ExportMonthlyPdfRouteImport.update({
+  id: '/export-monthly-pdf',
+  path: '/export-monthly-pdf',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FaceEnrollmentRoute = FaceEnrollmentRouteImport.update({
@@ -55,6 +64,11 @@ const MarkAttendanceRoute = MarkAttendanceRouteImport.update({
   path: '/mark-attendance',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NotificationDiagnosticRoute = NotificationDiagnosticRouteImport.update({
+  id: '/notification-diagnostic',
+  path: '/notification-diagnostic',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -75,6 +89,12 @@ const AdminAttendanceRoute = AdminAttendanceRouteImport.update({
   path: '/admin/attendance',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminAttendanceRemindersRoute =
+  AdminAttendanceRemindersRouteImport.update({
+    id: '/admin/attendance-reminders',
+    path: '/admin/attendance-reminders',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AdminAuditLogsRoute = AdminAuditLogsRouteImport.update({
   id: '/admin/audit-logs',
   path: '/admin/audit-logs',
@@ -83,6 +103,11 @@ const AdminAuditLogsRoute = AdminAuditLogsRouteImport.update({
 const AdminCampusMapRoute = AdminCampusMapRouteImport.update({
   id: '/admin/campus-map',
   path: '/admin/campus-map',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminCoordinatePointsRoute = AdminCoordinatePointsRouteImport.update({
+  id: '/admin/coordinate-points',
+  path: '/admin/coordinate-points',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminFaceEnrollmentRoute = AdminFaceEnrollmentRouteImport.update({
@@ -104,15 +129,19 @@ const AdminStaffRoute = AdminStaffRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/export-monthly-pdf': typeof ExportMonthlyPdfRoute
   '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/notification-diagnostic': typeof NotificationDiagnosticRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/attendance-reminders': typeof AdminAttendanceRemindersRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -121,15 +150,19 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/export-monthly-pdf': typeof ExportMonthlyPdfRoute
   '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/notification-diagnostic': typeof NotificationDiagnosticRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/attendance-reminders': typeof AdminAttendanceRemindersRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -139,15 +172,19 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
+  '/export-monthly-pdf': typeof ExportMonthlyPdfRoute
   '/face-enrollment': typeof FaceEnrollmentRoute
   '/ground-truth': typeof GroundTruthRoute
   '/history': typeof HistoryRoute
   '/mark-attendance': typeof MarkAttendanceRoute
+  '/notification-diagnostic': typeof NotificationDiagnosticRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/admin/attendance': typeof AdminAttendanceRoute
+  '/admin/attendance-reminders': typeof AdminAttendanceRemindersRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/campus-map': typeof AdminCampusMapRoute
+  '/admin/coordinate-points': typeof AdminCoordinatePointsRoute
   '/admin/face-enrollment': typeof AdminFaceEnrollmentRoute
   '/admin/face-requests': typeof AdminFaceRequestsRoute
   '/admin/staff': typeof AdminStaffRoute
@@ -158,15 +195,19 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/dashboard'
+    | '/export-monthly-pdf'
     | '/face-enrollment'
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
+    | '/notification-diagnostic'
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/attendance-reminders'
     | '/admin/audit-logs'
     | '/admin/campus-map'
+    | '/admin/coordinate-points'
     | '/admin/face-enrollment'
     | '/admin/face-requests'
     | '/admin/staff'
@@ -175,15 +216,19 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/dashboard'
+    | '/export-monthly-pdf'
     | '/face-enrollment'
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
+    | '/notification-diagnostic'
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/attendance-reminders'
     | '/admin/audit-logs'
     | '/admin/campus-map'
+    | '/admin/coordinate-points'
     | '/admin/face-enrollment'
     | '/admin/face-requests'
     | '/admin/staff'
@@ -192,15 +237,19 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/dashboard'
+    | '/export-monthly-pdf'
     | '/face-enrollment'
     | '/ground-truth'
     | '/history'
     | '/mark-attendance'
+    | '/notification-diagnostic'
     | '/profile'
     | '/settings'
     | '/admin/attendance'
+    | '/admin/attendance-reminders'
     | '/admin/audit-logs'
     | '/admin/campus-map'
+    | '/admin/coordinate-points'
     | '/admin/face-enrollment'
     | '/admin/face-requests'
     | '/admin/staff'
@@ -210,15 +259,19 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
+  ExportMonthlyPdfRoute: typeof ExportMonthlyPdfRoute
   FaceEnrollmentRoute: typeof FaceEnrollmentRoute
   GroundTruthRoute: typeof GroundTruthRoute
   HistoryRoute: typeof HistoryRoute
   MarkAttendanceRoute: typeof MarkAttendanceRoute
+  NotificationDiagnosticRoute: typeof NotificationDiagnosticRoute
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
   AdminAttendanceRoute: typeof AdminAttendanceRoute
+  AdminAttendanceRemindersRoute: typeof AdminAttendanceRemindersRoute
   AdminAuditLogsRoute: typeof AdminAuditLogsRoute
   AdminCampusMapRoute: typeof AdminCampusMapRoute
+  AdminCoordinatePointsRoute: typeof AdminCoordinatePointsRoute
   AdminFaceEnrollmentRoute: typeof AdminFaceEnrollmentRoute
   AdminFaceRequestsRoute: typeof AdminFaceRequestsRoute
   AdminStaffRoute: typeof AdminStaffRoute
@@ -239,6 +292,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/export-monthly-pdf': {
+      id: '/export-monthly-pdf'
+      path: '/export-monthly-pdf'
+      fullPath: '/export-monthly-pdf'
+      preLoaderRoute: typeof ExportMonthlyPdfRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/face-enrollment': {
@@ -269,6 +329,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MarkAttendanceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/notification-diagnostic': {
+      id: '/notification-diagnostic'
+      path: '/notification-diagnostic'
+      fullPath: '/notification-diagnostic'
+      preLoaderRoute: typeof NotificationDiagnosticRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/profile': {
       id: '/profile'
       path: '/profile'
@@ -297,6 +364,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAttendanceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/attendance-reminders': {
+      id: '/admin/attendance-reminders'
+      path: '/admin/attendance-reminders'
+      fullPath: '/admin/attendance-reminders'
+      preLoaderRoute: typeof AdminAttendanceRemindersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/audit-logs': {
       id: '/admin/audit-logs'
       path: '/admin/audit-logs'
@@ -309,6 +383,13 @@ declare module '@tanstack/react-router' {
       path: '/admin/campus-map'
       fullPath: '/admin/campus-map'
       preLoaderRoute: typeof AdminCampusMapRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/coordinate-points': {
+      id: '/admin/coordinate-points'
+      path: '/admin/coordinate-points'
+      fullPath: '/admin/coordinate-points'
+      preLoaderRoute: typeof AdminCoordinatePointsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/face-enrollment': {
@@ -338,15 +419,19 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
+  ExportMonthlyPdfRoute: ExportMonthlyPdfRoute,
   FaceEnrollmentRoute: FaceEnrollmentRoute,
   GroundTruthRoute: GroundTruthRoute,
   HistoryRoute: HistoryRoute,
   MarkAttendanceRoute: MarkAttendanceRoute,
+  NotificationDiagnosticRoute: NotificationDiagnosticRoute,
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
   AdminAttendanceRoute: AdminAttendanceRoute,
+  AdminAttendanceRemindersRoute: AdminAttendanceRemindersRoute,
   AdminAuditLogsRoute: AdminAuditLogsRoute,
   AdminCampusMapRoute: AdminCampusMapRoute,
+  AdminCoordinatePointsRoute: AdminCoordinatePointsRoute,
   AdminFaceEnrollmentRoute: AdminFaceEnrollmentRoute,
   AdminFaceRequestsRoute: AdminFaceRequestsRoute,
   AdminStaffRoute: AdminStaffRoute,

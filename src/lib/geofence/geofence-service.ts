@@ -39,20 +39,45 @@ export interface GeofenceEvaluation {
  * Authoritative 13-point Polygon Coordinates (Strict Order C1 -> C2 -> ... -> C13).
  */
 export const AUTHORIZED_GEOFENCE_POLYGON: LatLng[] = [
-  { lat: 11.675651510482604, lng: 78.12402220170895 }, // C1
-  { lat: 11.675657082681333, lng: 78.12382305416799 }, // C2
-  { lat: 11.675768526632474, lng: 78.12359545697831 }, // C3
-  { lat: 11.675857681761121, lng: 78.12339630943734 }, // C4
-  { lat: 11.676125146975094, lng: 78.1228443862524 },  // C5
-  { lat: 11.676370323194567, lng: 78.12244609117047 }, // C6
-  { lat: 11.676414900665728, lng: 78.12241764152176 }, // C7
-  { lat: 11.676448333764391, lng: 78.12143897360616 }, // C8
-  { lat: 11.676905252375372, lng: 78.12147880311436 }, // C9
-  { lat: 11.676977690622595, lng: 78.12159260170921 }, // C10
-  { lat: 11.67708913404289,  lng: 78.12222418391055 }, // C11
-  { lat: 11.677990932044441, lng: 78.12235439874642 }, // C12
-  { lat: 11.677979915759753, lng: 78.1237830407748 },  // C13
+  { lat: 11.680008217328185, lng: 78.12153017811703 }, // P1
+  { lat: 11.68027965716829,  lng: 78.12143270844324 }, // P2
+  { lat: 11.680658479357865, lng: 78.1219139649576  }, // P3
+  { lat: 11.680401954152238, lng: 78.12220332805167 }, // P4
+  { lat: 11.680020148755307, lng: 78.12218809841514 }, // P5
+  { lat: 11.67993961161223,  lng: 78.12173730117385 }, // P6
 ];
+
+/** In-memory dynamic polygon (fetched from server, falls back to AUTHORIZED_GEOFENCE_POLYGON) */
+let dynamicPolygon: LatLng[] = AUTHORIZED_GEOFENCE_POLYGON;
+
+/** Returns the current active polygon (dynamic if fetched, otherwise fallback) */
+export function getActiveGeofencePolygon(): LatLng[] {
+  return dynamicPolygon;
+}
+
+/** Set the active polygon (called after fetching from server) */
+export function setActiveGeofencePolygon(points: LatLng[]): void {
+  if (Array.isArray(points) && points.length >= 3) {
+    dynamicPolygon = points;
+  }
+}
+
+/** Fetch the active geofence polygon from the server and update local cache */
+export async function fetchActiveGeofencePolygon(): Promise<LatLng[]> {
+  try {
+    const res = await fetch("/api/geofence", { method: "GET" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.success && Array.isArray(data.polygon) && data.polygon.length >= 3) {
+        setActiveGeofencePolygon(data.polygon as LatLng[]);
+        return data.polygon as LatLng[];
+      }
+    }
+  } catch {
+    // silently fall back to hardcoded polygon
+  }
+  return AUTHORIZED_GEOFENCE_POLYGON;
+}
 
 /**
  * Calculates whether a point is strictly inside a polygon using the
